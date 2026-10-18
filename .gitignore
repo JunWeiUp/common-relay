@@ -1,0 +1,15 @@
+.venv/
+.build/
+build/
+data/
+.local/
+__pycache__/
+*.egg-info/
+.DS_Store
+.swiftpm/
+.dart_tool/
+.gradle/
+local.properties
+*.credential.json
+*.private.json
+paseo.json
