@@ -88,6 +88,17 @@ context必须与外层路由和预期kind逐项相等。kind为message、stream.
 
 签名记录为 `{payload,signature,signer}`。payload 解码后名单字段为 `{version:1,app,group,revision,previous,members,invitation,request_hash}`。成员字段为 `{device,name,public_key,signing_key,manager}`。新申请的 payload 为 `{version:1,app,group,invitation,member,token_hash}`，member.manager 必须 false，批准时由邀请管理员明确授予权限。
 
+#### 严格载荷
+
+各语言 JSON 解析器对重复键、键名大小写、未知字段、null、数字形式及孤立代理项的处理不一致；同一签名记录若在不同实现中读出不同含义或部分实现无法读取，整条链会分叉或卡死。因此服务端与四 SDK 对名单、申请及自动邀请授权 payload 执行同一字节级校验，任一不满足即拒绝：
+
+- payload 为标准 base64（含填充、不含换行），解码后为合法 UTF-8，且是一个 JSON 对象，前后只允许 JSON 空白。
+- 字段集合与上文完全一致：必填字段齐全，不得有未知字段、重复键、大小写变体或转义写法的键。名单仅 `closed`、`name` 可省略；成员对象五个字段均必填。
+- 类型严格：字符串字段只能是字符串，`manager`/`closed` 只能是 `true`/`false`，整数只能是 `0` 或无前导零的十进制且不超过 2^53−1（不得带符号、小数或指数）；不得出现 null。
+- 字符串内不得含未转义控制字符或 `\uD800`–`\uDFFF` 转义；其余标准转义允许。
+
+共享向量 `group-vectors.json` 的 `strict_payload` 包含签名正确但编码有歧义的反例，由 `scripts/group-strict-vectors.py` 生成。升级服务端前用 `common-relay check` 扫描已有记录。
+
 初始化 revision=1、previous 为空。后续 previous 必须为前一 payload 的 SHA-256；新增或旧成员升级时 invitation/request_hash 绑定原申请；删除时两字段为空。对端新加入时以可信邀请中的签名公钥验证批准快照，此后只接受连续、合法的签名更新。不得用未验证的 HTTP 成员列表填充 trusted_peers。
 
 成功管理请求返回 200，失败使用 400/401/403/404/409/429/507，正文不包含令牌或私钥。初始化重复提交只允许在初始化秘密有效期内且记录、令牌哈希完全一致的幂等请求。服务端成功变更后向组内在线连接发送 `{type:"group.changed",revision:N}`；客户端需验证更新，通知本身不是信任证明。已管理组的连接在 welcome 后同样收到当前版本提示，防止错过连接前的变化；仅版本更新时才需要刷新。

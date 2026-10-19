@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -57,8 +58,9 @@ func validHex(s string, n int) bool {
 	return e == nil && len(b) == n && s == strings.ToLower(s)
 }
 func (e SignedEntry) bytes() ([]byte, error) {
-	b, err := base64.StdEncoding.DecodeString(e.Payload)
-	if err != nil || len(b) > 32768 {
+	// Strict still skips CR/LF, which the SDK decoders reject.
+	b, err := base64.StdEncoding.Strict().DecodeString(e.Payload)
+	if err != nil || len(b) > 32768 || strings.ContainsAny(e.Payload, "\r\n") {
 		return nil, ErrDenied
 	}
 	return b, nil
@@ -75,8 +77,7 @@ func (e SignedEntry) state() (GroupState, error) {
 	if err != nil {
 		return g, err
 	}
-	err = json.Unmarshal(b, &g)
-	if err != nil {
+	if err = decodeStrict(b, stateSchema, &g); err != nil {
 		return g, err
 	}
 	if len(g.Name) > 128 || (g.Name != "" && strings.TrimSpace(g.Name) == "") || g.Version != 1 || !identifier.MatchString(g.App) || !identifier.MatchString(g.Group) || g.Revision < 1 || (!g.Closed && len(g.Members) < 1) || (g.Closed && len(g.Members) != 0) || len(g.Members) > 32 {
@@ -130,6 +131,40 @@ func (s *Store) GroupBootstrap(app, group, secret string) error {
 	}
 	_, err := s.DB.Exec("INSERT INTO group_bootstrap VALUES(?,?,?,?)", hashToken(secret), app, group, time.Now().Add(10*time.Minute).Unix())
 	return err
+}
+
+// CheckGroups reports stored records that the strict payload rules would
+// reject, so an upgrade can be verified against existing data first.
+func (s *Store) CheckGroups() ([]string, error) {
+	rows, err := s.DB.Query("SELECT app,grp,revision,entry FROM group_entries ORDER BY app,grp,revision")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var bad []string
+	for rows.Next() {
+		var app, group, raw string
+		var revision int
+		var e SignedEntry
+		var grant AdmissionGrant
+		if err = rows.Scan(&app, &group, &revision, &raw); err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal([]byte(raw), &e)
+		if err == nil {
+			_, err = e.state()
+		}
+		if err == nil && e.Authorization != nil {
+			var b []byte
+			if b, err = e.Authorization.bytes(); err == nil {
+				err = decodeStrict(b, grantSchema, &grant)
+			}
+		}
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s/%s@%d", app, group, revision))
+		}
+	}
+	return bad, rows.Err()
 }
 func latest(tx *sql.Tx, app, group string) (SignedEntry, GroupState, error) {
 	var e SignedEntry
@@ -510,7 +545,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		}
 		b, e := entry.bytes()
 		var j JoinRequest
-		if entry.Authorization != nil || e != nil || json.Unmarshal(b, &j) != nil || j.Version != 1 || j.App != app || j.Group != group || j.Invitation != id || j.Member.Manager || !identifier.MatchString(j.Member.Device) || j.Member.Device != entry.Signer || !validHex(j.Member.PublicKey, 32) || !validHex(j.Member.SigningKey, 32) || !validHex(j.TokenHash, 32) || len(j.Member.Name) > 128 || strings.TrimSpace(j.Member.Name) == "" || !entry.verify(j.Member.SigningKey) {
+		if entry.Authorization != nil || e != nil || decodeStrict(b, requestSchema, &j) != nil || j.Version != 1 || j.App != app || j.Group != group || j.Invitation != id || j.Member.Manager || !identifier.MatchString(j.Member.Device) || j.Member.Device != entry.Signer || !validHex(j.Member.PublicKey, 32) || !validHex(j.Member.SigningKey, 32) || !validHex(j.TokenHash, 32) || len(j.Member.Name) > 128 || strings.TrimSpace(j.Member.Name) == "" || !entry.verify(j.Member.SigningKey) {
 			groupFailure(w, ErrDenied)
 			return
 		}
@@ -651,7 +686,7 @@ func (s *Server) changeGroup(w http.ResponseWriter, r *http.Request, d Device) {
 			return
 		}
 		rb, er := se.bytes()
-		if er != nil || json.Unmarshal(rb, &j) != nil || g.RequestHash != digest(rb) {
+		if er != nil || decodeStrict(rb, requestSchema, &j) != nil || g.RequestHash != digest(rb) {
 			groupFailure(w, ErrDenied)
 			return
 		}

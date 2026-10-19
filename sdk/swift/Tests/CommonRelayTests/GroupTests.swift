@@ -16,6 +16,10 @@ final class GroupTests: XCTestCase {
         let automatic = v["auto_admission"] as! [String:Any]
         _ = try groups.advance(first,automatic["approved"] as! [String:Any])
         for item in automatic["invalid"] as! [[String:Any]] { XCTAssertThrowsError(try groups.advance(first,item["entry"] as! [String:Any]),item["case"] as! String) }
+        let strict = v["strict_payload"] as! [String:Any]
+        for item in strict["valid"] as! [[String:Any]] { XCTAssertNoThrow(try groups.advance(added,item["entry"] as! [String:Any]),item["case"] as! String) }
+        for item in strict["invalid"] as! [[String:Any]] { XCTAssertThrowsError(try groups.advance(added,item["entry"] as! [String:Any]),item["case"] as! String) }
+        for item in strict["invalid_auto"] as! [[String:Any]] { XCTAssertThrowsError(try groups.advance(first,item["entry"] as! [String:Any]),item["case"] as! String) }
         var tampered = added;tampered["signature"] = String(repeating:"00",count:64);XCTAssertThrowsError(try groups.advance(first,tampered))
     }
 }

@@ -32,6 +32,10 @@ void main() {
       final automatic = v['auto_admission'] as Map<String,dynamic>;
       groups.advance(first,automatic['approved'] as Map<String,dynamic>);
       for(final item in automatic['invalid'] as List) { expect(()=>groups.advance(first,item['entry'] as Map<String,dynamic>),throwsA(anything),reason:item['case'] as String); }
+      final strict = v['strict_payload'] as Map<String,dynamic>;
+      for(final item in strict['valid'] as List) { groups.advance(added,item['entry'] as Map<String,dynamic>); }
+      for(final item in strict['invalid'] as List) { expect(()=>groups.advance(added,item['entry'] as Map<String,dynamic>),throwsA(anything),reason:item['case'] as String); }
+      for(final item in strict['invalid_auto'] as List) { expect(()=>groups.advance(first,item['entry'] as Map<String,dynamic>),throwsA(anything),reason:item['case'] as String); }
       expect(
         () => groups.advance(first, {
           ...added,

@@ -13,12 +13,17 @@ from urllib.parse import urlsplit
 import httpx
 from nacl.public import PrivateKey
 from nacl.signing import SigningKey, VerifyKey
+from .payload import SCHEMAS, strict
 
 DOMAIN = b'common-relay/group-signing/v1\0'
 def encode(value): return json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode()
 def digest(value): return hashlib.sha256(value).hexdigest()
 def payload(entry): return base64.b64decode(entry['payload'], validate=True)
-def unpack(entry): return json.loads(payload(entry))
+def unpack(entry):
+    raw = payload(entry)
+    # Every signed payload is a state, join request or admission grant.
+    if not any(strict(raw, schema) for schema in SCHEMAS): raise ValueError('Ambiguous signed payload')
+    return json.loads(raw)
 def signing(secret): return SigningKey(hashlib.sha256(DOMAIN + bytes.fromhex(secret)).digest())
 def sign(value, secret, device):
     raw = encode(value)

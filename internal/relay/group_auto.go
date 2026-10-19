@@ -31,7 +31,7 @@ func validateGrant(e *SignedEntry, owner Member, state GroupState) (AdmissionGra
 		return g, ErrDenied
 	}
 	b, err := e.bytes()
-	if err != nil || json.Unmarshal(b, &g) != nil || g.Version != 1 || g.Purpose != "common-relay/admission/v1" || g.Mode != "auto" || g.App != state.App || g.Group != state.Group || !objectID.MatchString(g.Invitation) || !validHex(g.DelegateKey, 32) || !validHex(g.SecretHash, 32) || !validHex(g.AnchorHash, 32) || g.AnchorRevision < 1 || g.AnchorRevision > state.Revision || g.Expires <= 0 {
+	if err != nil || decodeStrict(b, grantSchema, &g) != nil || g.Version != 1 || g.Purpose != "common-relay/admission/v1" || g.Mode != "auto" || g.App != state.App || g.Group != state.Group || !objectID.MatchString(g.Invitation) || !validHex(g.DelegateKey, 32) || !validHex(g.SecretHash, 32) || !validHex(g.AnchorHash, 32) || g.AnchorRevision < 1 || g.AnchorRevision > state.Revision || g.Expires <= 0 {
 		return g, ErrDenied
 	}
 	return g, nil
@@ -208,7 +208,7 @@ func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rb, e := req.bytes()
-	if e != nil || json.Unmarshal(rb, &join) != nil || next.RequestHash != digest(rb) || next.Invitation != id {
+	if e != nil || decodeStrict(rb, requestSchema, &join) != nil || next.RequestHash != digest(rb) || next.Invitation != id {
 		groupFailure(w, ErrDenied)
 		return
 	}

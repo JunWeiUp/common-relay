@@ -23,6 +23,8 @@ Java SDK 为 Android library，用现有 Gradle 8.13/JDK17/Android SDK36 构建�
 
 自动邀请测试：`group-vectors.json.auto_admission` 包含正常委托签名及越权、篡改和错误起点向量，Go 与四 SDK 共用。Python 集成覆盖邀请端离线、旧邀请默认手动、错误模式/授权、分页链、过期/取消、竞争重签及响应丢失恢复。`group-interop.py` 同时覆盖四 SDK 双向自动邀请和原手动管理流程。Java 测试的 `SODIUM_LIBRARY_PATH` 应指向库目录（例如 `/opt/homebrew/lib`），不是 dylib 文件。
 
+严格载荷测试：`group-vectors.json.strict_payload` 包含签名正确但编码有歧义的名单与授权反例，Go 与四 SDK 必须全部拒绝、正例必须接受。修改规则时同步五处实现（Go `internal/relay/payload.go` 及各 SDK payload 文件）后，用 `scripts/group-strict-vectors.py`（需 PyNaCl）重新生成向量。
+
 短邀请共享向量位于 `protocol/invitation-link-vectors.json`，验证四语言解密与链接编码。Java 单测与 Lint：
 
 ```sh

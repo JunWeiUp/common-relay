@@ -76,7 +76,7 @@ The demos explicitly allow unencrypted WebSocket transport on loopback. This set
 | CLI command | Purpose |
 | --- | --- |
 | `serve` | Run the relay |
-| `check` | Open the store and check database connectivity |
+| `check` | Open the store, check database connectivity, and verify stored group records |
 | `device-add` | Register a static device using its client-generated public key |
 | `device-revoke` | Revoke a statically registered device |
 | `group-bootstrap` | Create a bootstrap credential for a signed device group |

@@ -76,7 +76,7 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805
 | CLI 命令 | 用途 |
 | --- | --- |
 | `serve` | 启动中继服务 |
-| `check` | 打开存储并检查数据库连接 |
+| `check` | 打开存储，检查数据库连接并校验已存储的组记录 |
 | `device-add` | 使用客户端生成的公钥登记静态设备 |
 | `device-revoke` | 撤销静态登记设备 |
 | `group-bootstrap` | 为签名设备组生成初始化凭据 |
