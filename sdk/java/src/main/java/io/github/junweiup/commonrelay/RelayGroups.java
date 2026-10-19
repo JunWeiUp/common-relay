@@ -27,7 +27,8 @@ public final class RelayGroups {
     private static byte[] bytes(String s){return s.getBytes(StandardCharsets.UTF_8);}
     public static String digest(byte[] b)throws Exception{return Crypto.hex(MessageDigest.getInstance("SHA-256").digest(b));}
     public static byte[] payload(JSONObject e)throws Exception{byte[] b=Base64.getDecoder().decode(e.getString("payload"));if(b.length>32768)throw new IOException("Payload too large");return b;}
-    public static JSONObject unpack(JSONObject e)throws Exception{return new JSONObject(new String(payload(e),StandardCharsets.UTF_8));}
+    /** Every signed payload is a state, join request or admission grant. */
+    public static JSONObject unpack(JSONObject e)throws Exception{byte[] b=payload(e);if(!StrictPayload.any(b))throw new IOException("Ambiguous signed payload");return new JSONObject(new String(b,StandardCharsets.UTF_8));}
     private byte[][] signing()throws Exception{
         ByteArrayOutputStream out=new ByteArrayOutputStream();out.write(bytes("common-relay/group-signing/v1\0"));out.write(Crypto.unhex(config.getString("secret_key")));
         byte[] pk=new byte[32],sk=new byte[64];Crypto.check(Crypto.S.crypto_sign_seed_keypair(pk,sk,MessageDigest.getInstance("SHA-256").digest(out.toByteArray())));return new byte[][]{pk,sk};

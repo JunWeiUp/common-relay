@@ -248,3 +248,12 @@ class GroupVectors(unittest.TestCase):
   v=json.loads((ROOT/'protocol/group-vectors.json').read_text());a=v['auto_admission'];advance(v['initial'],a['approved'])
   for case in a['invalid']:
    with self.subTest(case=case['case']),self.assertRaises(Exception):advance(v['initial'],case['entry'])
+
+ def test_strict_payload_vectors(self):
+  v=json.loads((ROOT/'protocol/group-vectors.json').read_text());s=v['strict_payload']
+  for case in s['valid']:
+   with self.subTest(case=case['case']):advance(v['approved'],case['entry'])
+  for case in s['invalid']:
+   with self.subTest(case=case['case']),self.assertRaises(Exception):advance(v['approved'],case['entry'])
+  for case in s['invalid_auto']:
+   with self.subTest(case=case['case']),self.assertRaises(Exception):advance(v['initial'],case['entry'])

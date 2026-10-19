@@ -104,7 +104,17 @@ func run() error {
 	case "device-revoke":
 		return s.Revoke(d)
 	case "check":
-		return s.DB.Ping()
+		if err = s.DB.Ping(); err != nil {
+			return err
+		}
+		bad, err := s.CheckGroups()
+		if err != nil {
+			return err
+		}
+		if len(bad) > 0 {
+			return fmt.Errorf("group entries violate strict payload rules: %s", strings.Join(bad, ", "))
+		}
+		return nil
 	case "serve":
 		server := relay.New(s)
 		server.DiskReserve = *reserve
