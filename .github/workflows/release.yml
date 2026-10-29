@@ -108,12 +108,16 @@ jobs:
         working-directory: sdk/java
       - run: gradle testDebugUnitTest :java:testDebugUnitTest lintDebug assembleRelease
         working-directory: sdk/kotlin
+      - name: Collect AARs
+        run: |
+          version="${RELEASE_TAG#v}"
+          mkdir -p dist
+          cp sdk/java/build/outputs/aar/*-release.aar "dist/common-relay-java-$version.aar"
+          cp sdk/kotlin/build/outputs/aar/*-release.aar "dist/common-relay-kotlin-$version.aar"
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: android
-          path: |
-            sdk/java/build/outputs/aar/*-release.aar
-            sdk/kotlin/build/outputs/aar/*-release.aar
+          path: dist/*.aar
           if-no-files-found: error
 
   release:
