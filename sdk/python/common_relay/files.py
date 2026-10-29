@@ -81,13 +81,21 @@ class Files:
                 raise ValueError('Upload ID conflict')
         else:
             response.raise_for_status()
-        offset=response.json()['offset']
+        status=response.json()
+        if any(status.get(k)!=info.get(k) for k in ('id','to','size','metadata','sha256')):
+            raise ValueError('Upload ID conflict')
+        offset=status['offset']
+        if type(offset) is not int or not 0<=offset<=info['size']:
+            raise ValueError('Invalid upload offset')
         with open(staged,'rb') as inp:
             inp.seek(offset)
             while data:=inp.read(1<<20):
                 response=await self.http.put(info['id']+'/data',content=data,headers={'Upload-Offset':str(offset)})
                 response.raise_for_status()
-                offset=response.json()['offset']
+                next_offset=response.json()['offset']
+                if type(next_offset) is not int or next_offset!=offset+len(data) or next_offset>info['size']:
+                    raise ValueError('Invalid upload progress')
+                offset=next_offset
         response=await self.http.post(info['id']+'/commit')
         response.raise_for_status()
         return response.json()
@@ -99,6 +107,8 @@ class Files:
 
     async def download(self,info,staged):
         offset=Path(staged).stat().st_size if Path(staged).exists() else 0
+        if not 0<=offset<=info['size']:
+            raise ValueError('Staged file exceeds declared size')
         if offset==info['size']:
             return
         async with self.http.stream('GET',info['id']+'/data',headers={'Range':f'bytes={offset}-'}) as response:

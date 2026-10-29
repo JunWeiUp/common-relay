@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- SDK 改为按 Git 标签依赖分发：根目录 `Package.swift`（Swift）、JitPack（Java/Kotlin）、Git 子目录依赖（Dart/Python/Go/Rust）及 Release tgz（TypeScript）；新增 `release.yml` 发布工作流，各 SDK 版本统一为 0.1.0，源码快照降为可选。
+- 保持各语言独立 SDK，不依赖共享 Rust 核心或自有多平台原生库。
+- 新增 Kotlin Android 协程接口，复用 Java 的完整协议实现。
+- 新增 TypeScript（Node.js）及 Go 轻量客户端：加密在线消息、在线设备查询、共享向量与回环互通验证。
+- 新增 Rust 轻量客户端（独立 crate，纯 Rust NaCl box 与 rustls）：能力与 TypeScript/Go 一致，并加入回环互通脚本。
+- TypeScript、Go、Rust 补齐完整能力：持久化离线消息（日志、ACK、去重、清理）、secretstream 双向流、加密文件、签名设备组（严格载荷、委托授权、自助创建、改名、退出、解散）及加密短邀请；七类 SDK 共用向量，`local-interop.py`、`group-interop.py` 增加三者的互通探针。
+- 源码快照工具支持 Kotlin、TypeScript、Go、Rust；保留文件续传偏移检查与 Python 流关闭唤醒修复。
+
 ## 未发布
 
 - 增加可独立运行的 Python 消息、双向流与设备组示例。

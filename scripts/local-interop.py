@@ -13,12 +13,19 @@ from nacl.public import PrivateKey
 from common_relay import Client, Identity
 
 ROOT=Path(__file__).resolve().parents[1]
+# TypeScript must be built first: (cd sdk/typescript && npm ci && npm run build).
+NATIVE=['typescript','go','rust']
+JVM_OR_SWIFT={'swift','java','kotlin'}
 
 async def run(args, directory):
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
     url=f'ws://127.0.0.1:{port}/relay/v1/ws'
-    keys={name:PrivateKey.generate() for name in ('python','swift','dart','java')}
+    languages=['swift','dart','java'] + (['kotlin'] if args.kotlin else []) + NATIVE
+    if args.only: languages=args.only
+    if 'go' in languages: subprocess.run(['go','build','-o',str(directory/'go-probe'),'./examples/echo'],cwd=ROOT/'sdk/go',check=True)
+    if 'rust' in languages: subprocess.run(['cargo','build','--quiet','--example','echo'],cwd=ROOT/'sdk/rust',check=True)
+    keys={name:PrivateKey.generate() for name in ['python']+languages}
     configs={}
     for name,key in keys.items():
         credential=directory/(name+'-credential.json')
@@ -32,10 +39,15 @@ async def run(args, directory):
                 _,w=await asyncio.open_connection('127.0.0.1',port);w.close();await w.wait_closed();break
             except OSError: await asyncio.sleep(.05)
         else: raise RuntimeError('Local server did not start')
-        for name in ('swift','dart','java'):
+        for name in languages:
             config=directory/(name+'.json');env=dict(os.environ)
             if name=='swift': cmd=[args.swift,str(config)];cwd=ROOT
             elif name=='dart': cmd=[args.dart,'run','bin/probe.dart',str(config)];cwd=ROOT/'sdk/dart'
+            elif name=='typescript': cmd=['node','examples/echo.mjs',str(config)];cwd=ROOT/'sdk/typescript'
+            elif name=='go': cmd=[str(directory/'go-probe'),str(config)];cwd=ROOT
+            elif name=='rust': cmd=[str(ROOT/'sdk/rust/target/debug/examples/echo'),str(config)];cwd=ROOT
+            elif name=='kotlin':
+                cmd=[args.gradle,'--offline',':testDebugUnitTest','--tests','*KotlinInteropTest','--rerun-tasks'];cwd=ROOT/'sdk/kotlin';env['COMMON_RELAY_QA_CONFIG']=str(config)
             else:
                 cmd=[args.gradle,'--offline','testDebugUnitTest','--tests','*InteropTest','--rerun-tasks'];cwd=ROOT/'sdk/java';env['COMMON_RELAY_QA_CONFIG']=str(config)
             with (directory/(name+'.log')).open('w') as log:
@@ -59,7 +71,7 @@ async def run(args, directory):
                         while not stream.decryptor.finished:received.extend(await asyncio.wait_for(stream.receive(),30))
                         await sending;assert bytes(received)==payload;await stream.close()
                         print(json.dumps({'peer':name,'offline_both_directions':True,'stream_bytes_each_direction':len(payload),'result':'passed'}),flush=True)
-                    if name=='java':
+                    if name in ('java','kotlin'):
                         code=await asyncio.to_thread(probe.wait,30)
                         if code:raise RuntimeError((directory/(name+'.log')).read_text()[-4000:])
                 finally:
@@ -70,6 +82,9 @@ async def run(args, directory):
         server.terminate();server.wait(timeout=10)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--server',required=True);p.add_argument('--swift',required=True);p.add_argument('--dart',default='dart');p.add_argument('--gradle',required=True);args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--server',required=True);p.add_argument('--swift');p.add_argument('--dart',default='dart');p.add_argument('--gradle');p.add_argument('--kotlin',action='store_true');p.add_argument('--only',nargs='+',choices=['swift','dart','java','kotlin',*NATIVE]);args=p.parse_args()
+    selected=set(args.only or ['swift','java'])
+    if 'swift' in selected and not args.swift: p.error('--swift is required for the Swift probe')
+    if selected&{'java','kotlin'} and not args.gradle: p.error('--gradle is required for the Java/Kotlin probes')
     with tempfile.TemporaryDirectory(prefix='common-relay-interop-') as directory:
         asyncio.run(run(args,Path(directory)))

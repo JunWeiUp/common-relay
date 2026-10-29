@@ -54,12 +54,14 @@ class Stream:
         return plain
 
     async def close(self):
-        if not self.closed:
-            self.closed = True
-            await self.client.send_event({'type': 'stream.close', 'id': self.id})
+        was_closed = self.closed
+        self.abort()
         self.client.streams.pop(self.id, None)
+        if not was_closed:
+            await self.client.send_event({'type': 'stream.close', 'id': self.id})
 
     def abort(self):
+        if self.closed: return
         self.closed = True
         for _ in range(8):
             self.credit.release()
@@ -206,7 +208,7 @@ class Client:
         try:
             async for raw in self.ws:
                 if isinstance(raw, bytes):
-                    if len(raw)<26 or raw[0]!=1:
+                    if not 42<=len(raw)<=65561 or raw[0]!=1:
                         raise RelayError('Invalid binary frame')
                     object_id, seq = raw[1:17].hex(), struct.unpack('>Q',raw[17:25])[0]
                     stream = self.streams.get(object_id)
