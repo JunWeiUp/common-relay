@@ -1,0 +1,33 @@
+{
+  "name": "@common-relay/client",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "0.8.4",
+    "tweetnacl": "1.0.3",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.6",
+    "@types/ws": "8.18.1",
+    "typescript": "5.9.3"
+  },
+  "license": "MIT"
+}

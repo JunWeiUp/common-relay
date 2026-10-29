@@ -12,8 +12,11 @@
 | Swift | `RelayJournal(directory: privateURL)`，传入 `RelayClient(identity: ..., journal: journal)` | `try journal.cleanup()` 或 `try await client.cleanup()` |
 | Java | `new RelayJournal(privatePath)`，传入四参数 `RelayClient` 构造器 | `journal.cleanup()` 或 `client.cleanup()` |
 | Dart | `RelayJournal(privateDirectory)`，传入 `RelayClient(identity, journal: journal)` | `journal.cleanup()` 或 `client.cleanup()` |
+| TypeScript | `new Journal(privateDirectory)`，传入 `Client.connect(url, token, identity, { journal })` | `journal.cleanup()` 或 `client.cleanup()` |
+| Go | `OpenJournal(privateDirectory, nil)`，传入 `DialJournal(ctx, endpoint, token, identity, journal, options)` | `journal.Cleanup()` 或 `client.Cleanup()` |
+| Rust | `RelayJournal::open(private_directory)`，传入 `Client::connect_with_journal(endpoint, token, identity, options, journal)` | `journal.cleanup()` 或 `client.cleanup()` |
 
-每个状态目录/数据库只允许一个存储实例拥有；重连复用同一实例或关闭旧客户端后重新打开。Swift/Java/Dart 使用逐记录原子替换的文件存储，Python 保留 SQLite；不新增数据库运行时依赖。目录放在应用私有数据区，不使用下载目录或共享同步目录。记录按应用、组、本机设备和对端/消息 ID 隔离，不保存令牌、私钥或消息明文。
+每个状态目录/数据库只允许一个存储实例拥有；重连复用同一实例或关闭旧客户端后重新打开。Swift/Java/Dart/TypeScript/Go/Rust 使用逐记录原子替换的文件存储，Python 保留 SQLite；不新增数据库运行时依赖。目录放在应用私有数据区，不使用下载目录或共享同步目录。记录按应用、组、本机设备和对端/消息 ID 隔离，不保存令牌、私钥或消息明文。
 
 客户端连接存续期间每小时清理，存储打开时也清理；关闭客户端会停止定时任务。每轮最多处理 256 条过期发送记录和 256 条接收记录（文件型存储为合计 256 次变更）。大量积压可多次调用显式清理。损坏记录/写入失败会报告错误，不能在未持久化成功时发送 ACK。
 
@@ -38,4 +41,4 @@
 
 ## 验证边界
 
-本地验证包括断连重试、丢失回复/ACK、进程重建状态、清理时间边界和批量限制、旧表迁移、同文件并发操作、慢上传跨文件隔离、删除失败重试、接收端流上限、无后续请求的超时回收，以及四类 SDK 密码向量与本地互通。它们不替代生产换网、三应用混合负载、24 小时运行或备份恢复演练。
+本地验证包括断连重试、丢失回复/ACK、进程重建状态、清理时间边界和批量限制、旧表迁移、同文件并发操作、慢上传跨文件隔离、删除失败重试、接收端流上限、无后续请求的超时回收，以及各 SDK 密码向量与本地互通。它们不替代生产换网、三应用混合负载、24 小时运行或备份恢复演练。

@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Verify Go module tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          go_tag="sdk/go/$RELEASE_TAG"
+          if ! git rev-parse --verify --quiet "refs/tags/$go_tag^{commit}" >/dev/null; then
+            echo "Missing tag $go_tag; create it on the release commit and retry." >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse "refs/tags/$go_tag^{commit}")" != "$(git rev-parse HEAD)" ]; then
+            echo "Tag $go_tag must point to the release commit." >&2
+            exit 1
+          fi
+      - uses: actions/setup-go@v5.5.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dart-lang/setup-dart@v1.7.1
+        with:
+          sdk: '3.11'
+      - run: sudo apt-get update && sudo apt-get install -y libsodium-dev
+      - run: go test -race ./...
+      - run: go test -race ./...
+        working-directory: sdk/go
+      - run: cargo test
+        working-directory: sdk/rust
+      - run: npm ci && npm test && npm run build
+        working-directory: sdk/typescript
+      - run: dart pub get && dart analyze && dart test
+        working-directory: sdk/dart
+      - name: Python tests and interoperability
+        run: |
+          python -m pip install ./sdk/python
+          mkdir -p build
+          go build -o build/common-relay ./cmd/common-relay
+          python -m unittest discover -s sdk/python -p 'test*.py'
+          python scripts/lightweight-interop.py --server "$PWD/build/common-relay"
+      - name: Package TypeScript
+        run: npm pack --pack-destination "$GITHUB_WORKSPACE"
+        working-directory: sdk/typescript
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: typescript
+          path: '*.tgz'
+          if-no-files-found: error
+
+  swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - run: swift test --package-path sdk/swift
+      - run: swift build
+
+  android:
+    runs-on: ubuntu-latest
+    env:
+      SODIUM_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-java@v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3.2.2
+      - uses: gradle/actions/setup-gradle@v4.4.2
+        with:
+          gradle-version: '8.14'
+      - run: sudo apt-get update && sudo apt-get install -y libsodium-dev
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - run: gradle testDebugUnitTest lintDebug assembleRelease
+        working-directory: sdk/java
+      - run: gradle testDebugUnitTest :java:testDebugUnitTest lintDebug assembleRelease
+        working-directory: sdk/kotlin
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: android
+          path: |
+            sdk/java/build/outputs/aar/*-release.aar
+            sdk/kotlin/build/outputs/aar/*-release.aar
+          if-no-files-found: error
+
+  release:
+    needs: [test, swift, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: artifacts
+        run: sha256sum ./*.tgz ./*.aar > SHA256SUMS
+      - uses: softprops/action-gh-release@v2.3.2
+        with:
+          files: |
+            artifacts/*.tgz
+            artifacts/*.aar
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: true

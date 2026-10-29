@@ -13,3 +13,6 @@ local.properties
 *.credential.json
 *.private.json
 paseo.json
+node_modules/
+/sdk/typescript/dist/
+/sdk/rust/target/

@@ -15,4 +15,12 @@ public class CryptoTest {
         assertEquals(v.getLong("offline_expires"),bob.open("alice","message",id,v.getString("offline_message")).getLong("expires"));
         try(Crypto.SecretStream stream=new Crypto.SecretStream(v.getJSONObject("stream_descriptor"))){byte[] aad=bob.aad("alice","bob","stream",id,0);assertEquals(v.getString("stream_aad"),new String(aad,StandardCharsets.UTF_8));assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8),stream.pull(Crypto.unhex(v.getString("stream_ciphertext")),aad));assertTrue(stream.finished);}
     }
+    @Test public void closedStreamsRejectUseAndAllowRepeatedClose()throws Exception {
+        Crypto.SecretStream writer=new Crypto.SecretStream();
+        Crypto.SecretStream reader=new Crypto.SecretStream(writer.descriptor());
+        byte[] cipher=writer.push(new byte[]{1},new byte[0],false);
+        writer.close();writer.close();reader.close();reader.close();
+        assertThrows(IllegalStateException.class,()->writer.push(new byte[]{1},new byte[0],false));
+        assertThrows(IllegalStateException.class,()->reader.pull(cipher,new byte[0]));
+    }
 }

@@ -8,9 +8,9 @@ English · [简体中文](README.zh-CN.md)
 [![Protocol: v1](https://img.shields.io/badge/Protocol-v1-2563eb.svg)](protocol/README.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
-Common Relay is a Go relay server with Swift, Android Java/Kotlin, Dart, and Python client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
+Common Relay is a Go relay server with Swift, Android Java/Kotlin, Dart, Python, TypeScript (Node.js), Go, and Rust client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
 
-**Development status:** the server and SDKs are available from source. Stable SDK releases and public package distribution are not available yet. Only protocol v1 is supported.
+**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. Only protocol v1 is supported.
 
 [Quick start](#quick-start) · [SDKs](#client-sdks) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
 
@@ -34,7 +34,7 @@ Client SDK  ── WSS / HTTPS ──>  TLS proxy → Go relay → SQLite  <─�
    └────────────────── End-to-end encrypted application payloads ──────────────────┘
 ```
 
-Devices authenticate with independent access tokens. The server stores token hashes and routes data within an application and device group. SDKs encrypt content using libsodium and verify peer identities against locally trusted keys.
+Devices authenticate with independent access tokens. The server stores token hashes and routes data within an application and device group. SDKs encrypt content using NaCl-compatible algorithms and verify peer identities against locally trusted keys.
 
 The relay can observe routing metadata, timing, and ciphertext sizes. Static identity keys do **not** provide forward secrecy. See the [security model](SECURITY.md) before integrating.
 
@@ -87,18 +87,32 @@ Self-service group creation is disabled by default. Enable selected application 
 
 ## Client SDKs
 
-SDKs currently integrate from this repository's source. There are no published registry installation commands or stable release guarantees yet.
+SDKs install directly from this repository's Git tags (for example `v0.1.0`); they are not published to npm, PyPI, crates.io, pub.dev, or Maven Central. There are no stable API guarantees before 1.0.
 
 | SDK | Source | Requirements |
 | --- | --- | --- |
 | Swift | [sdk/swift](sdk/swift) | Swift tools 5.9+, macOS 13+ / iOS 15+ |
-| Android Java/Kotlin | [sdk/java](sdk/java) | Android API 26+; build with JDK 17, Gradle 8.13, Android SDK 36 |
+| Android Java | [sdk/java](sdk/java) | Android API 26+; build with JDK 17, Gradle 8.13, Android SDK 36 |
 | Dart | [sdk/dart](sdk/dart) | Dart 3.11+ and <4.0 |
 | Python | [sdk/python](sdk/python) | Python 3.11+ |
+| Kotlin | [sdk/kotlin](sdk/kotlin) | Android API 26+; same Java SDK, Kotlin coroutine extensions |
+| TypeScript (Node.js) | [sdk/typescript](sdk/typescript) | Node.js 22+ |
+| Go client | [sdk/go](sdk/go) | Go 1.25+ (standalone module) |
+| Rust client | [sdk/rust](sdk/rust) | Rust 1.89+ (tokio, pure Rust) |
 
-Use a local Swift package, an Android library module, a Dart path dependency, or the Python editable install shown above. The [SDK distribution guide](docs/REGISTRY.md) describes source snapshots and provenance records.
+```text
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.0")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.0'    // or :kotlin:, via JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.0, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.0#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.0/common-relay-client-0.1.0.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.0
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.0" }
+```
 
-All four SDKs use shared cryptographic vectors. Applications must securely persist identities, trusted keys, and retry state. Enable automatic invitations only after all members' SDKs support the authorization chain.
+The [SDK distribution guide](docs/REGISTRY.md) covers repository setup, the release process, and optional source snapshots for auditing or local patches.
+
+All SDKs test their supported encryption against shared vectors. All SDKs provide the full feature set: online and offline messages, streams, files, signed device groups and compact invitations. Implementations use their own language runtimes; the Rust SDK is a standalone pure-Rust client, not a shared core, and no platform artifact build is required. Applications must securely persist identities, trusted keys, and retry state. Enable automatic invitations only after all members' SDKs support the authorization chain.
 
 ## Development
 
@@ -110,6 +124,10 @@ go test -race ./...
 swift test --package-path sdk/swift
 (cd sdk/dart && dart pub get && dart analyze && dart test)
 (cd sdk/java && gradle testDebugUnitTest lintDebug)
+(cd sdk/kotlin && gradle testDebugUnitTest lintDebug)
+(cd sdk/typescript && npm ci && npm test)
+(cd sdk/go && go test -race ./...)
+(cd sdk/rust && cargo clippy --all-targets -- -D warnings && cargo test)
 ```
 
 Swift, Dart, and Android checks require their own toolchains. Java unit tests also require a local libsodium library. See the [development guide](docs/DEVELOPMENT.md) for environment variables and cross-language tests.

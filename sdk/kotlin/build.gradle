@@ -1,0 +1,32 @@
+plugins { id 'maven-publish'; id 'com.android.library'; id 'org.jetbrains.kotlin.android' }
+android {
+    namespace 'io.github.junweiup.commonrelay.kotlin'
+    compileSdk 36
+    defaultConfig { minSdk 26 }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+kotlin { jvmToolchain(17) }
+dependencies {
+    api project(':java')
+    api 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+    testImplementation 'net.java.dev.jna:jna:5.17.0'
+}
+android.testOptions.unitTests.all { systemProperty 'jna.library.path', System.getenv('SODIUM_LIBRARY_PATH') ?: '' }
+
+
+group = 'com.github.JunWeiUp.common-relay'
+version = System.getenv('VERSION') ?: '0.1.0'
+
+android { publishing { singleVariant('release') } }
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+                artifactId = 'kotlin'
+            }
+        }
+    }
+}

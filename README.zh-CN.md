@@ -8,9 +8,9 @@
 [![Protocol: v1](https://img.shields.io/badge/Protocol-v1-2563eb.svg)](protocol/README.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
-Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java/Kotlin、Dart 和 Python 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
+Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java/Kotlin、Dart、Python、TypeScript（Node.js）、Go 和 Rust 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
 
-**开发状态：** 服务端和 SDK 已提供源码实现，尚未发布稳定 SDK 版本或公共包。目前仅支持 v1 协议。
+**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。目前仅支持 v1 协议。
 
 [快速开始](#快速开始) · [客户端 SDK](#客户端-sdk) · [文档](#文档) · [参与贡献](CONTRIBUTING.md#简体中文)
 
@@ -34,7 +34,7 @@ Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java/Kotlin�
    └────────────────────────── 应用内容端到端加密 ──────────────────────────┘
 ```
 
-每台设备使用独立接入令牌认证。服务端保存令牌哈希，并在应用和设备组内路由数据。SDK 使用 libsodium 加密内容，依据本地可信公钥验证对端身份。
+每台设备使用独立接入令牌认证。服务端保存令牌哈希，并在应用和设备组内路由数据。SDK 使用 NaCl 兼容算法加密内容，依据本地可信公钥验证对端身份。
 
 中继仍能观察路由、时间及密文大小。静态身份密钥**不提供前向保密**，接入前请阅读[安全模型](SECURITY.md)。
 
@@ -87,18 +87,32 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805
 
 ## 客户端 SDK
 
-目前通过本仓库源码接入，尚未提供公共包安装命令或稳定版本保证。
+SDK 直接按本仓库 Git 标签（如 `v0.1.0`）安装，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。1.0 之前不保证 API 稳定。
 
 | SDK | 源码 | 环境要求 |
 | --- | --- | --- |
 | Swift | [sdk/swift](sdk/swift) | Swift tools 5.9+，macOS 13+ / iOS 15+ |
-| Android Java/Kotlin | [sdk/java](sdk/java) | Android API 26+；构建使用 JDK 17、Gradle 8.13、Android SDK 36 |
+| Android Java | [sdk/java](sdk/java) | Android API 26+；构建使用 JDK 17、Gradle 8.13、Android SDK 36 |
 | Dart | [sdk/dart](sdk/dart) | Dart 3.11+ 且 <4.0 |
 | Python | [sdk/python](sdk/python) | Python 3.11+ |
+| Kotlin | [sdk/kotlin](sdk/kotlin) | Android API 26+；复用 Java SDK，提供协程接口 |
+| TypeScript（Node.js） | [sdk/typescript](sdk/typescript) | Node.js 22+ |
+| Go 客户端 | [sdk/go](sdk/go) | Go 1.25+（独立 module） |
+| Rust 客户端 | [sdk/rust](sdk/rust) | Rust 1.89+（tokio，纯 Rust） |
 
-可使用本地 Swift package、Android library module、Dart path dependency，或快速开始中的 Python 可编辑安装。[SDK 分发指南](docs/REGISTRY.md)介绍源码快照及来源记录。
+```text
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.0")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.0'    // 或 :kotlin:，经 JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.0, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.0#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.0/common-relay-client-0.1.0.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.0
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.0" }
+```
 
-四类 SDK 共用密码测试向量。应用应安全持久化身份、可信公钥和重试状态；启用自动邀请前，组内全部成员的 SDK 都应支持相应授权链。
+[SDK 分发指南](docs/REGISTRY.md)介绍仓库配置、发布流程，以及用于审计或本地补丁的可选源码快照。
+
+各 SDK 按已支持能力验证共享密码向量。所有 SDK 均为完整能力：在线与离线消息、流、文件、签名设备组及短邀请。各语言独立实现，Kotlin 复用 Java，Rust SDK 是独立纯 Rust 客户端而非共享核心，不需要多平台产物构建。应用应安全持久化身份、可信公钥和重试状态；启用自动邀请前，组内全部成员的 SDK 都应支持相应授权链。
 
 ## 开发与测试
 
@@ -110,6 +124,10 @@ go test -race ./...
 swift test --package-path sdk/swift
 (cd sdk/dart && dart pub get && dart analyze && dart test)
 (cd sdk/java && gradle testDebugUnitTest lintDebug)
+(cd sdk/kotlin && gradle testDebugUnitTest lintDebug)
+(cd sdk/typescript && npm ci && npm test)
+(cd sdk/go && go test -race ./...)
+(cd sdk/rust && cargo clippy --all-targets -- -D warnings && cargo test)
 ```
 
 Swift、Dart 和 Android 检查需要各自工具链；Java 单测还需要本机 libsodium。环境变量及跨语言测试命令见[开发指南](docs/DEVELOPMENT.md)。

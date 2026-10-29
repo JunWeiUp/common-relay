@@ -1,0 +1,6 @@
+jdk:
+  - openjdk17
+install:
+  - curl -fsSL https://services.gradle.org/distributions/gradle-8.14-bin.zip -o /tmp/common-relay-gradle.zip
+  - unzip -q /tmp/common-relay-gradle.zip -d /tmp
+  - /tmp/gradle-8.14/bin/gradle -p sdk/kotlin :java:publishToMavenLocal publishToMavenLocal

@@ -1,9 +1,77 @@
 # SDK 与产物分发
 
-本项目没有 UI 组件注册中心。服务端以 Linux amd64 二进制分发；Swift Package、Android library、Dart package 和 Python package 从本仓库源码构建。
+服务端以 Linux amd64 二进制分发。各语言 SDK 通过本仓库的 Git 标签（如 `v0.1.0`）作为依赖接入，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。升级时修改依赖中的标签即可。
 
-当前 0.1.0-dev 不发布到公共包注册表。`scripts/vendor-sdk.py <项目> <语言>` 复制独立源码快照与 SOURCE.json（版本、来源 URL、逐文件 SHA-256）；拒绝覆盖已有快照。应用构建不依赖本机兄弟目录。
+## 按 Git 标签接入
 
-正式版本前应固定发布标签和源提交、校验 SHA-256，并更新所有使用该版本的应用。平台 libsodium 由各 SDK 的固定依赖打包，不依赖用户安装的桌面原生库。
+以下以 `v0.1.0` 为例。
 
-自动邀请扩展需要整组 SDK 升级；默认仍是手动模式。发布时应重新固定接入方快照的来源和文件哈希。
+**Swift**（仓库根目录 `Package.swift` 只导出 `CommonRelay`；SPM 接受带 `v` 的标签）：
+
+```swift
+.package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.0")
+// target 依赖：.product(name: "CommonRelay", package: "common-relay")
+```
+
+**Android Java / Kotlin**（JitPack 按标签构建，见根目录 `jitpack.yml`；Kotlin 会传递引入 Java）：
+
+```groovy
+// settings.gradle
+dependencyResolutionManagement { repositories { google(); mavenCentral(); maven { url 'https://jitpack.io' } } }
+// build.gradle
+implementation 'com.github.JunWeiUp.common-relay:java:v0.1.0'
+implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.0'
+```
+
+**Dart**：
+
+```yaml
+dependencies:
+  common_relay:
+    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.0, path: sdk/dart }
+```
+
+**Python**：
+
+```sh
+pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.0#subdirectory=sdk/python"
+```
+
+**TypeScript（Node.js）**：npm 不支持 Git 子目录，使用 Release 附带的打包产物（已包含 `dist`）：
+
+```sh
+npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.0/common-relay-client-0.1.0.tgz
+```
+
+**Go**（子目录 module 使用 `sdk/go/v0.1.0` 标签）：
+
+```sh
+go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.0
+```
+
+**Rust**：
+
+```toml
+common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.0" }
+```
+
+平台 libsodium 由各 SDK 的固定依赖打包，不依赖用户安装的桌面原生库（Java 单测除外）。
+
+## 发布流程
+
+1. 统一各 SDK 清单中的版本号，合入 main。
+2. 在同一提交上创建 `vX.Y.Z` 和 `sdk/go/vX.Y.Z` 两个标签，先推送 Go 标签。
+3. `.github/workflows/release.yml` 校验 Go 标签、运行各 SDK 测试与轻量互通，然后创建 GitHub Release，附带 TypeScript tgz、Java/Kotlin release AAR 和 `SHA256SUMS`。仓库需允许工作流使用 `contents: write`。
+4. 首次通过 JitPack 拉取时会触发 JitPack 构建，需确认构建成功。
+
+自动邀请扩展需要整组 SDK 升级；默认仍是手动模式。
+
+## 源码快照（可选）
+
+需要审计、离线构建或打本地补丁时，`scripts/vendor-sdk.py <项目> <语言>` 会复制独立源码快照，并生成 SOURCE.json（版本、来源 URL、逐文件 SHA-256）；它拒绝覆盖已有快照。更新快照前要先比对 SOURCE.json 和本地补丁。
+
+Kotlin 快照内包含 `java/`，settings 已改为引用该内嵌实现；宿主应用多模块接入时也要把 `:java` 指向此位置。TypeScript 快照保留 package-lock，接入前执行 `npm ci && npm run build`。Go 快照保留独立 go.mod/go.sum，以本地 module replace 接入。Rust 快照保留 Cargo.toml/Cargo.lock，以 path 依赖接入。快照不带测试、node_modules、dist、target 或编译缓存。
+
+## 实现说明
+
+各 SDK 不依赖共享 Rust 核心，不提供自有 JNI/FFI 桥接，也不提供跨平台 `.a` / `.so` 预构建。TypeScript 使用纯 JavaScript TweetNaCl，另用 libsodium-wrappers（WebAssembly）实现 secretstream。Go 使用纯 Go NaCl 实现，Rust 使用纯 Rust crypto_box 与 rustls；两者的 secretstream 为自有纯语言实现，已对 libsodium 已知答案逐字节验证。

@@ -123,7 +123,7 @@ public final class RelayClient implements AutoCloseable {
         public byte[] receive()throws Exception{Record r=queue.take();if(r.sequence<0||stopped.get())throw new IOException("Stream interrupted");if(r.sequence!=rx||decryptor==null)throw new IOException("Invalid sequence");byte[] plain=decryptor.pull(r.data,crypto.aad(peer,crypto.device,"stream",id,rx));rx++;RelayClient.this.send(new JSONObject().put("type","stream.credit").put("id",id).put("sequence",rx));return plain;}
         public boolean receivedFinal(){return decryptor!=null&&decryptor.finished;}
         private void credit(long sequence)throws IOException{if(sequence<ack||sequence>tx)throw new IOException("Invalid credit");window.release((int)(sequence-ack));ack=sequence;}
-        private void abort(){if(!stopped.compareAndSet(false,true))return;window.release(8);queue.clear();queue.offer(new Record(-1,null));}
+        private void abort(){if(!stopped.compareAndSet(false,true))return;encryptor.close();if(decryptor!=null)decryptor.close();window.release(8);queue.clear();queue.offer(new Record(-1,null));}
         @Override public void close(){abort();streams.remove(id,this);try{RelayClient.this.send(new JSONObject().put("type","stream.close").put("id",id));}catch(Exception ignored){}}
     }
 }

@@ -78,6 +78,7 @@ class RelayFiles {
     final status = jsonDecode(response.body) as Map<String, dynamic>;
     for (final field in ['id', 'to', 'size', 'sha256', 'metadata']) { if (status[field] != file.descriptor[field]) throw StateError('Upload ID conflict'); }
     var offset = status['offset'] as int;
+    if (offset < 0 || offset > (file.descriptor['size'] as int)) throw StateError('Invalid upload offset');
     final input = await file.ciphertext.open();
     try {
       await input.setPosition(offset);
@@ -85,7 +86,9 @@ class RelayFiles {
         final chunk = await input.read(1 << 20); if (chunk.isEmpty) break;
         response = await _request('PUT', '/$id/data', body: chunk, headers: {'Upload-Offset': '$offset'});
         if (response.statusCode != 200) throw StateError('Upload failed ${response.statusCode}');
-        offset = (jsonDecode(response.body) as Map<String, dynamic>)['offset'] as int;
+        final next = (jsonDecode(response.body) as Map<String, dynamic>)['offset'] as int;
+        if (next != offset + chunk.length || next > (file.descriptor['size'] as int)) throw StateError('Invalid upload progress');
+        offset = next;
       }
     } finally { await input.close(); }
     response = await _request('POST', '/$id/commit');
@@ -98,6 +101,7 @@ class RelayFiles {
     final output = await ciphertext.open(mode: FileMode.append);
     try {
       var offset = await output.length();
+      if (offset > size) throw StateError('Staged file exceeds declared size');
       while (offset < size) {
         final end = (offset + (1 << 20) - 1).clamp(0, size - 1);
         final response = await _request('GET', '/$id/data', headers: {'Range': 'bytes=$offset-$end'});
