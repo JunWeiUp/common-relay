@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild, for example v0.1.0
+        required: true
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -14,10 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
       - name: Verify Go module tag
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           go_tag="sdk/go/$RELEASE_TAG"
           if ! git rev-parse --verify --quiet "refs/tags/$go_tag^{commit}" >/dev/null; then
@@ -71,6 +78,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - run: swift test --package-path sdk/swift
       - run: swift build
 
@@ -80,16 +89,21 @@ jobs:
       SODIUM_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
     steps:
       - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-java@v4.7.1
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3.2.2
       - uses: gradle/actions/setup-gradle@v4.4.2
         with:
           gradle-version: '8.14'
       - run: sudo apt-get update && sudo apt-get install -y libsodium-dev
-      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" 'platforms;android-36' 'build-tools;36.0.0'
       - run: gradle testDebugUnitTest lintDebug assembleRelease
         working-directory: sdk/java
       - run: gradle testDebugUnitTest :java:testDebugUnitTest lintDebug assembleRelease
@@ -117,6 +131,7 @@ jobs:
         run: sha256sum ./*.tgz ./*.aar > SHA256SUMS
       - uses: softprops/action-gh-release@v2.3.2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             artifacts/*.tgz
             artifacts/*.aar
