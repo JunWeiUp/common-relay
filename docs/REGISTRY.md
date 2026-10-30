@@ -1,15 +1,15 @@
 # SDK 与产物分发
 
-服务端以 Linux amd64 二进制分发。各语言 SDK 通过本仓库的 Git 标签（如 `v0.1.3`）作为依赖接入，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。升级时修改依赖中的标签即可。
+服务端通过 Release 提供 Linux amd64 / arm64 部署包，含二进制、安装脚本、systemd/Nginx 配置、部署说明和来源校验记录；详见[部署指南](DEPLOYMENT.md)。各语言 SDK 通过本仓库的 Git 标签（如 `v0.1.4`）作为依赖接入，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。升级时修改依赖中的标签即可。
 
 ## 按 Git 标签接入
 
-以下以 `v0.1.3` 为例。
+以下以 `v0.1.4` 为例。
 
 **Swift**（仓库根目录 `Package.swift` 只导出 `CommonRelay`；SPM 接受带 `v` 的标签）：
 
 ```swift
-.package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.3")
+.package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.4")
 // target 依赖：.product(name: "CommonRelay", package: "common-relay")
 ```
 
@@ -19,8 +19,8 @@
 // settings.gradle
 dependencyResolutionManagement { repositories { google(); mavenCentral(); maven { url 'https://jitpack.io' } } }
 // build.gradle
-implementation 'com.github.JunWeiUp.common-relay:java:v0.1.3'
-implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.3'
+implementation 'com.github.JunWeiUp.common-relay:java:v0.1.4'
+implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.4'
 ```
 
 **Dart**：
@@ -28,31 +28,31 @@ implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.3'
 ```yaml
 dependencies:
   common_relay:
-    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.3, path: sdk/dart }
+    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.4, path: sdk/dart }
 ```
 
 **Python**：
 
 ```sh
-pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.3#subdirectory=sdk/python"
+pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.4#subdirectory=sdk/python"
 ```
 
 **TypeScript（Node.js）**：npm 不支持 Git 子目录，使用 Release 附带的打包产物（已包含 `dist`）：
 
 ```sh
-npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.3/common-relay-typescript-0.1.3.tgz
+npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.4/common-relay-typescript-0.1.4.tgz
 ```
 
-**Go**（子目录 module 使用 `sdk/go/v0.1.3` 标签）：
+**Go**（子目录 module 使用 `sdk/go/v0.1.4` 标签）：
 
 ```sh
-go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.3
+go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.4
 ```
 
 **Rust**：
 
 ```toml
-common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.3" }
+common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.4" }
 ```
 
 平台 libsodium 由各 SDK 的固定依赖打包，不依赖用户安装的桌面原生库（Java 单测除外）。
@@ -61,7 +61,7 @@ common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.3
 
 1. 统一各 SDK 清单中的版本号，合入 main。
 2. 在同一提交上创建 `vX.Y.Z` 和 `sdk/go/vX.Y.Z` 两个标签，先推送 Go 标签。
-3. `.github/workflows/release.yml` 校验 Go 标签、运行各 SDK 测试与轻量互通，然后创建 GitHub Release，附带 TypeScript tgz、Java/Kotlin release AAR 和 `SHA256SUMS`。仓库需允许工作流使用 `contents: write`。
+3. `.github/workflows/release.yml` 校验 Go 标签、运行各 SDK 测试与轻量互通，然后创建 GitHub Release，附带 Linux amd64/arm64 服务端 tar.gz、TypeScript tgz、Java/Kotlin release AAR 和 `SHA256SUMS`。仓库需允许工作流使用 `contents: write`。
 4. 首次通过 JitPack 拉取时会触发 JitPack 构建，需确认构建成功。
 
 自动邀请扩展需要整组 SDK 升级；默认仍是手动模式。

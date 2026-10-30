@@ -6,7 +6,13 @@ site="${1:?Specify the existing Nginx HTTPS site file}"
 test -f "$site"
 # Validate before replacing any installed artifact.
 for tool in python3 nginx systemctl curl; do command -v "$tool" >/dev/null; done
-test -f "$stage/build/common-relay-linux-amd64"
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64) arch=amd64 ;;
+  Linux/aarch64|Linux/arm64) arch=arm64 ;;
+  *) echo 'Supported targets: Linux amd64 / arm64' >&2; exit 1 ;;
+esac
+binary="$stage/build/common-relay-linux-$arch"
+test -f "$binary"
 python3 - "$site" <<'PYTHON'
 import sys
 from pathlib import Path
@@ -24,7 +30,7 @@ cp -p "$site" "$backup/site.conf"
 test ! -e /usr/local/bin/common-relay || cp -p /usr/local/bin/common-relay "$backup/common-relay"
 test ! -e /etc/systemd/system/common-relay.service || cp -p /etc/systemd/system/common-relay.service "$backup/"
 test ! -e /etc/nginx/snippets/common-relay.conf || cp -p /etc/nginx/snippets/common-relay.conf "$backup/"
-install -m 0755 "$stage/build/common-relay-linux-amd64" /usr/local/bin/common-relay.next
+install -m 0755 "$binary" /usr/local/bin/common-relay.next
 mv /usr/local/bin/common-relay.next /usr/local/bin/common-relay
 install -m 0644 "$stage/deploy/common-relay.service" /etc/systemd/system/common-relay.service
 install -d -m 0755 /etc/nginx/snippets

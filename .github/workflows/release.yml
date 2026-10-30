@@ -77,6 +77,34 @@ jobs:
           path: '*.tgz'
           if-no-files-found: error
 
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-go@v5.5.0
+        with:
+          go-version-file: go.mod
+      - name: Package Linux server
+        run: python3 scripts/package-server.py --version "$RELEASE_TAG"
+      - name: Smoke test packaged amd64 server
+        run: |
+          archive="build/server-release/common-relay-server-$RELEASE_TAG-linux-amd64.tar.gz"
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          binary="$RUNNER_TEMP/common-relay-server-$RELEASE_TAG-linux-amd64/build/common-relay-linux-amd64"
+          "$binary" serve --help
+          "$binary" check --data "$RUNNER_TEMP/relay-smoke-data"
+          "$binary" serve --data "$RUNNER_TEMP/relay-smoke-data" --listen 127.0.0.1:47805 &
+          server_pid=$!
+          trap 'kill "$server_pid"; wait "$server_pid" || true' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:47805/healthz
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: server
+          path: build/server-release/*.tar.gz
+          if-no-files-found: error
+
   swift:
     runs-on: macos-latest
     steps:
@@ -128,7 +156,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [test, swift, android]
+    needs: [test, swift, android, server]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -139,12 +167,13 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         working-directory: artifacts
-        run: sha256sum ./*.tgz ./*.aar > SHA256SUMS
+        run: sha256sum ./*.tgz ./*.aar ./*.tar.gz > SHA256SUMS
       - uses: softprops/action-gh-release@v2.3.2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
             artifacts/*.tgz
             artifacts/*.aar
+            artifacts/*.tar.gz
             artifacts/SHA256SUMS
           fail_on_unmatched_files: true
