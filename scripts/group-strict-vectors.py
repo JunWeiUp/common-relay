@@ -63,6 +63,15 @@ def main():
             {'case': 'grant_unknown_field', 'entry': auto},
         ],
     }
+    canonical = v['strict_payload']['valid'][0]['entry']
+    text = canonical['payload']
+    alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    idx = len(text.rstrip('=')) - 1
+    noncanonical = text[:idx] + alphabet[alphabet.index(text[idx]) | 1] + text[idx+1:]
+    for name, value in [('base64_missing_padding', text.rstrip('=')),
+                        ('base64_nonzero_pad_bits', noncanonical),
+                        ('base64_wrapped_valid_payload', text[:20] + '\n' + text[20:])]:
+        v['strict_payload']['invalid'].append({'case': name, 'entry': {**canonical, 'payload': value}})
     PATH.write_text(json.dumps(v, ensure_ascii=False, indent=2) + '\n')
 
 if __name__ == '__main__':

@@ -18,7 +18,11 @@ from .payload import SCHEMAS, strict
 DOMAIN = b'common-relay/group-signing/v1\0'
 def encode(value): return json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode()
 def digest(value): return hashlib.sha256(value).hexdigest()
-def payload(entry): return base64.b64decode(entry['payload'], validate=True)
+def payload(entry):
+    raw = base64.b64decode(entry['payload'], validate=True)
+    if len(raw) > 32768 or base64.b64encode(raw).decode() != entry['payload']:
+        raise ValueError('Non-canonical payload')
+    return raw
 def unpack(entry):
     raw = payload(entry)
     # Every signed payload is a state, join request or admission grant.

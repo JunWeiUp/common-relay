@@ -10,8 +10,12 @@ class RelayGroups {
   static const domain = 'common-relay/group-signing/v1\u0000';
   static String digest(List<int> data) =>
       hashes.sha256.convert(data).toString();
-  static Uint8List payload(Map<String, dynamic> e) =>
-      base64Decode(e['payload'] as String);
+  static Uint8List payload(Map<String, dynamic> e) {
+    final text = e['payload'] as String;
+    final raw = base64Decode(text);
+    if (raw.length > 32768 || base64Encode(raw) != text) throw FormatException('Non-canonical payload');
+    return raw;
+  }
   static Map<String, dynamic> unpack(Map<String, dynamic> e) {
     final raw = payload(e);
     // Every signed payload is a state, join request or admission grant.

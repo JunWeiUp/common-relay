@@ -216,7 +216,7 @@ class RelayClient {
         if (e['offline'] == true) send({'type': 'ack', 'id': id, 'from': e['from']}); return;
       }
       e['data'] = base64Decode(value['data'] as String); }
-    if (['message', 'stream.open', 'peer.up', 'peer.down'].contains(e['type'])) { if (++_eventCount > 64) throw StateError('Event queue overflow'); _events.add(e); }
+    if (['message', 'stream.open', 'peer.up', 'peer.down', 'group.changed'].contains(e['type'])) { if (++_eventCount > 64) throw StateError('Event queue overflow'); _events.add(e); }
   }
   Future<void> close([Object? error]) async {
     if (_closed) return; _closed = true; _cleaner?.cancel(); _cleaner = null;
@@ -255,7 +255,7 @@ class RelayStream {
     if (_closed || _receiver != null) throw StateError('Concurrent receive or closed stream');
     late (int, Uint8List) item;
     if (_queue.isEmpty) { _receiver = Completer<(int, Uint8List)>(); item = await _receiver!.future; } else { item = _queue.removeAt(0); }
-    if (item.$1 != _rx || _decryptor == null) throw StateError('Invalid sequence');
+    if (_closed || item.$1 != _rx || _decryptor == null) throw StateError('Invalid sequence');
     final plain = await _decryptor!.pull(item.$2, client.identity.aad(peer, client.identity.device, 'stream', id, _rx)); _rx++;
     client.send({'type': 'stream.credit', 'id': id, 'sequence': _rx}); return plain;
   }

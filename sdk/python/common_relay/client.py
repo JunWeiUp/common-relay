@@ -256,7 +256,7 @@ class Client:
                             await self.send_event({'type':'ack','id':object_id,'from':e['from']})
                         continue
                     e['data']=base64.b64decode(value['data'],validate=True)
-                if e['type'] in ('message','stream.open','peer.up','peer.down'):
+                if e['type'] in ('message','stream.open','peer.up','peer.down','group.changed'):
                     self.events.put_nowait(e)
         finally:
             for future in self.pending.values():
