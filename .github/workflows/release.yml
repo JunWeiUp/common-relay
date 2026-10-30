@@ -66,7 +66,10 @@ jobs:
           python -m unittest discover -s sdk/python -p 'test*.py'
           python scripts/lightweight-interop.py --server "$PWD/build/common-relay"
       - name: Package TypeScript
-        run: npm pack --pack-destination "$GITHUB_WORKSPACE"
+        run: |
+          npm pack --pack-destination "$GITHUB_WORKSPACE"
+          version="${RELEASE_TAG#v}"
+          mv "$GITHUB_WORKSPACE/common-relay-client-$version.tgz" "$GITHUB_WORKSPACE/common-relay-typescript-$version.tgz"
         working-directory: sdk/typescript
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -108,6 +111,10 @@ jobs:
         working-directory: sdk/java
       - run: gradle testDebugUnitTest :java:testDebugUnitTest lintDebug assembleRelease
         working-directory: sdk/kotlin
+      - name: Verify Maven publication metadata
+        run: |
+          gradle -p sdk/kotlin :java:publishToMavenLocal publishToMavenLocal
+          python3 scripts/check-android-publication.py --version "${RELEASE_TAG#v}"
       - name: Collect AARs
         run: |
           version="${RELEASE_TAG#v}"

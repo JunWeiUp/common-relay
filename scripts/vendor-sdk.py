@@ -30,5 +30,5 @@ let package = Package(
 license=root/'LICENSE'
 if license.exists(): shutil.copy2(license,target/'LICENSE')
 manifest={str(f.relative_to(target)):hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(target.rglob('*')) if f.is_file()}
-(target/'SOURCE.json').write_text(json.dumps({'upstream':'https://github.com/JunWeiUp/common-relay','version':'0.1.1','files':manifest},indent=2)+'\n')
+(target/'SOURCE.json').write_text(json.dumps({'upstream':'https://github.com/JunWeiUp/common-relay','version':'0.1.2','files':manifest},indent=2)+'\n')
 print(target)
