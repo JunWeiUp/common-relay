@@ -20,6 +20,12 @@ for module in ['java', 'kotlin']:
     dependencies = {d.findtext('m:artifactId', namespaces=ns): d for d in root.findall('m:dependencies/m:dependency', ns)}
     required = ['jna', 'lazysodium-android'] if module == 'java' else ['java']
     for name in required:
-        assert dependencies[name].findtext('m:type', namespaces=ns) == 'aar', f'{module}: {name} must resolve to AAR'
+        kind = dependencies[name].findtext('m:type', namespaces=ns)
+        if module == 'kotlin' and kind is None:
+            # Android project dependencies may omit type; their own POM declares AAR packaging.
+            java_pom = args.repository / 'com/github/JunWeiUp/common-relay/java' / args.version / f'java-{args.version}.pom'
+            assert ET.parse(java_pom).getroot().findtext('m:packaging', namespaces=ns) == 'aar'
+        else:
+            assert kind == 'aar', f'{module}: {name} must resolve to AAR'
     assert (directory / f'{module}-{args.version}.aar').is_file()
 print('Android Maven publications retain AAR runtime types without module redirection.')

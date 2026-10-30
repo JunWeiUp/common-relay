@@ -1,15 +1,15 @@
 # SDK 与产物分发
 
-服务端以 Linux amd64 二进制分发。各语言 SDK 通过本仓库的 Git 标签（如 `v0.1.2`）作为依赖接入，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。升级时修改依赖中的标签即可。
+服务端以 Linux amd64 二进制分发。各语言 SDK 通过本仓库的 Git 标签（如 `v0.1.3`）作为依赖接入，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。升级时修改依赖中的标签即可。
 
 ## 按 Git 标签接入
 
-以下以 `v0.1.2` 为例。
+以下以 `v0.1.3` 为例。
 
 **Swift**（仓库根目录 `Package.swift` 只导出 `CommonRelay`；SPM 接受带 `v` 的标签）：
 
 ```swift
-.package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.2")
+.package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.3")
 // target 依赖：.product(name: "CommonRelay", package: "common-relay")
 ```
 
@@ -19,8 +19,8 @@
 // settings.gradle
 dependencyResolutionManagement { repositories { google(); mavenCentral(); maven { url 'https://jitpack.io' } } }
 // build.gradle
-implementation 'com.github.JunWeiUp.common-relay:java:v0.1.2'
-implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.2'
+implementation 'com.github.JunWeiUp.common-relay:java:v0.1.3'
+implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.3'
 ```
 
 **Dart**：
@@ -28,31 +28,31 @@ implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.2'
 ```yaml
 dependencies:
   common_relay:
-    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.2, path: sdk/dart }
+    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.3, path: sdk/dart }
 ```
 
 **Python**：
 
 ```sh
-pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.2#subdirectory=sdk/python"
+pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.3#subdirectory=sdk/python"
 ```
 
 **TypeScript（Node.js）**：npm 不支持 Git 子目录，使用 Release 附带的打包产物（已包含 `dist`）：
 
 ```sh
-npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.2/common-relay-typescript-0.1.2.tgz
+npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.3/common-relay-typescript-0.1.3.tgz
 ```
 
-**Go**（子目录 module 使用 `sdk/go/v0.1.2` 标签）：
+**Go**（子目录 module 使用 `sdk/go/v0.1.3` 标签）：
 
 ```sh
-go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.2
+go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.3
 ```
 
 **Rust**：
 
 ```toml
-common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.2" }
+common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.3" }
 ```
 
 平台 libsodium 由各 SDK 的固定依赖打包，不依赖用户安装的桌面原生库（Java 单测除外）。
