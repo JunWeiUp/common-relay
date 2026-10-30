@@ -87,7 +87,7 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805
 
 ## 客户端 SDK
 
-SDK 直接按本仓库 Git 标签（如 `v0.1.1`）安装，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。1.0 之前不保证 API 稳定。
+SDK 直接按本仓库 Git 标签（如 `v0.1.2`）安装，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。1.0 之前不保证 API 稳定。
 
 | SDK | 源码 | 环境要求 |
 | --- | --- | --- |
@@ -101,13 +101,13 @@ SDK 直接按本仓库 Git 标签（如 `v0.1.1`）安装，不发布到 npm、P
 | Rust 客户端 | [sdk/rust](sdk/rust) | Rust 1.89+（tokio，纯 Rust） |
 
 ```text
-Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.1")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.1'    // 或 :kotlin:，经 JitPack
-Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.1, path: sdk/dart }
-Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.1#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.1/common-relay-client-0.1.1.tgz
-Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.1
-Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.1" }
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.2")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.2'    // 或 :kotlin:，经 JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.2, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.2#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.2/common-relay-typescript-0.1.2.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.2
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.2" }
 ```
 
 [SDK 分发指南](docs/REGISTRY.md)介绍仓库配置、发布流程，以及用于审计或本地补丁的可选源码快照。

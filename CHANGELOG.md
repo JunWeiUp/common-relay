@@ -10,6 +10,11 @@
 - TypeScript、Go、Rust 补齐完整能力：持久化离线消息（日志、ACK、去重、清理）、secretstream 双向流、加密文件、签名设备组（严格载荷、委托授权、自助创建、改名、退出、解散）及加密短邀请；七类 SDK 共用向量，`local-interop.py`、`group-interop.py` 增加三者的互通探针。
 - 源码快照工具支持 Kotlin、TypeScript、Go、Rust；保留文件续传偏移检查与 Python 流关闭唤醒修复。
 
+## 0.1.2
+
+- Android Maven 发布保留 JNA/LazySodium 的 AAR 类型，避免 Gradle 模块元数据将原生运行库解析为桌面 JAR，导致重复类或缺失原生库。
+- TypeScript Release 附件明确命名为 `common-relay-typescript-<version>.tgz`，包含 JavaScript 与类型声明。
+
 ## 0.1.1
 
 - Java/Swift/Dart/Python 转发 `group.changed` 通知，由调用方继续核验签名成员链；Kotlin 复用 Java，TypeScript/Go/Rust 已有对应行为。

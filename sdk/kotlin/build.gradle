@@ -17,7 +17,7 @@ android.testOptions.unitTests.all { systemProperty 'jna.library.path', System.ge
 
 
 group = 'com.github.JunWeiUp.common-relay'
-version = System.getenv('VERSION') ?: '0.1.1'
+version = System.getenv('VERSION') ?: '0.1.2'
 
 android { publishing { singleVariant('release') } }
 afterEvaluate {
@@ -29,4 +29,10 @@ afterEvaluate {
             }
         }
     }
+}
+
+// Gradle module metadata drops the explicit @aar selectors on native runtime
+// dependencies. Publish Maven POM metadata, which retains <type>aar</type>.
+tasks.withType(org.gradle.api.publish.tasks.GenerateModuleMetadata).configureEach {
+    enabled = false
 }
