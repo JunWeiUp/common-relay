@@ -69,7 +69,7 @@ python3 -m venv .venv
 build/common-relay serve --data ./data --listen 127.0.0.1:47805
 ```
 
-公网部署需要 TLS 反向代理，并使用 **WSS/HTTPS**。仓库提供 [Nginx 配置](deploy/nginx.conf)和 [systemd 单元](deploy/common-relay.service)，安装、备份和升级步骤见[部署指南](docs/DEPLOYMENT.md)。
+公网部署需要 TLS 反向代理，并使用 **WSS/HTTPS**。使用服务端打包流程发布的 Release 提供 Linux amd64 / arm64 部署包，内含二进制、安装脚本、配置和来源校验记录。仓库提供 [Nginx 配置](deploy/nginx.conf)和 [systemd 单元](deploy/common-relay.service)，安装、备份和升级步骤见[部署指南](docs/DEPLOYMENT.md)。
 
 示例显式允许回环地址使用未加密的 WebSocket 传输，仅用于本地测试；应用内容仍由 SDK 加密。
 
@@ -87,7 +87,7 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805
 
 ## 客户端 SDK
 
-SDK 直接按本仓库 Git 标签（如 `v0.1.3`）安装，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。1.0 之前不保证 API 稳定。
+SDK 直接按本仓库 Git 标签（如 `v0.1.4`）安装，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。1.0 之前不保证 API 稳定。
 
 | SDK | 源码 | 环境要求 |
 | --- | --- | --- |
@@ -101,13 +101,13 @@ SDK 直接按本仓库 Git 标签（如 `v0.1.3`）安装，不发布到 npm、P
 | Rust 客户端 | [sdk/rust](sdk/rust) | Rust 1.89+（tokio，纯 Rust） |
 
 ```text
-Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.3")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.3'    // 或 :kotlin:，经 JitPack
-Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.3, path: sdk/dart }
-Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.3#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.3/common-relay-typescript-0.1.3.tgz
-Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.3
-Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.3" }
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.4")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.4'    // 或 :kotlin:，经 JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.4, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.4#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.4/common-relay-typescript-0.1.4.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.4
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.4" }
 ```
 
 [SDK 分发指南](docs/REGISTRY.md)介绍仓库配置、发布流程，以及用于审计或本地补丁的可选源码快照。

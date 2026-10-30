@@ -10,6 +10,12 @@
 - TypeScript、Go、Rust 补齐完整能力：持久化离线消息（日志、ACK、去重、清理）、secretstream 双向流、加密文件、签名设备组（严格载荷、委托授权、自助创建、改名、退出、解散）及加密短邀请；七类 SDK 共用向量，`local-interop.py`、`group-interop.py` 增加三者的互通探针。
 - 源码快照工具支持 Kotlin、TypeScript、Go、Rust；保留文件续传偏移检查与 Python 流关闭唤醒修复。
 
+## 0.1.4
+
+- 发布 Linux amd64 / arm64 服务端部署包，包含二进制、安装脚本、systemd/Nginx 配置、部署文档、SOURCE.json 及 SHA-256 校验。
+- 安装脚本按目标 Linux 架构选择二进制；Release 新增服务端打包和 amd64 启动健康检查，与客户端 SDK 一起分发。
+- SDK 版本统一更新至 0.1.4，协议与客户端功能不变。
+
 ## 0.1.3
 
 - 修正 Kotlin Maven 发布校验：项目依赖可省略 type，由目标 Java POM 的 AAR packaging 确定类型。

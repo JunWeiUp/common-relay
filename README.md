@@ -69,7 +69,7 @@ See [example details](examples/README.md) for expected output and integration no
 build/common-relay serve --data ./data --listen 127.0.0.1:47805
 ```
 
-For public access, place the service behind a TLS reverse proxy and use **WSS/HTTPS**. The repository includes [Nginx configuration](deploy/nginx.conf) and a [systemd unit](deploy/common-relay.service). Follow the [deployment guide](docs/DEPLOYMENT.md) for installation, backups, and upgrades.
+For public access, place the service behind a TLS reverse proxy and use **WSS/HTTPS**. Releases built with the server packaging workflow include Linux amd64 / arm64 deployment archives with binaries, installation scripts, configuration, and source checksums. The repository includes [Nginx configuration](deploy/nginx.conf) and a [systemd unit](deploy/common-relay.service). Follow the [deployment guide](docs/DEPLOYMENT.md) for installation, backups, and upgrades.
 
 The demos explicitly allow unencrypted WebSocket transport on loopback. This setting is for local testing only; payload encryption still applies.
 
@@ -87,7 +87,7 @@ Self-service group creation is disabled by default. Enable selected application 
 
 ## Client SDKs
 
-SDKs install directly from this repository's Git tags (for example `v0.1.3`); they are not published to npm, PyPI, crates.io, pub.dev, or Maven Central. There are no stable API guarantees before 1.0.
+SDKs install directly from this repository's Git tags (for example `v0.1.4`); they are not published to npm, PyPI, crates.io, pub.dev, or Maven Central. There are no stable API guarantees before 1.0.
 
 | SDK | Source | Requirements |
 | --- | --- | --- |
@@ -101,13 +101,13 @@ SDKs install directly from this repository's Git tags (for example `v0.1.3`); th
 | Rust client | [sdk/rust](sdk/rust) | Rust 1.89+ (tokio, pure Rust) |
 
 ```text
-Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.3")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.3'    // or :kotlin:, via JitPack
-Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.3, path: sdk/dart }
-Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.3#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.3/common-relay-typescript-0.1.3.tgz
-Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.3
-Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.3" }
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.4")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.4'    // or :kotlin:, via JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.4, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.4#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.4/common-relay-typescript-0.1.4.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.4
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.4" }
 ```
 
 The [SDK distribution guide](docs/REGISTRY.md) covers repository setup, the release process, and optional source snapshots for auditing or local patches.
