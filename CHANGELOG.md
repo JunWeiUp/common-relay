@@ -10,6 +10,13 @@
 - TypeScript、Go、Rust 补齐完整能力：持久化离线消息（日志、ACK、去重、清理）、secretstream 双向流、加密文件、签名设备组（严格载荷、委托授权、自助创建、改名、退出、解散）及加密短邀请；七类 SDK 共用向量，`local-interop.py`、`group-interop.py` 增加三者的互通探针。
 - 源码快照工具支持 Kotlin、TypeScript、Go、Rust；保留文件续传偏移检查与 Python 流关闭唤醒修复。
 
+## 0.1.1
+
+- Java/Swift/Dart/Python 转发 `group.changed` 通知，由调用方继续核验签名成员链；Kotlin 复用 Java，TypeScript/Go/Rust 已有对应行为。
+- 签名组载荷跨 SDK 统一拒绝缺失 Base64 padding、非零尾部 padding bits 和换行；共享向量及生成器增加同密文反例。
+- Java 修复 Android journal 路径对斜杠的 JSON 编码差异、流关闭后重复读取阻塞和关闭期间的原生状态释放竞态；JNA size_t 使用平台 NativeLong，可信公钥集合兼容 API 26。
+
+
 ## 未发布
 
 - 增加可独立运行的 Python 消息、双向流与设备组示例。

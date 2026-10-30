@@ -8,7 +8,7 @@ public final class RelayGroups: @unchecked Sendable {
     private let allowLocalTest: Bool
     public init(config: [String: Any], allowLocalTest: Bool = false) { self.config = config; self.allowLocalTest = allowLocalTest }
     public static func digest(_ data: Data) -> String { var out = [UInt8](repeating: 0,count: 32); crypto_hash_sha256(&out, Array(data), UInt64(data.count)); return Data(out).relayHex }
-    public static func payload(_ entry: [String: Any]) throws -> Data { guard let text = entry["payload"] as? String, let raw = Data(base64Encoded: text), raw.count <= 32768 else { throw RelayError.invalid("membership payload") }; return raw }
+    public static func payload(_ entry: [String: Any]) throws -> Data { guard let text = entry["payload"] as? String, let raw = Data(base64Encoded: text), raw.count <= 32768, raw.base64EncodedString() == text else { throw RelayError.invalid("membership payload") }; return raw }
     /// Every signed payload is a state, join request or admission grant.
     public static func unpack(_ entry: [String: Any]) throws -> [String: Any] {
         let raw = try payload(entry)

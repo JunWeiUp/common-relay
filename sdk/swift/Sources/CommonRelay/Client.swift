@@ -126,7 +126,7 @@ public actor RelayClient {
                 let duplicate = try journal?.contains(scope: scope, sender: from, id: id) ?? false
                 if expired || duplicate { if e["offline"] as? Bool == true { try await send(["type": "ack", "id": id, "from": from]) }; return }
                 guard let encoded = plain["data"] as? String, let data = Data(base64Encoded: encoded) else { throw RelayError.invalid("payload") }; e["data"] = data }
-            if ["message", "stream.open", "peer.up", "peer.down"].contains(type) { if case .dropped = eventContinuation?.yield(try RelayEvent(e)) { throw RelayError.backpressure } }
+            if ["message", "stream.open", "peer.up", "peer.down", "group.changed"].contains(type) { if case .dropped = eventContinuation?.yield(try RelayEvent(e)) { throw RelayError.backpressure } }
         @unknown default: throw RelayError.invalid("message type")
         }
     }
@@ -166,7 +166,7 @@ public actor RelayStream {
         guard !closed, receiver == nil else { throw RelayError.invalid("concurrent receive or closed stream") }
         let item: (UInt64, Data)
         if queue.isEmpty { item = try await withCheckedThrowingContinuation { receiver = $0 } } else { item = queue.removeFirst() }
-        guard item.0 == rx, let decryptor else { throw RelayError.invalid("stream sequence") }
+        guard !closed, item.0 == rx, let decryptor else { throw RelayError.invalid("stream sequence") }
         let plain = try decryptor.pull(item.1, aad: identity.aad(from: peer, to: identity.device, id: id, sequence: rx)); rx += 1
         try await client.send(["type": "stream.credit", "id": id, "sequence": rx]); return plain
     }

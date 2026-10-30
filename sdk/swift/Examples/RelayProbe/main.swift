@@ -30,6 +30,11 @@ import CommonRelay
         let events = try await client.connect(url: URL(string: object["url"] as! String)!, token: object["token"] as! String, allowLocalTest: object["allow_local_test"] as? Bool ?? false)
         print("READY")
         for try await event in events {
+            if object["group_notice_only"] as? Bool == true, event["type"] as? String == "group.changed" {
+                print("GROUP_NOTICE \(event["revision"] as? Int ?? -1)")
+                await client.close()
+                return
+            }
             if event["type"] as? String == "stream.open" {
                 Task {
                     do {

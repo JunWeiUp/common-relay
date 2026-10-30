@@ -6,10 +6,25 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
 import httpx
-from common_relay.client import Stream, RelayError
+from common_relay.client import Client, Stream, RelayError
 from common_relay.files import Files
 
 class NativeLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_change_is_delivered_to_application(self):
+        import json
+        identity=SimpleNamespace(app='example',group='test',device='alice')
+        client=Client('ws://127.0.0.1/relay/v1/ws','x'*64,identity,allow_local_test=True)
+        async def frames():
+            yield json.dumps({'type':'group.changed','revision':2})
+        class Socket:
+            def __aiter__(self): return frames()
+            async def close(self): pass
+        client.ws=Socket()
+        await client._read()
+        event=client.events.get_nowait()
+        self.assertEqual(event['type'],'group.changed')
+        self.assertEqual(event['revision'],2)
+
     async def test_close_unblocks_reader_and_is_idempotent(self):
         client=SimpleNamespace(streams={},send_event=AsyncMock())
         stream=Stream(client,'peer','01'*16,None)

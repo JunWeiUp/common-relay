@@ -28,7 +28,7 @@ public final class InvitationLinks {
         byte[] packet=Arrays.copyOf(nonce,nonce.length+cipher.length);System.arraycopy(cipher,0,packet,nonce.length,cipher.length);return Base64.getEncoder().encodeToString(packet);
     }
     public static JSONObject open(String packet,byte[] key)throws Exception{
-        byte[] raw=Base64.getDecoder().decode(packet);if(key.length!=32||raw.length<40||raw.length>16384)throw new IOException("Invitation packet size");
+        byte[] raw=CanonicalBase64.decode(packet);if(key.length!=32||raw.length<40||raw.length>16384)throw new IOException("Invitation packet size");
         byte[] nonce=Arrays.copyOf(raw,24),cipher=Arrays.copyOfRange(raw,24,raw.length),plain=new byte[cipher.length-16];
         Crypto.check(Crypto.S.crypto_secretbox_open_easy(plain,cipher,cipher.length,nonce,key));
         JSONObject value=new JSONObject(new String(plain,StandardCharsets.UTF_8));
