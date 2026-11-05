@@ -20,3 +20,12 @@ test('reject corrupted compact invitation', () => {
   assert.throws(() => openInvitation(v.packet, Buffer.alloc(32)));
   assert.throws(() => parseInvitationLink(v.link + '?bad'));
 });
+test('compact invitation carrying the server access password', () => {
+  assert.equal(makeInvitationLink(v.invitation, key, v.access_password), v.link_with_password);
+  const parsed = parseInvitationLink(v.link_with_password);
+  assert.equal(parsed.password, v.access_password);
+  assert.deepEqual(Buffer.from(parsed.key), key);
+  assert.equal(parsed.id, v.invitation.id);
+  assert.equal(parseInvitationLink(v.link).password, undefined);
+  for (const suffix of v.invalid_link_suffixes) assert.throws(() => parseInvitationLink(v.link + suffix), /Invalid compact invitation/, suffix);
+});

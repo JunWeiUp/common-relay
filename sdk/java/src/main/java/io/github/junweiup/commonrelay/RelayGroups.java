@@ -18,7 +18,7 @@ public final class RelayGroups {
     private final OkHttpClient http;
     private final String base;
     private final boolean allowLocalTest;
-    private final String password;
+    private String password;
     /** Optional config key "password" is the server access password, sent as Relay-Access on every request. */
     public RelayGroups(JSONObject config, boolean allowLocalTest) throws Exception {this(config,allowLocalTest,null);}
     /** @param http optional shared client; redirects are always disabled. */
@@ -94,23 +94,25 @@ public final class RelayGroups {
         byte[] key=Crypto.random(32);try{
             String packet=InvitationLinks.seal(invitation,key,Crypto.random(24));
             call("POST","/group/invitations/"+invitation.getString("id")+"/link",new JSONObject().put("read_hash",digest(bytes(InvitationLinks.readToken(key)))).put("packet",packet),null);
-            String link=InvitationLinks.make(invitation,key);invitation.put("short_link",link);return link;
+            String link=InvitationLinks.make(invitation,key,password);invitation.put("short_link",link);return link;
         }finally{Arrays.fill(key,(byte)0);}
     }
     public JSONObject resolveInvitation(String text)throws Exception{
         InvitationLinks.Parsed p=InvitationLinks.parse(text.trim(),allowLocalTest);
         try{
-            JSONObject target=new JSONObject().put("url",p.url);if(password!=null&&p.url.equals(config.optString("url")))target.put("password",password); // never send the password to a different relay
+            // Prefer the link's password; otherwise send ours only to our own relay, never to a foreign one.
+            String access=p.password!=null?p.password:(password!=null&&p.url.equals(config.optString("url"))?password:null);
+            JSONObject target=new JSONObject().put("url",p.url);if(access!=null)target.put("password",access);
             RelayGroups endpoint=new RelayGroups(target,allowLocalTest,http);
             JSONObject result=endpoint.call("GET","/enroll/"+p.id+"/link",null,"InvitationLink "+InvitationLinks.readToken(p.key));
             if(result.getInt("version")!=1)throw new IOException("Invitation packet version");
             JSONObject inv=InvitationLinks.open(result.getString("packet"),p.key);
-            if(inv.getInt("version")!=1||!inv.getString("url").equals(p.url)||!inv.getString("id").equals(p.id)||!inv.getString("app").equals(config.getString("app"))||inv.getLong("expires")<=System.currentTimeMillis()/1000)throw new IOException("Invalid or expired invitation scope");return inv;
+            if(inv.getInt("version")!=1||!inv.getString("url").equals(p.url)||!inv.getString("id").equals(p.id)||!inv.getString("app").equals(config.getString("app"))||inv.getLong("expires")<=System.currentTimeMillis()/1000)throw new IOException("Invalid or expired invitation scope");if(p.password!=null)inv.put("password",p.password);return inv;
         }finally{Arrays.fill(p.key,(byte)0);}
     }
     public JSONObject pending(JSONObject inv)throws Exception{JSONObject e=call("GET","/group/invitations/"+inv.getString("id"),null,null).optJSONObject("request");if(e!=null){JSONObject j=unpack(e);verify(e,j.getJSONObject("member").getString("signing_key"));scope(j,inv);if(!e.getString("signer").equals(j.getJSONObject("member").getString("device")))throw new IOException("Signer mismatch");}return e;}
     private void scope(JSONObject j,JSONObject inv)throws Exception{if(!j.getString("invitation").equals(inv.getString("id"))||!j.getString("app").equals(config.getString("app"))||!j.getString("group").equals(config.getString("group")))throw new IOException("Join scope");}
-    public void join(JSONObject inv,String name)throws Exception{if(inv.getInt("version")!=1||inv.getLong("expires")<=System.currentTimeMillis()/1000)throw new IOException("Expired invitation");for(String k:new String[]{"url","app","group"})if(!inv.getString(k).equals(config.getString(k)))throw new IOException("Invitation scope");String mode=inv.optString("mode","manual");if(!mode.equals("manual")&&!mode.equals("auto"))throw new IOException("Unknown invitation mode");if(mode.equals("auto"))invitationGrant(inv);if(!config.has("token"))config.put("token",Crypto.hex(Crypto.random(32)));JSONObject e=sign(new JSONObject().put("version",1).put("app",config.getString("app")).put("group",config.getString("group")).put("invitation",inv.getString("id")).put("member",member(name)).put("token_hash",digest(bytes(config.getString("token")))));JSONObject pending=config.optJSONObject("pending_join");if(pending!=null&&pending.getJSONObject("invitation").getString("id").equals(inv.getString("id")))e=pending.getJSONObject("request");config.put("pending_join",new JSONObject().put("invitation",inv).put("request",e));call("POST","/enroll/"+inv.getString("id"),e,"Invitation "+inv.getString("secret"));}
+    public void join(JSONObject inv,String name)throws Exception{if(inv.getInt("version")!=1||inv.getLong("expires")<=System.currentTimeMillis()/1000)throw new IOException("Expired invitation");for(String k:new String[]{"url","app","group"})if(!inv.getString(k).equals(config.getString(k)))throw new IOException("Invitation scope");String mode=inv.optString("mode","manual");if(!mode.equals("manual")&&!mode.equals("auto"))throw new IOException("Unknown invitation mode");if(mode.equals("auto"))invitationGrant(inv);if(!inv.isNull("password")){password=RelayAccess.validate(inv.getString("password"));config.put("password",password);}if(!config.has("token"))config.put("token",Crypto.hex(Crypto.random(32)));JSONObject e=sign(new JSONObject().put("version",1).put("app",config.getString("app")).put("group",config.getString("group")).put("invitation",inv.getString("id")).put("member",member(name)).put("token_hash",digest(bytes(config.getString("token")))));JSONObject pending=config.optJSONObject("pending_join");if(pending!=null&&pending.getJSONObject("invitation").getString("id").equals(inv.getString("id")))e=pending.getJSONObject("request");config.put("pending_join",new JSONObject().put("invitation",inv).put("request",e));call("POST","/enroll/"+inv.getString("id"),e,"Invitation "+inv.getString("secret"));}
     public boolean finishJoin()throws Exception{JSONObject p=config.getJSONObject("pending_join"),inv=p.getJSONObject("invitation"),request=p.getJSONObject("request");if(inv.optString("mode").equals("auto"))return finishAuto(p);JSONObject e=call("GET","/enroll/"+inv.getString("id"),null,"Claim "+config.getString("token")).optJSONObject("entry");if(e==null)return false;if(e.has("authorization"))throw new IOException("Unexpected delegated approval");verify(e,inv.getJSONObject("manager").getString("signing_key"));JSONObject g=unpack(e);validate(g);JSONObject own=members(g).get(config.getString("device")),expected=unpack(request).getJSONObject("member");if(own==null)throw new IOException("Missing member");expected.put("manager",own.getBoolean("manager"));if(!e.getString("signer").equals(inv.getJSONObject("manager").getString("device"))||!g.getString("invitation").equals(inv.getString("id"))||!g.getString("request_hash").equals(digest(payload(request)))||!same(own,expected))throw new IOException("Approval mismatch");accept(e);config.remove("pending_join");return true;}
     private RelayGroups delegateSigner(String secret,String device)throws Exception{
         return new RelayGroups(new JSONObject(config.toString()).put("secret_key",secret).put("device",device),base.startsWith("http://127.0.0.1:"),http);

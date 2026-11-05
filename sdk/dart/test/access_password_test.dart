@@ -65,6 +65,23 @@ void main() {
     expect(seen['/relay/v1/enroll/$id/link'], isNull);
   });
 
+  test('password carried by a short link is used for a foreign relay', () async {
+    final groups = RelayGroups(sodium, {'url': 'ws://127.0.0.1:1/relay/v1/ws', 'token': 't', 'password': password}, allowLocalTest: true);
+    final id = '22' * 16;
+    await expectLater(groups.resolveInvitation(RelayInvitationLinks.make({'url': ws(), 'id': id}, Uint8List(32), password: 'link-access-1')), throwsA(anything));
+    expect(seen['/relay/v1/enroll/$id/link'], 'link-access-1');
+  });
+
+  test('join adopts the password carried by a resolved invitation', () async {
+    final config = <String, dynamic>{'url': ws(), 'app': 'example', 'group': 'g', 'device': 'd', 'secret_key': '00' * 32};
+    final groups = RelayGroups(sodium, config, allowLocalTest: true);
+    final inv = {'version': 1, 'mode': 'manual', 'url': ws(), 'app': 'example', 'group': 'g', 'id': '33' * 16, 'expires': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 600, 'secret': 's', 'password': 'link-access-1'};
+    await expectLater(groups.join(inv, 'n'), throwsA(anything));
+    expect(config['password'], 'link-access-1');
+    expect(seen.values, contains('link-access-1'));
+    expect(() => groups.join({...inv, 'password': 'bad'}, 'n'), throwsArgumentError);
+  });
+
   test('no Relay-Access header when password is absent', () async {
     final groups = RelayGroups(sodium, {'url': ws(), 'token': 't'}, allowLocalTest: true);
     await groups.call('GET', '/group/state');

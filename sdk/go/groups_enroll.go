@@ -45,6 +45,13 @@ func (g *Groups) Join(inv GroupInvitation, name string) error {
 	if inv.Version != 1 || inv.Expires <= time.Now().Unix() || inv.URL != c.URL || inv.App != c.App || inv.Group != c.Group || (inv.Mode != "" && inv.Mode != "manual" && inv.Mode != "auto") || !objectID.MatchString(inv.ID) {
 		return errors.New("invalid invitation")
 	}
+	if inv.Password != "" {
+		// A password carried by the scanned link becomes this device's relay access password.
+		if err := validAccessPassword(inv.Password); err != nil {
+			return err
+		}
+		c.Password = inv.Password
+	}
 	if inv.Mode == "auto" {
 		if _, err := g.invitationGrant(inv); err != nil {
 			return err

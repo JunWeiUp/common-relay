@@ -10,4 +10,8 @@ void main(){test('shared compact invitation encryption and tamper rejection',() 
  final inv=RelayInvitationLinks.open(sodium,packet,key);expect(inv,v['invitation']);expect(RelayInvitationLinks.readToken(key),v['read_token']);expect(RelayInvitationLinks.make(inv,key),link);expect(RelayInvitationLinks.parse(link).url,inv['url']);
  expect(RelayInvitationLinks.open(sodium,RelayInvitationLinks.seal(sodium,inv,key,unhex(v['nonce'] as String)),key),inv);
  expect(()=>RelayInvitationLinks.open(sodium,packet,Uint8List(32)),throwsA(anything));expect(()=>RelayInvitationLinks.parse('$link='),throwsA(anything));expect(()=>RelayInvitationLinks.parse(link.replaceFirst('relay.example.com','user@relay.example.com')),throwsA(anything));
+ final withPassword=v['link_with_password'] as String,access=v['access_password'] as String;
+ expect(RelayInvitationLinks.make(inv,key,password:access),withPassword);final parsed=RelayInvitationLinks.parse(withPassword);
+ expect(parsed.password,access);expect(parsed.key,key);expect(parsed.url,inv['url']);expect(RelayInvitationLinks.parse(link).password,isNull);
+ for(final suffix in v['invalid_link_suffixes'] as List){expect(()=>RelayInvitationLinks.parse('$link$suffix'),throwsA(anything),reason:suffix as String);}
 });}

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Client, Identity, Journal, Files, prepareFile, decryptFile, safeFileName } from '../dist/index.js';
+import { Client, Identity, Journal, Files, Groups, prepareFile, decryptFile, safeFileName } from '../dist/index.js';
 
 const binary = process.env.COMMON_RELAY_SERVER ?? new URL('../../../build/common-relay', import.meta.url).pathname;
 const PASSWORD = 'integration-access-1';
@@ -20,7 +20,7 @@ async function freePort() {
   await new Promise(resolve => server.close(resolve));
   return port;
 }
-async function relay(t, names) {
+async function relay(t, names, extra = []) {
   const dir = mkdtempSync(join(tmpdir(), 'relay-ts-'));
   const keys = Object.fromEntries(names.map(name => [name, Identity.generateKeyPair()]));
   const devices = {};
@@ -32,7 +32,7 @@ async function relay(t, names) {
   }
   const port = await freePort();
   writeFileSync(join(dir, 'access'), createHash('sha256').update(PASSWORD).digest('hex') + '\n', { mode: 0o600 });
-  const proc = spawn(binary, ['serve', '--data', join(dir, 'server'), '--listen', `127.0.0.1:${port}`, '--disk-reserve', '0', '--access-password-file', join(dir, 'access')], { stdio: 'ignore' });
+  const proc = spawn(binary, ['serve', '--data', join(dir, 'server'), '--listen', `127.0.0.1:${port}`, '--disk-reserve', '0', '--access-password-file', join(dir, 'access'), ...extra], { stdio: 'ignore' });
   t.after(async () => { proc.kill(); await new Promise(resolve => proc.once('exit', resolve)); rmSync(dir, { recursive: true, force: true }); });
   for (let i = 0; ; i++) {
     const ok = await new Promise(resolve => { const s = connect(port, '127.0.0.1', () => { s.end(); resolve(true); }); s.on('error', () => resolve(false)); });
@@ -178,4 +178,24 @@ test('files reject redirects instead of forwarding the bearer token', { skip: fa
   assert.equal(safeFileName('CON.txt'), '_CON.txt');
   assert.equal(safeFileName('a/b\\c\u0000d'), 'a_b_c_d');
   assert.equal(safeFileName('...'), 'file');
+});
+
+test('fresh device without a password joins through a password-carrying short link', { skip }, async t => {
+  const env = await relay(t, [], ['--self-service-apps', 'example']);
+  const opts = { allowLocalTest: true };
+  const alice = new Groups({ app: 'example', device: 'alice', secret_key: Identity.generateKeyPair().secretKey, url: env.url, password: PASSWORD }, opts);
+  alice.prepareCreate('TS group', 'Alice'); await alice.create();
+  const inv = await alice.invite('auto', { compact: true });
+  assert.ok(inv.short_link.includes('.'), 'link carries the password');
+  assert.equal(inv.password, undefined);
+  const bob = new Groups({ app: 'example', device: 'bob', secret_key: Identity.generateKeyPair().secretKey, url: env.url }, opts);
+  await assert.rejects(new Groups({ app: 'example', url: env.url }, opts).resolveInvitation(inv.short_link.slice(0, inv.short_link.lastIndexOf('.'))), /401/);
+  const resolved = await bob.resolveInvitation(inv.short_link);
+  assert.equal(resolved.password, PASSWORD);
+  bob.config.group = resolved.group;
+  await bob.join(resolved, 'Bob');
+  assert.equal(bob.config.password, PASSWORD);
+  assert.equal(await bob.finishJoin(), true);
+  const state = (await bob.refresh()).state;
+  assert.deepEqual(state.members.map(m => m.device).sort(), ['alice', 'bob']);
 });

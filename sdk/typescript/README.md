@@ -54,7 +54,7 @@ await files.upload(info, stagingPath);            // 409 时严格核对原描�
 - 文件：密文格式 `length[4 BE] | secretstream 记录`；上传每块 ≤1MiB 并核对 `Upload-Offset` 进度，下载按 Range 续传。`decryptFile` 先核对密文长度与 SHA-256，再逐条认证并要求 FINAL，最后以不覆盖的方式发布到应用指定路径；远端文件名仅经 `safeFileName` 清洗后作为单个路径分量使用。HTTP 禁止重定向。
 - 每个 `Client` 实例只拥有一次连接；断开后显式建立新实例，在线消息与流不重放。请求默认 45 秒超时，最多 64 个 pending 请求，事件队列最多 64 条，满时断开并报错。
 - `nextEvent` 单消费者；AbortSignal 只取消本次等待。组变更通知不是已验证的成员链，不能据此修改可信公钥。
-- 服务器访问密码：`Client.connect` / `new Files(...)` 的选项 `password` 与设备组配置中的 `password` 字段（8–128 个可打印 ASCII，无空格，否则构造时抛错）会作为 `Relay-Access` 头随每个 WebSocket、设备组/入组/短邀请解析和文件请求发送；生产中继强制要求，缺失或错误返回 401。密码不写入邀请、短链接、日志或日志库；`resolveInvitation` 仅当短链接解析出的地址与本机配置的 `url` 完全一致时才附带本机密码，否则不发送。
+- 服务器访问密码：`Client.connect` / `new Files(...)` 的选项 `password` 与设备组配置中的 `password` 字段（8–128 个可打印 ASCII，无空格，否则构造时抛错）会作为 `Relay-Access` 头随每个 WebSocket、设备组/入组/短邀请解析和文件请求发送；生产中继强制要求，缺失或错误返回 401。密码不写入邀请、短链接、日志或日志库；`invite(..., { compact: true })` 会把邀请方配置的密码以 `.base64url` 附在短链接片段后（片段不进入 HTTP）；`resolveInvitation` 优先使用链接携带的密码并写入返回的邀请 `password` 字段，`join` 会将其存入 `config.password`；链接未携带时，仅当链接地址与本机 `url` 完全一致才附带本机密码。
 - 只接受 WSS/HTTPS，拒绝重定向、URL 凭据和查询参数；`allowLocalTest` 仅放行显式的 `ws://127.0.0.1` / `http://127.0.0.1` 回环测试。
 
 ### 设备组

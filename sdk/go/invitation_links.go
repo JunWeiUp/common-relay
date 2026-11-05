@@ -53,36 +53,54 @@ func invitationOpen(packet string, key [32]byte) (GroupInvitation, error) {
 	}
 	return v.Invitation, nil
 }
-func invitationMakeLink(inv GroupInvitation, key [32]byte) (string, error) {
+
+// invitationMakeLink optionally appends ".<base64url(access password)>" to the fragment,
+// which never reaches HTTP.
+func invitationMakeLink(inv GroupInvitation, key [32]byte, password string) (string, error) {
 	u, err := url.Parse(inv.URL)
 	id, e := hex.DecodeString(inv.ID)
-	if err != nil || u.Host == "" || e != nil || len(id) != 16 {
+	if err != nil || u.Host == "" || e != nil || len(id) != 16 || validAccessPassword(password) != nil {
 		return "", errors.New("invalid invitation")
 	}
-	return "common-relay://" + u.Host + "/i/" + base64.RawURLEncoding.EncodeToString(id) + "#" + base64.RawURLEncoding.EncodeToString(key[:]), nil
+	suffix := ""
+	if password != "" {
+		suffix = "." + base64.RawURLEncoding.EncodeToString([]byte(password))
+	}
+	return "common-relay://" + u.Host + "/i/" + base64.RawURLEncoding.EncodeToString(id) + "#" + base64.RawURLEncoding.EncodeToString(key[:]) + suffix, nil
 }
-func invitationParseLink(text string, local bool) (string, string, [32]byte, error) {
+
+// invitationParseLink returns relay URL, invitation ID, link key and the optional access password.
+func invitationParseLink(text string, local bool) (string, string, [32]byte, string, error) {
 	var key [32]byte
 	bad := errors.New("invalid compact invitation")
 	if len(text) > 2048 {
-		return "", "", key, bad
+		return "", "", key, "", bad
 	}
 	u, err := url.Parse(text)
 	if err != nil || u.Scheme != "common-relay" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || !strings.HasPrefix(u.Path, "/i/") || u.RawPath != "" || u.RawFragment != "" {
-		return "", "", key, bad
+		return "", "", key, "", bad
 	}
 	id, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimPrefix(u.Path, "/i/"))
 	if err != nil || len(id) != 16 || base64.RawURLEncoding.EncodeToString(id) != u.Path[3:] {
-		return "", "", key, bad
+		return "", "", key, "", bad
 	}
-	b, err := base64.RawURLEncoding.Strict().DecodeString(u.Fragment)
-	if err != nil || len(b) != 32 || base64.RawURLEncoding.EncodeToString(b) != u.Fragment {
-		return "", "", key, bad
+	fragment, encoded, dotted := strings.Cut(u.Fragment, ".")
+	b, err := base64.RawURLEncoding.Strict().DecodeString(fragment)
+	if err != nil || len(b) != 32 || base64.RawURLEncoding.EncodeToString(b) != fragment {
+		return "", "", key, "", bad
+	}
+	password := ""
+	if dotted {
+		p, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+		if encoded == "" || err != nil || base64.RawURLEncoding.EncodeToString(p) != encoded || validAccessPassword(string(p)) != nil {
+			return "", "", key, "", bad
+		}
+		password = string(p)
 	}
 	copy(key[:], b)
 	scheme := "wss"
 	if local && u.Hostname() == "127.0.0.1" {
 		scheme = "ws"
 	}
-	return scheme + "://" + u.Host + "/relay/v1/ws", hex.EncodeToString(id), key, nil
+	return scheme + "://" + u.Host + "/relay/v1/ws", hex.EncodeToString(id), key, password, nil
 }

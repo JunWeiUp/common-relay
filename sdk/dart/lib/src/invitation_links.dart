@@ -70,12 +70,33 @@ class RelayInvitationLinks {
     }
   }
 
-  static String make(Map<String, dynamic> invitation, Uint8List key) {
+  /// An optional server access password rides in the fragment, which never reaches HTTP.
+  static String make(Map<String, dynamic> invitation, Uint8List key, {String? password}) {
     final u = Uri.parse(invitation['url'] as String);
-    return 'common-relay://${u.authority}/i/${base64url(unhex(invitation['id'] as String))}#${base64url(key)}';
+    final access = relayAccessPassword(password);
+    final suffix = access == null ? '' : '.${base64url(ascii.encode(access))}';
+    return 'common-relay://${u.authority}/i/${base64url(unhex(invitation['id'] as String))}#${base64url(key)}$suffix';
   }
 
-  static ({String url, String id, Uint8List key}) parse(
+  static String _fragmentPassword(String text) {
+    if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(text))
+      throw FormatException('Compact invitation encoding');
+    final raw = base64Url.decode(base64Url.normalize(text));
+    if (base64url(raw) != text) throw FormatException('Compact invitation encoding');
+    final String value;
+    try {
+      value = ascii.decode(raw);
+    } on FormatException {
+      throw FormatException('Compact invitation encoding');
+    }
+    try {
+      return relayAccessPassword(value)!;
+    } on ArgumentError {
+      throw FormatException('Compact invitation password');
+    }
+  }
+
+  static ({String url, String id, Uint8List key, String? password}) parse(
     String text, {
     bool allowLocalTest = false,
   }) {
@@ -89,6 +110,7 @@ class RelayInvitationLinks {
         !RegExp(r'^/i/[A-Za-z0-9_-]{22}$').hasMatch(u.path))
       throw FormatException('Compact invitation URL');
     final scheme = allowLocalTest && u.host == '127.0.0.1' ? 'ws' : 'wss';
+    final dot = u.fragment.indexOf('.');
     return (
       url: Uri(
         scheme: scheme,
@@ -97,7 +119,8 @@ class RelayInvitationLinks {
         path: '/relay/v1/ws',
       ).toString(),
       id: hex(_decode(u.path.substring(3), 16)),
-      key: _decode(u.fragment, 32),
+      key: _decode(dot < 0 ? u.fragment : u.fragment.substring(0, dot), 32),
+      password: dot < 0 ? null : _fragmentPassword(u.fragment.substring(dot + 1)),
     );
   }
 }

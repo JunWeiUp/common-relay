@@ -28,6 +28,17 @@ final class AccessPasswordTests: XCTestCase {
         XCTAssertEqual(try RelayGroups(config: groups.invitationEndpointConfig(own)).makeRequest("GET", "/enroll/a/link").value(forHTTPHeaderField: "Relay-Access"), password)
         XCTAssertNil(try RelayGroups(config: groups.invitationEndpointConfig("wss://other.example/relay/v1/ws")).makeRequest("GET", "/enroll/a/link").value(forHTTPHeaderField: "Relay-Access"))
     }
+    func testLinkPasswordWinsAndJoinStoresIt() async throws {
+        let own = "wss://relay.example/relay/v1/ws", other = "wss://other.example/relay/v1/ws"
+        let groups = RelayGroups(config: ["url": own, "token": "t", "password": password])
+        XCTAssertEqual(groups.invitationEndpointConfig(other, linkPassword: "link-pass-1")["password"] as? String, "link-pass-1")
+        XCTAssertEqual(groups.invitationEndpointConfig(own, linkPassword: "link-pass-1")["password"] as? String, "link-pass-1")
+        // join validates and stores the link password before any network request (invalid ones rejected without contacting the relay).
+        let joiner = RelayGroups(config: ["url": own, "app": "example", "group": "g"])
+        let invitation: [String: Any] = ["version": 1, "url": own, "app": "example", "group": "g", "id": "00", "expires": Date().timeIntervalSince1970 + 60, "password": "bad pass"]
+        do { try await joiner.join(invitation, name: "x"); XCTFail("expected rejection") } catch {}
+        XCTAssertNil(joiner.config["password"])
+    }
     func testFilesHeaderAndValidation() async throws {
         let files = try RelayFiles(base: URL(string: "https://relay.example/relay/v1/files")!, token: "t", password: password)
         let req = await files.makeRequest("PUT", path: "x/data", body: Data(), headers: ["Upload-Offset": "0"])

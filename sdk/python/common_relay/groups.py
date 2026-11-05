@@ -160,18 +160,20 @@ class Groups:
         from . import invitation_links as links
         key=secrets.token_bytes(32);packet=links.seal(invitation,key,secrets.token_bytes(24))
         await self.call('POST','/group/invitations/'+invitation['id']+'/link',{'read_hash':digest(links.read_token(key).encode()),'packet':packet})
-        invitation['short_link']=links.make_link(invitation,key)
+        invitation['short_link']=links.make_link(invitation,key,self.config.get('password'))
         return invitation['short_link']
     async def resolve_invitation(self, text):
         import time
         from . import invitation_links as links
-        url,identifier,key=links.parse_link(text.strip(),self.allow_local_test)
-        # Only send our access password to our own relay; a foreign link must not learn it.
-        endpoint=Groups({'url':url,**({'password':self.config['password']} if self.config.get('password') is not None and url==self.config.get('url') else {})},allow_local_test=self.allow_local_test)
+        url,identifier,key,link_password=links.parse_link(text.strip(),self.allow_local_test)
+        # Prefer the link's password; otherwise only send ours to our own relay, never to a foreign one.
+        password=link_password if link_password is not None else (self.config.get('password') if url==self.config.get('url') else None)
+        endpoint=Groups({'url':url,**({'password':password} if password is not None else {})},allow_local_test=self.allow_local_test)
         result=await endpoint.call('GET','/enroll/'+identifier+'/link',authorization='InvitationLink '+links.read_token(key))
         if result.get('version')!=1: raise ValueError('Invalid invitation packet version')
         inv=links.open_packet(result['packet'],key)
         if inv.get('version')!=1 or inv.get('url')!=url or inv.get('id')!=identifier or inv.get('app')!=self.config['app'] or inv['expires']<=time.time(): raise ValueError('Invalid or expired invitation scope')
+        if link_password is not None: inv['password']=link_password
         return inv
     async def pending(self, invitation):
         result = await self.call('GET', '/group/invitations/' + invitation['id'])
@@ -185,6 +187,9 @@ class Groups:
         if invitation['version'] != 1 or invitation['expires'] <= time.time() or any(invitation[k] != self.config[k] for k in ('url','app','group')): raise ValueError('Invalid or expired invitation')
         if invitation.get('mode','manual') not in ('manual','auto'): raise ValueError('Unknown invitation mode')
         if invitation.get('mode') == 'auto': self._invitation_grant(invitation)
+        if invitation.get('password') is not None:
+            # A password carried by the scanned link becomes this device's relay access password.
+            self._access = access_headers(invitation['password']); self.config['password'] = invitation['password']
         self.config.setdefault('token', secrets.token_hex(32))
         j = {'version': 1, 'app': self.config['app'], 'group': self.config['group'], 'invitation': invitation['id'], 'member': member(self.config,name), 'token_hash': digest(self.config['token'].encode())}
         pending = self.config.get('pending_join', {})

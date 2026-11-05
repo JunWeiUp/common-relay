@@ -17,6 +17,9 @@ func TestInvitationLinkVectors(t *testing.T) {
 	var v struct {
 		Invitation                          GroupInvitation `json:"invitation"`
 		Key, Nonce, Packet, ReadToken, Link string
+		AccessPassword                      string   `json:"access_password"`
+		LinkWithPassword                    string   `json:"link_with_password"`
+		InvalidLinkSuffixes                 []string `json:"invalid_link_suffixes"`
 	}
 	if err = json.Unmarshal(b, &v); err != nil {
 		t.Fatal(err)
@@ -47,13 +50,32 @@ func TestInvitationLinkVectors(t *testing.T) {
 	if invitationToken(key) != v.ReadToken {
 		t.Fatal("token mismatch")
 	}
-	link, err := invitationMakeLink(v.Invitation, key)
+	link, err := invitationMakeLink(v.Invitation, key, "")
 	if err != nil || link != v.Link {
 		t.Fatal("link mismatch")
 	}
-	u, id, k, err := invitationParseLink(link, false)
-	if err != nil || u != v.Invitation.URL || id != v.Invitation.ID || k != key {
+	u, id, k, pw, err := invitationParseLink(link, false)
+	if err != nil || u != v.Invitation.URL || id != v.Invitation.ID || k != key || pw != "" {
 		t.Fatal("parse mismatch")
+	}
+	if v.AccessPassword == "" || v.LinkWithPassword == "" || len(v.InvalidLinkSuffixes) == 0 {
+		t.Fatal("access password vectors missing")
+	}
+	withPassword, err := invitationMakeLink(v.Invitation, key, v.AccessPassword)
+	if err != nil || withPassword != v.LinkWithPassword {
+		t.Fatal("link with password mismatch")
+	}
+	u, id, k, pw, err = invitationParseLink(withPassword, false)
+	if err != nil || u != v.Invitation.URL || id != v.Invitation.ID || k != key || pw != v.AccessPassword {
+		t.Fatal("parse with password mismatch")
+	}
+	for _, suffix := range v.InvalidLinkSuffixes {
+		if _, _, _, _, err = invitationParseLink(link+suffix, false); err == nil {
+			t.Fatalf("invalid suffix %q accepted", suffix)
+		}
+	}
+	if _, err = invitationMakeLink(v.Invitation, key, "bad pass"); err == nil {
+		t.Fatal("invalid password accepted by link builder")
 	}
 	if _, err = invitationOpen(v.Packet, [32]byte{}); err == nil {
 		t.Fatal("wrong key accepted")
@@ -62,7 +84,7 @@ func TestInvitationLinkVectors(t *testing.T) {
 		t.Fatal("tampered packet accepted")
 	}
 	for _, s := range []string{link + "=", strings.Replace(link, "/i/", "/other/", 1), strings.Replace(link, "relay.example.com", "user@relay.example.com", 1), strings.Replace(link, "#", "?x=1#", 1)} {
-		if _, _, _, err = invitationParseLink(s, false); err == nil {
+		if _, _, _, _, err = invitationParseLink(s, false); err == nil {
 			t.Fatal("invalid link accepted")
 		}
 	}

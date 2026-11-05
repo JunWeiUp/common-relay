@@ -71,6 +71,9 @@ type GroupInvitation struct {
 	Grant          *GroupEntry `json:"grant,omitempty"`
 	DelegateSecret string      `json:"delegate_secret,omitempty"`
 	ShortLink      string      `json:"short_link,omitempty"`
+	// Password is the relay access password carried by a scanned short link's fragment.
+	// It is never sealed into the invitation packet.
+	Password string `json:"password,omitempty"`
 }
 type GroupPendingJoin struct {
 	Invitation GroupInvitation `json:"invitation"`

@@ -75,7 +75,9 @@ func TestGroupsLoopback(t *testing.T) {
 		t.Fatal(e)
 	} else if anon, e := NewGroups(&GroupConfig{URL: config.URL, App: config.App, Device: "anon", SecretKey: secret}, true); e != nil {
 		t.Fatal(e)
-	} else if _, e = anon.ResolveInvitation(inv.ShortLink); e == nil || !strings.Contains(e.Error(), "401") {
+	} else if !strings.Contains(inv.ShortLink, ".") {
+		t.Fatal("short link must carry the inviter's access password")
+	} else if _, e = anon.ResolveInvitation(inv.ShortLink[:strings.LastIndex(inv.ShortLink, ".")]); e == nil || !strings.Contains(e.Error(), "401") {
 		t.Fatalf("missing access password must be rejected: %v", e)
 	}
 	for _, mode := range []string{"manual", "auto"} {
@@ -88,14 +90,17 @@ func TestGroupsLoopback(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			c := &GroupConfig{URL: config.URL, App: config.App, Group: config.Group, Device: fmt.Sprintf("peer-%s", mode), SecretKey: secret, Password: access}
+			c := &GroupConfig{URL: config.URL, App: config.App, Group: config.Group, Device: fmt.Sprintf("peer-%s", mode), SecretKey: secret}
+			if mode == "manual" {
+				c.Password = access // auto: fresh device learns the password from the link
+			}
 			peer, e := NewGroups(c, true)
 			if e != nil {
 				t.Fatal(e)
 			}
 			resolved, e := peer.ResolveInvitation(inv.ShortLink)
-			if e != nil {
-				t.Fatal(e)
+			if e != nil || resolved.Password != access {
+				t.Fatalf("resolve: %v", e)
 			}
 			if e = peer.Join(resolved, "Peer"); e != nil {
 				t.Fatal(e)
@@ -110,7 +115,7 @@ func TestGroupsLoopback(t *testing.T) {
 				}
 			}
 			ok, e := peer.FinishJoin()
-			if e != nil || !ok {
+			if e != nil || !ok || c.Password != access {
 				t.Fatalf("finish: %v", e)
 			}
 			if e = peer.Rename(c.Device, "New name"); e != nil {
