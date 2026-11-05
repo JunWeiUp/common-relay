@@ -36,7 +36,7 @@ bash deploy/install.sh /etc/nginx/sites-available/relay.conf
 也可在仓库根目录本地打包（产物默认位于 `build/server-release/`；未提交改动会标为 `dirty: true`）：
 
 ```sh
-python3 scripts/package-server.py --version v0.1.4-local
+python3 scripts/package-server.py --version v0.1.5-local
 # 或仅构建目标服务器的二进制，保留 build/ 与 deploy/ 目录结构
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o build/common-relay-linux-amd64 ./cmd/common-relay
 ```
