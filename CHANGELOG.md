@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-- **不兼容**：新增服务器访问密码。`serve` 必须提供 `--access-password-file`（仅存 SHA-256，`hash-password` 生成），所有 `/relay/v1/*` 请求须带 `Relay-Access`，否则 401；七类 SDK 新增 `password` 配置，互通脚本、systemd（LoadCredential）与安装脚本同步更新。
-
 - SDK 改为按 Git 标签依赖分发：根目录 `Package.swift`（Swift）、JitPack（Java/Kotlin）、Git 子目录依赖（Dart/Python/Go/Rust）及 Release tgz（TypeScript）；新增 `release.yml` 发布工作流，各 SDK 版本统一为 0.1.0，源码快照降为可选。
 - 保持各语言独立 SDK，不依赖共享 Rust 核心或自有多平台原生库。
 - 新增 Kotlin Android 协程接口，复用 Java 的完整协议实现。
@@ -11,6 +9,12 @@
 - 新增 Rust 轻量客户端（独立 crate，纯 Rust NaCl box 与 rustls）：能力与 TypeScript/Go 一致，并加入回环互通脚本。
 - TypeScript、Go、Rust 补齐完整能力：持久化离线消息（日志、ACK、去重、清理）、secretstream 双向流、加密文件、签名设备组（严格载荷、委托授权、自助创建、改名、退出、解散）及加密短邀请；七类 SDK 共用向量，`local-interop.py`、`group-interop.py` 增加三者的互通探针。
 - 源码快照工具支持 Kotlin、TypeScript、Go、Rust；保留文件续传偏移检查与 Python 流关闭唤醒修复。
+
+## 0.1.5
+
+- **不兼容**：新增服务器访问密码。`serve` 必须提供 `--access-password-file`（仅存 SHA-256，`hash-password` 生成），所有 `/relay/v1/*` 请求须带 `Relay-Access`，否则 401；七类 SDK 新增 `password` 配置，互通脚本、systemd（LoadCredential）与安装脚本同步更新。
+- 加密短邀请可携带服务器访问密码；七类 SDK 同步支持解析与传递，密码以 Base64URL 编码置于 URI 片段，解析时通过 Relay-Access 请求头使用；持有完整链接即可获知密码。
+- SDK 清单、依赖示例和源码快照版本统一更新至 0.1.5。
 
 ## 0.1.4
 
