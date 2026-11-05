@@ -6,7 +6,11 @@ class RelayGroups {
   final Sodium sodium;
   final Map<String, dynamic> config;
   final bool allowLocalTest;
-  RelayGroups(this.sodium, this.config, {this.allowLocalTest = false});
+  /// `config['password']` is the optional server access password, sent as
+  /// `Relay-Access` on every group, enrollment and invitation-link request.
+  RelayGroups(this.sodium, this.config, {this.allowLocalTest = false}) {
+    relayAccessPassword(config['password']);
+  }
   static const domain = 'common-relay/group-signing/v1\u0000';
   static String digest(List<int> data) =>
       hashes.sha256.convert(data).toString();
@@ -213,6 +217,7 @@ class RelayGroups {
         ..followRedirects = false;
       req.headers['Authorization'] =
           authorization ?? 'Bearer ${config['token'] ?? ''}';
+      req.headers.addAll(_accessHeaders(config['password'] as String?));
       if (value != null) {
         req.headers['Content-Type'] = 'application/json';
         req.body = jsonEncode(value);
@@ -428,6 +433,8 @@ class RelayGroups {
     );
     final endpoint = RelayGroups(sodium, {
       'url': p.url,
+      // Only share the access password with the caller's own relay, never a foreign one.
+      if (config['password'] != null && p.url == config['url']) 'password': config['password'],
     }, allowLocalTest: allowLocalTest);
     final result = await endpoint.call(
       'GET',

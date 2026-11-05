@@ -34,13 +34,19 @@ public final class RelayClient implements AutoCloseable {
     public void cleanup()throws Exception{if(journal!=null)journal.cleanup();}
     public RelayClient(OkHttpClient http,Crypto crypto,Listener listener){this(http,crypto,listener,null);}
     public RelayClient(OkHttpClient http,Crypto crypto,Listener listener,RelayJournal journal){this.http=http;this.crypto=crypto;this.listener=listener;this.journal=journal;}
-    public void connect(String url,String token){connect(url,token,false);}
-    public void connect(String url,String token,boolean allowLocalTest){
+    public void connect(String url,String token){connect(url,token,null,false);}
+    public void connect(String url,String token,boolean allowLocalTest){connect(url,token,null,allowLocalTest);}
+    /** @param password server access password sent as Relay-Access, or null when the relay does not require one. */
+    public void connect(String url,String token,String password){connect(url,token,password,false);}
+    public void connect(String url,String token,String password,boolean allowLocalTest){
+        RelayAccess.validate(password);
         java.net.URI uri=java.net.URI.create(url);
         boolean local=allowLocalTest&&"ws".equals(uri.getScheme())&&"127.0.0.1".equals(uri.getHost());
         if((!"wss".equals(uri.getScheme())&&!local)||token.length()<32)throw new IllegalArgumentException("WSS and device credential required");
         if(journal!=null){cleaner=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"relay-cleanup");t.setDaemon(true);return t;});cleaner.scheduleAtFixedRate(()->{try{cleanup();}catch(Exception e){fail(e);}},1,1,TimeUnit.HOURS);}
-        socket=http.newWebSocket(new Request.Builder().url(url).header("Authorization","Bearer "+token).header("Sec-WebSocket-Protocol","common-relay.v1").build(),new WebSocketListener(){
+        Request.Builder upgrade=new Request.Builder().url(url).header("Authorization","Bearer "+token).header("Sec-WebSocket-Protocol","common-relay.v1");
+        if(password!=null)upgrade.header(RelayAccess.HEADER,password);
+        socket=http.newWebSocket(upgrade.build(),new WebSocketListener(){
             @Override public void onOpen(WebSocket ws,Response response){if(!"common-relay.v1".equals(response.header("Sec-WebSocket-Protocol")))fail(new IOException("Protocol mismatch"));}
             @Override public void onMessage(WebSocket ws,String text){try{dispatch(new JSONObject(text));}catch(Exception e){fail(e);}}
             @Override public void onMessage(WebSocket ws,ByteString bytes){try{binary(bytes.toByteArray());}catch(Exception e){fail(e);}}

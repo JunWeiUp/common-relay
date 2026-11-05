@@ -13,7 +13,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::client::{valid_token, validate_endpoint};
+use crate::client::{checked_access_password, valid_token, validate_endpoint, ACCESS_HEADER};
 use crate::crypto::{random, valid_id, valid_name};
 use crate::secretstream::{aad, DecryptStream, EncryptStream, ABYTES, MAX_RECORD_PLAIN};
 use crate::{Error, Identity, Options, Result};
@@ -314,7 +314,14 @@ impl RelayFiles {
         if !valid_token(token) {
             return Err(Error::Invalid("invalid device credential"));
         }
+        let access = checked_access_password(options.password.as_deref())?;
         let mut headers = HeaderMap::new();
+        if let Some(p) = access {
+            let mut value =
+                HeaderValue::from_str(p).map_err(|_| Error::Invalid("invalid access password"))?;
+            value.set_sensitive(true);
+            headers.insert(ACCESS_HEADER, value);
+        }
         let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|_| Error::Invalid("invalid device credential"))?;
         auth.set_sensitive(true);
@@ -333,7 +340,7 @@ impl RelayFiles {
 
     /// Derives the files URL from the WebSocket relay endpoint used by [`crate::Client`].
     pub fn for_relay_endpoint(endpoint: &str, token: &str, options: Options) -> Result<Self> {
-        let mut url = validate_endpoint(endpoint, options)
+        let mut url = validate_endpoint(endpoint, &options)
             .ok_or(Error::Invalid("a WSS relay endpoint is required"))?;
         let scheme = if url.scheme() == "wss" {
             "https"

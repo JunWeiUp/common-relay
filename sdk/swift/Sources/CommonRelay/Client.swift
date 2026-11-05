@@ -15,9 +15,15 @@ public actor RelayClient {
     private var scope: String { [identity.app, identity.group, identity.device].joined(separator: "/") }
     public init(identity: RelayIdentity, journal: RelayJournal? = nil) { self.identity = identity; self.journal = journal }
     public func cleanup() throws { try journal?.cleanup() }
-    public func connect(url: URL, token: String, allowLocalTest: Bool = false) async throws -> AsyncThrowingStream<RelayEvent, Error> {
-        guard socket == nil, url.scheme == "wss" || (allowLocalTest && url.scheme == "ws" && url.host == "127.0.0.1") else { throw RelayError.invalid("WSS required") }
+    static func upgradeRequest(url: URL, token: String, password: String?) throws -> URLRequest {
+        try RelayAccess.validate(password)
         var request = URLRequest(url: url); request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization"); request.setValue("common-relay.v1", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        RelayAccess.apply(password, to: &request); return request
+    }
+    /// `password` is the server-wide access password (sent as `Relay-Access`); required by production relays.
+    public func connect(url: URL, token: String, password: String? = nil, allowLocalTest: Bool = false) async throws -> AsyncThrowingStream<RelayEvent, Error> {
+        guard socket == nil, url.scheme == "wss" || (allowLocalTest && url.scheme == "ws" && url.host == "127.0.0.1") else { throw RelayError.invalid("WSS required") }
+        let request = try Self.upgradeRequest(url: url, token: token, password: password)
         let session = URLSession(configuration: .ephemeral); self.session = session
         let socket = session.webSocketTask(with: request); socket.maximumMessageSize = 270336; self.socket = socket; socket.resume()
         do {

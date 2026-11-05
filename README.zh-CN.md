@@ -66,7 +66,8 @@ python3 -m venv .venv
 ## 运行服务
 
 ```sh
-build/common-relay serve --data ./data --listen 127.0.0.1:47805
+printf '%s\n' 'choose-a-long-password' | build/common-relay hash-password > access.sha256
+build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256
 ```
 
 公网部署需要 TLS 反向代理，并使用 **WSS/HTTPS**。使用服务端打包流程发布的 Release 提供 Linux amd64 / arm64 部署包，内含二进制、安装脚本、配置和来源校验记录。仓库提供 [Nginx 配置](deploy/nginx.conf)和 [systemd 单元](deploy/common-relay.service)，安装、备份和升级步骤见[部署指南](docs/DEPLOYMENT.md)。
@@ -75,7 +76,8 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805
 
 | CLI 命令 | 用途 |
 | --- | --- |
-| `serve` | 启动中继服务 |
+| `serve` | 启动中继服务（必须提供 `--access-password-file`；所有客户端须在 `Relay-Access` 中发送服务器访问密码） |
+| `hash-password` | 从标准输入读取访问密码，输出 `--access-password-file` 所需的 SHA-256 |
 | `check` | 打开存储，检查数据库连接并校验已存储的组记录 |
 | `device-add` | 使用客户端生成的公钥登记静态设备 |
 | `device-revoke` | 撤销静态登记设备 |

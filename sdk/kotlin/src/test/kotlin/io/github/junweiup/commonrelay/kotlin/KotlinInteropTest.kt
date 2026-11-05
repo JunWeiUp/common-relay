@@ -32,7 +32,7 @@ class KotlinInteropTest {
             override fun onClosed(error: Throwable) { ready.completeExceptionally(error); events.close(error) }
         }, RelayJournal(Path.of(c.getString("state_path"))))
         try {
-            client.connect(c.getString("url"), c.getString("token"), true)
+            client.connectRelay(c.getString("url"), c.getString("token"), password = c.optString("password").ifEmpty { null }, allowLocalTest = true)
             withTimeout(120_000) {
                 ready.await()
                 check(client.onlinePeers().getJSONArray("devices").length() > 0)

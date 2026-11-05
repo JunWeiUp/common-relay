@@ -54,6 +54,7 @@ type stream struct {
 }
 type Server struct {
 	SelfServiceApps                map[string]bool
+	AccessHash                     []byte // SHA-256 of the required Relay-Access password; nil disables the check
 	Store                          *Store
 	mu                             sync.Mutex
 	peers                          map[string]*peer
@@ -80,12 +81,12 @@ func (s *Server) presence(d Device, kind string) {
 }
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
-	m.HandleFunc("/relay/v1/ws", s.websocket)
-	m.HandleFunc("/relay/v1/group", s.groups)
-	m.HandleFunc("/relay/v1/group/", s.groups)
-	m.HandleFunc("/relay/v1/enroll/", s.groups)
-	m.HandleFunc("/relay/v1/files", s.files)
-	m.HandleFunc("/relay/v1/files/", s.files)
+	m.HandleFunc("/relay/v1/ws", s.requireAccess(s.websocket))
+	m.HandleFunc("/relay/v1/group", s.requireAccess(s.groups))
+	m.HandleFunc("/relay/v1/group/", s.requireAccess(s.groups))
+	m.HandleFunc("/relay/v1/enroll/", s.requireAccess(s.groups))
+	m.HandleFunc("/relay/v1/files", s.requireAccess(s.files))
+	m.HandleFunc("/relay/v1/files/", s.requireAccess(s.files))
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if s.Store.DB.Ping() != nil {
 			http.Error(w, "unavailable", 503)

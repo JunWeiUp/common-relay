@@ -59,14 +59,16 @@ class RelayFileCrypto {
 class RelayFiles {
   final Uri base;
   final String token;
+  /// Optional server access password, sent as `Relay-Access` on every request.
+  final String? password;
   final http.Client _http;
-  RelayFiles(this.base, this.token, {http.Client? client, bool allowLocalTest = false}) : _http = client ?? http.Client() {
+  RelayFiles(this.base, this.token, {http.Client? client, bool allowLocalTest = false, String? password}) : password = relayAccessPassword(password), _http = client ?? http.Client() {
     if (base.scheme != 'https' && !(allowLocalTest && base.scheme == 'http' && base.host == '127.0.0.1')) throw ArgumentError('HTTPS required');
   }
   Future<http.Response> _request(String method, String path, {List<int>? body, Map<String, String>? headers}) async {
     final uri = base.replace(path: '${base.path.replaceAll(RegExp(r'/+$'), '')}$path');
     final request = http.Request(method, uri)..followRedirects = false;
-    request.headers.addAll({'Authorization': 'Bearer $token', ...?headers});
+    request.headers.addAll({'Authorization': 'Bearer $token', ..._accessHeaders(password), ...?headers});
     if (body != null) request.bodyBytes = body;
     return await http.Response.fromStream(await _http.send(request)).timeout(const Duration(seconds: 60));
   }

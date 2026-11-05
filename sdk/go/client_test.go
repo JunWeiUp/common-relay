@@ -194,11 +194,11 @@ func TestFailClosedAndRequestCancellation(t *testing.T) {
 		}
 	}
 	endpoint := testServer(t, idle, true)
-	if _, err := Dial(ctx, endpoint, token, bob(t), Options{true}); err == nil {
+	if _, err := Dial(ctx, endpoint, token, bob(t), Options{AllowLocalTest: true}); err == nil {
 		t.Fatal("accepted mismatched identity")
 	}
 	endpoint = testServer(t, idle, false)
-	c, err := Dial(ctx, endpoint, token, bob(t), Options{true})
+	c, err := Dial(ctx, endpoint, token, bob(t), Options{AllowLocalTest: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestRedirectNeverForwardsCredential(t *testing.T) {
 	defer target.Close()
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL+"/relay/v1/ws", 302) }))
 	defer source.Close()
-	_, err := Dial(context.Background(), "ws"+strings.TrimPrefix(source.URL, "http")+"/relay/v1/ws", strings.Repeat("x", 64), bob(t), Options{true})
+	_, err := Dial(context.Background(), "ws"+strings.TrimPrefix(source.URL, "http")+"/relay/v1/ws", strings.Repeat("x", 64), bob(t), Options{AllowLocalTest: true})
 	if err == nil || reached.Load() {
 		t.Fatal("redirect accepted")
 	}
@@ -243,7 +243,7 @@ func TestOfflineReceptionRejected(t *testing.T) {
 	}, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	c, err := Dial(ctx, endpoint, strings.Repeat("x", 64), bob(t), Options{true})
+	c, err := Dial(ctx, endpoint, strings.Repeat("x", 64), bob(t), Options{AllowLocalTest: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,12 @@
 
 ## 身份与接入
 
+### 服务器访问密码
+
+服务器运营者设置一个访问密码。客户端在**每个** `/relay/v1/*` 请求（WebSocket 升级、设备组、登记、邀请链接、文件）上发送 `Relay-Access: <密码>`；缺失或错误时服务器在其他任何处理之前返回 401。`/healthz` 不需要。密码为 8–128 个可打印 ASCII 字符（0x21–0x7E，不含空格），与设备令牌、`Invitation`/`Claim`/`InvitationLink` 凭据相互独立，不替代它们，也不参与端到端加密。
+
+服务器只保存密码 SHA-256 的小写十六进制（`serve --access-password-file`，由 `common-relay hash-password` 从标准输入生成），用常量时间比较；`serve` 未配置时拒绝启动。SDK 配置字段统一为 `password`（Go 为 `Password`），设置后校验格式并在所有请求上发送；邀请、短邀请加密包、日志及持久化状态都不得包含该密码，扫码方需自行配置同一服务器密码。
+
 `GET /relay/v1/ws` 使用 `Authorization: Bearer <device-token>` 和 `Sec-WebSocket-Protocol: common-relay.v1`。TLS 在反向代理终止；不使用查询参数传凭据，不协商压缩。未授权返回401，重复在线设备或连接额度耗尽返回409。
 
 服务器发送 `welcome`，含 `version:1`、`identity:{app,group,device,public_key}` 和 `capabilities`。SDK 必须核对自己本地身份。应用、设备组来自服务器登记记录，不信任客户端提交的命名空间。同一设备只允许一个连接。

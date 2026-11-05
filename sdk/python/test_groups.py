@@ -1,3 +1,4 @@
+import hashlib
 import asyncio
 import copy
 import json
@@ -12,19 +13,21 @@ from nacl.public import PrivateKey
 from common_relay.groups import Groups, sign, unpack, payload, digest, member, verify, advance
 
 ROOT=Path(__file__).resolve().parents[2]
+ACCESS='interop-access-1'
 class GroupTests(unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)
   with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
   self.url=f'ws://127.0.0.1:{port}/relay/v1/ws';self.server=ROOT/'build/common-relay'
   subprocess.run([str(self.server),'group-bootstrap','--data',str(self.path/'db'),'--app','example','--group','test','--credential-out',str(self.path/'bootstrap')],check=True)
-  self.proc=subprocess.Popen([str(self.server),'serve','--self-service-apps','example','--data',str(self.path/'db'),'--listen',f'127.0.0.1:{port}'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  (self.path/'access').write_text(hashlib.sha256(ACCESS.encode()).hexdigest())
+  self.proc=subprocess.Popen([str(self.server),'serve','--self-service-apps','example','--data',str(self.path/'db'),'--listen',f'127.0.0.1:{port}','--access-password-file',str(self.path/'access')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   for _ in range(100):
    try:_,w=await asyncio.open_connection('127.0.0.1',port);w.close();await w.wait_closed();break
    except OSError:await asyncio.sleep(.03)
   self.a=self.device('mac');await self.a.bootstrap(json.loads((self.path/'bootstrap').read_text()),'Mac')
  def device(self,id):
-  key=PrivateKey.generate();return Groups({'url':self.url,'app':'example','group':'test','device':id,'secret_key':bytes(key).hex(),'public_key':bytes(key.public_key).hex(),'trusted_peers':{}},allow_local_test=True)
+  key=PrivateKey.generate();return Groups({'url':self.url,'password':ACCESS,'app':'example','group':'test','device':id,'secret_key':bytes(key).hex(),'public_key':bytes(key.public_key).hex(),'trusted_peers':{}},allow_local_test=True)
  async def asyncTearDown(self):self.proc.terminate();self.proc.wait(timeout=10);self.tmp.cleanup()
  async def add(self,host,new,manager=False):
   inv=await host.invite();await new.join(inv,new.config['device']);req=await host.pending(inv);await host.approve(inv,req,manager=manager);self.assertTrue(await new.finish_join());return inv

@@ -2,6 +2,7 @@
 """Python ↔ TypeScript/Go/Rust online messaging, using only ephemeral local identities."""
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,9 @@ from nacl.public import PrivateKey
 from common_relay import Client, Identity
 
 ROOT = Path(__file__).resolve().parents[1]
+ACCESS='interop-access-1'
+def access_file(directory):
+    path=directory/'access-password-hash';path.write_text(hashlib.sha256(ACCESS.encode()).hexdigest());return path
 
 async def run(args, directory):
     with socket.socket() as sock:
@@ -22,11 +26,11 @@ async def run(args, directory):
     for name, key in keys.items():
         credential = directory / (name + '-credential.json')
         subprocess.run([args.server, 'device-add', '--data', str(directory/'server'), '--app', 'interop', '--group', 'lightweight', '--device', name, '--public-key', bytes(key.public_key).hex(), '--credential-out', str(credential)], check=True, stdout=subprocess.DEVNULL)
-        c = {'app':'interop', 'group':'lightweight', 'device':name, 'secret_key':bytes(key).hex(), 'trusted_peers':{n:bytes(k.public_key).hex() for n,k in keys.items() if n!=name}, 'url':url, 'token':json.loads(credential.read_text())['token'], 'allow_local_test':True}
+        c = {'app':'interop', 'group':'lightweight', 'device':name, 'secret_key':bytes(key).hex(), 'trusted_peers':{n:bytes(k.public_key).hex() for n,k in keys.items() if n!=name}, 'url':url,'password':ACCESS, 'token':json.loads(credential.read_text())['token'], 'allow_local_test':True}
         path=directory/(name+'.json');path.write_text(json.dumps(c));path.chmod(0o600);configs[name]=c
     subprocess.run(['go', 'build', '-o', str(directory/'go-probe'), './examples/echo'],cwd=ROOT/'sdk/go',check=True)
     subprocess.run(['cargo', 'build', '--quiet', '--release', '--example', 'echo'],cwd=ROOT/'sdk/rust',check=True)
-    server=subprocess.Popen([args.server,'serve','--data',str(directory/'server'),'--listen',f'127.0.0.1:{port}','--disk-reserve','0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    server=subprocess.Popen([args.server,'serve','--data',str(directory/'server'),'--listen',f'127.0.0.1:{port}','--disk-reserve','0','--access-password-file',str(access_file(directory))],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
         for _ in range(100):
             try:
@@ -35,7 +39,7 @@ async def run(args, directory):
         else:raise RuntimeError('Local server failed to start')
         for name in ('typescript','go','rust'):
             c=configs['python'];identity=Identity(c['app'],c['group'],c['device'],c['secret_key'],c['trusted_peers'])
-            async with Client(url,c['token'],identity,allow_local_test=True) as client:
+            async with Client(url,c['token'],identity,allow_local_test=True,password=ACCESS) as client:
                 command={'typescript':['node',str(ROOT/'sdk/typescript/examples/echo.mjs')],'go':[str(directory/'go-probe')],'rust':[str(ROOT/'sdk/rust/target/release/examples/echo')]}[name]
                 logpath=directory/(name+'.log')
                 with logpath.open('w') as log:

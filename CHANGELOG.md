@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **不兼容**：新增服务器访问密码。`serve` 必须提供 `--access-password-file`（仅存 SHA-256，`hash-password` 生成），所有 `/relay/v1/*` 请求须带 `Relay-Access`，否则 401；七类 SDK 新增 `password` 配置，互通脚本、systemd（LoadCredential）与安装脚本同步更新。
+
 - SDK 改为按 Git 标签依赖分发：根目录 `Package.swift`（Swift）、JitPack（Java/Kotlin）、Git 子目录依赖（Dart/Python/Go/Rust）及 Release tgz（TypeScript）；新增 `release.yml` 发布工作流，各 SDK 版本统一为 0.1.0，源码快照降为可选。
 - 保持各语言独立 SDK，不依赖共享 Rust 核心或自有多平台原生库。
 - 新增 Kotlin Android 协程接口，复用 Java 的完整协议实现。

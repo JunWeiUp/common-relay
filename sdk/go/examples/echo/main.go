@@ -23,15 +23,16 @@ func run() error {
 		return err
 	}
 	var config struct {
-		App     string            `json:"app"`
-		Group   string            `json:"group"`
-		Device  string            `json:"device"`
-		Secret  string            `json:"secret_key"`
-		Trusted map[string]string `json:"trusted_peers"`
-		URL     string            `json:"url"`
-		Token   string            `json:"token"`
-		Local   bool              `json:"allow_local_test"`
-		State   string            `json:"state_path"`
+		App      string            `json:"app"`
+		Group    string            `json:"group"`
+		Device   string            `json:"device"`
+		Secret   string            `json:"secret_key"`
+		Trusted  map[string]string `json:"trusted_peers"`
+		URL      string            `json:"url"`
+		Token    string            `json:"token"`
+		Password string            `json:"password"`
+		Local    bool              `json:"allow_local_test"`
+		State    string            `json:"state_path"`
 	}
 	if err = json.Unmarshal(raw, &config); err != nil {
 		return err
@@ -55,7 +56,7 @@ func run() error {
 		}
 		defer journal.Close()
 	}
-	client, err := relay.DialJournal(ctx, config.URL, config.Token, identity, journal, relay.Options{AllowLocalTest: true})
+	client, err := relay.DialJournal(ctx, config.URL, config.Token, identity, journal, relay.Options{AllowLocalTest: true, Password: config.Password})
 	if err != nil {
 		return err
 	}

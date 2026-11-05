@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { Client, Identity, Journal, Files, prepareFile, decryptFile, safeFileName } from '../dist/index.js';
 
 const binary = process.env.COMMON_RELAY_SERVER ?? new URL('../../../build/common-relay', import.meta.url).pathname;
+const PASSWORD = 'integration-access-1';
 const skip = existsSync(binary) ? false : `relay binary not found at ${binary}`;
 
 async function freePort() {
@@ -30,7 +31,8 @@ async function relay(t, names) {
     devices[name] = { identity: new Identity('example', 'ts', name, keys[name].secretKey, trusted), token: JSON.parse(readFileSync(out, 'utf8')).token, state: join(dir, name + '-state') };
   }
   const port = await freePort();
-  const proc = spawn(binary, ['serve', '--data', join(dir, 'server'), '--listen', `127.0.0.1:${port}`, '--disk-reserve', '0'], { stdio: 'ignore' });
+  writeFileSync(join(dir, 'access'), createHash('sha256').update(PASSWORD).digest('hex') + '\n', { mode: 0o600 });
+  const proc = spawn(binary, ['serve', '--data', join(dir, 'server'), '--listen', `127.0.0.1:${port}`, '--disk-reserve', '0', '--access-password-file', join(dir, 'access')], { stdio: 'ignore' });
   t.after(async () => { proc.kill(); await new Promise(resolve => proc.once('exit', resolve)); rmSync(dir, { recursive: true, force: true }); });
   for (let i = 0; ; i++) {
     const ok = await new Promise(resolve => { const s = connect(port, '127.0.0.1', () => { s.end(); resolve(true); }); s.on('error', () => resolve(false)); });
@@ -40,7 +42,7 @@ async function relay(t, names) {
   }
   return { dir, url: `ws://127.0.0.1:${port}/relay/v1/ws`, files: `http://127.0.0.1:${port}/relay/v1/files`, devices };
 }
-const open = (env, name, journal) => Client.connect(env.url, env.devices[name].token, env.devices[name].identity, { allowLocalTest: true, journal });
+const open = (env, name, journal) => Client.connect(env.url, env.devices[name].token, env.devices[name].identity, { allowLocalTest: true, journal, password: PASSWORD });
 async function nextOf(client, type, ms = 10000) {
   const stop = AbortSignal.timeout(ms);
   for (;;) { const event = await client.nextEvent(stop); if (event.type === type) return event; }
@@ -57,6 +59,8 @@ test('offline delivery: stored, retry, ack, received, lost-ACK dedupe and journa
   assert.equal((await alice.message('bob', Buffer.from('first'), { offline: true, id })).type, 'stored');
   await assert.rejects(alice.message('bob', Buffer.from('other'), { offline: true, id }), /different content/);
 
+  await assert.rejects(Client.connect(env.url, env.devices.bob.token, env.devices.bob.identity, { allowLocalTest: true }), /transport failed|401|Unexpected server response/);
+  await assert.rejects(Client.connect(env.url, env.devices.bob.token, env.devices.bob.identity, { allowLocalTest: true, password: 'wrong-password-x' }), /transport failed|401|Unexpected server response/);
   const noJournal = await open(env, 'bob');
   await assert.rejects(nextOf(noJournal, 'message'), /journal/);
 
@@ -114,8 +118,8 @@ test('bidirectional stream: 1 MiB each way, credit flow control and FINAL', { sk
 
 test('files: resume after 409, ranged download resume, verified publish, tamper and conflict', { skip }, async t => {
   const env = await relay(t, ['alice', 'bob']);
-  const aliceFiles = new Files(env.files, env.devices.alice.token, { allowLocalTest: true });
-  const bobFiles = new Files(env.url, env.devices.bob.token, { allowLocalTest: true });
+  const aliceFiles = new Files(env.files, env.devices.alice.token, { allowLocalTest: true, password: PASSWORD });
+  const bobFiles = new Files(env.url, env.devices.bob.token, { allowLocalTest: true, password: PASSWORD });
   assert.throws(() => new Files(env.files, env.devices.bob.token), /HTTPS/);
   assert.throws(() => new Files('https://example.com/other', env.devices.bob.token), /HTTPS/);
   const source = join(env.dir, 'source.bin'), staged = join(env.dir, 'alice.enc');
@@ -125,7 +129,7 @@ test('files: resume after 409, ranged download resume, verified publish, tamper 
   await assert.rejects(prepareFile(env.devices.alice.identity, 'bob', source, staged), /EEXIST/);
   assert.equal(info.size, readFileSync(staged).length);
   // A previous attempt created the upload and sent the first chunk.
-  const auth = { Authorization: `Bearer ${env.devices.alice.token}` };
+  const auth = { Authorization: `Bearer ${env.devices.alice.token}`, 'Relay-Access': PASSWORD };
   assert.equal((await fetch(env.files, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(info) })).status, 201);
   const first = readFileSync(staged).subarray(0, 1 << 20);
   assert.equal((await fetch(`${env.files}/${info.id}/data`, { method: 'PUT', headers: { ...auth, 'Upload-Offset': '0' }, body: first })).status, 200);

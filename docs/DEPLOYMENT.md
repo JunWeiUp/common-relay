@@ -13,7 +13,19 @@ tar -xzf common-relay-server-<tag>-linux-<arch>.tar.gz
 cd common-relay-server-<tag>-linux-<arch>
 ```
 
-目标服务器需已有 systemd、Nginx、HTTPS 证书、Python 3 和 curl。在目标 Nginx HTTPS `server` 块内加入唯一一行 `# common-relay:include`，然后以 root 执行：
+目标服务器需已有 systemd、Nginx、HTTPS 证书、Python 3 和 curl。
+
+先设置服务器访问密码（所有客户端都要配置同一密码；服务器只保存 SHA-256，systemd 通过 `LoadCredential` 交给 DynamicUser 服务）：
+
+```sh
+sudo install -d -m 0700 /etc/common-relay
+read -rs PW && printf '%s\n' "$PW" | ./build/common-relay-linux-<arch> hash-password | sudo tee /etc/common-relay/access-password.sha256 >/dev/null && unset PW
+sudo chmod 0600 /etc/common-relay/access-password.sha256
+```
+
+更换密码：覆盖该文件后 `systemctl restart common-relay`；旧密码立即失效，所有客户端需要更新。
+
+在目标 Nginx HTTPS `server` 块内加入唯一一行 `# common-relay:include`，然后以 root 执行：
 
 ```sh
 bash deploy/install.sh /etc/nginx/sites-available/relay.conf

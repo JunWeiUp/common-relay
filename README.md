@@ -66,7 +66,8 @@ See [example details](examples/README.md) for expected output and integration no
 ## Run a server
 
 ```sh
-build/common-relay serve --data ./data --listen 127.0.0.1:47805
+printf '%s\n' 'choose-a-long-password' | build/common-relay hash-password > access.sha256
+build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256
 ```
 
 For public access, place the service behind a TLS reverse proxy and use **WSS/HTTPS**. Releases built with the server packaging workflow include Linux amd64 / arm64 deployment archives with binaries, installation scripts, configuration, and source checksums. The repository includes [Nginx configuration](deploy/nginx.conf) and a [systemd unit](deploy/common-relay.service). Follow the [deployment guide](docs/DEPLOYMENT.md) for installation, backups, and upgrades.
@@ -75,7 +76,8 @@ The demos explicitly allow unencrypted WebSocket transport on loopback. This set
 
 | CLI command | Purpose |
 | --- | --- |
-| `serve` | Run the relay |
+| `serve` | Run the relay (requires `--access-password-file`; every client must send the server access password in `Relay-Access`) |
+| `hash-password` | Read the access password from stdin and print the SHA-256 for `--access-password-file` |
 | `check` | Open the store, check database connectivity, and verify stored group records |
 | `device-add` | Register a static device using its client-generated public key |
 | `device-revoke` | Revoke a statically registered device |

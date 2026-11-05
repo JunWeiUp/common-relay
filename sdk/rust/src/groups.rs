@@ -1,4 +1,5 @@
 //! Authenticated device group management.
+use crate::client::{checked_access_password, ACCESS_HEADER};
 use crate::{validate_payload, Error, PayloadKind, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -244,12 +245,20 @@ fn now() -> Result<u64> {
 /// Group operations mutate `config`; persist it after every operation, including errors.
 pub struct Groups {
     pub config: Value,
+    access: Option<String>,
     base: String,
     local: bool,
     http: reqwest::Client,
 }
 impl Groups {
+    /// `config["password"]` (optional) is the server access password sent as `Relay-Access`
+    /// on every group/enroll request; it is never copied into invitations or links.
     pub fn new(config: Value, allow_local_test: bool) -> Result<Self> {
+        let access = match config.get("password") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(p)) => checked_access_password(Some(p))?.map(str::to_owned),
+            Some(_) => return Err(Error::Invalid("access password must be a string")),
+        };
         let u = url::Url::parse(field(&config, "url")?).map_err(|_| invalid())?;
         if !u.username().is_empty()
             || u.password().is_some()
@@ -273,12 +282,13 @@ impl Groups {
             .map_err(|_| invalid())?;
         Ok(Self {
             config,
+            access,
             base: base.to_string().trim_end_matches('/').to_owned(),
             local: allow_local_test,
             http,
         })
     }
-    async fn call(
+    pub(crate) async fn call(
         &self,
         method: reqwest::Method,
         path: &str,
@@ -297,6 +307,11 @@ impl Groups {
                 "Authorization",
                 auth.unwrap_or_else(|| format!("Bearer {token}")),
             );
+        if let Some(p) = &self.access {
+            let mut value = reqwest::header::HeaderValue::from_str(p).map_err(|_| invalid())?;
+            value.set_sensitive(true);
+            req = req.header(ACCESS_HEADER, value);
+        }
         if let Some(v) = value {
             req = req.json(v);
         }
@@ -527,7 +542,15 @@ impl Groups {
     }
     pub async fn resolve_invitation(&self, text: &str) -> Result<Value> {
         let (url, id, key) = crate::invitation_links::parse_link(text.trim(), self.local)?;
-        let endpoint = Groups::new(json!({"url":url}), self.local)?;
+        // The own access password is only sent to the own relay; a link for another relay
+        // cannot be joined anyway (join requires the same url) and must not learn it.
+        let mut endpoint_config = json!({ "url": url });
+        if self.config.get("url").and_then(Value::as_str) == Some(url.as_str()) {
+            if let Some(p) = &self.access {
+                endpoint_config["password"] = json!(p);
+            }
+        }
+        let endpoint = Groups::new(endpoint_config, self.local)?;
         let r = endpoint
             .call(
                 reqwest::Method::GET,
@@ -1028,6 +1051,9 @@ mod tests {
         let data = std::env::temp_dir().join(format!("relay-rust-group-{}", random(16).unwrap()));
         std::fs::create_dir(&data).unwrap();
         let credential = data.join("bootstrap.json");
+        let password = "{{SECRET_ovfdztxk}}";
+        let access = data.join("access.sha256");
+        std::fs::write(&access, hex::encode(Sha256::digest(password.as_bytes()))).unwrap();
         assert!(std::process::Command::new(&binary)
             .args([
                 "group-bootstrap",
@@ -1059,6 +1085,8 @@ mod tests {
                 "0",
                 "--self-service-apps",
                 "example",
+                "--access-password-file",
+                access.to_str().unwrap(),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1075,7 +1103,7 @@ mod tests {
         }
         assert!(ready);
         let url = format!("ws://{addr}/relay/v1/ws");
-        let config = |device: &str| json!({"url":url,"app":"example","device":device,"secret_key":random(32).unwrap(),"trusted_peers":{}});
+        let config = |device: &str| json!({"url":url,"password":password,"app":"example","device":device,"secret_key":random(32).unwrap(),"trusted_peers":{}});
         let mut initial = config("bootstrap-manager");
         initial["group"] = json!("bootstrap-test");
         let mut boot = Groups::new(initial, true).unwrap();

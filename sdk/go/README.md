@@ -16,7 +16,8 @@ import relay "github.com/JunWeiUp/common-relay/sdk/go"
 // secretKey、trustedPeers、deviceToken 均由应用从私有存储提供。
 identity, err := relay.NewIdentity("example", "my-group", "my-device", secretKey, trustedPeers)
 if err != nil { return err }
-client, err := relay.Dial(ctx, "wss://relay.example.com/relay/v1/ws", deviceToken, identity, relay.Options{})
+// relayPassword 是中继服务器的接入密码，每个请求都以 Relay-Access 头发送。
+client, err := relay.Dial(ctx, "wss://relay.example.com/relay/v1/ws", deviceToken, identity, relay.Options{Password: relayPassword})
 if err != nil { return err }
 defer client.Close()
 peers, err := client.Peers(ctx) // 发现信息不能自动成为可信公钥。
@@ -38,7 +39,7 @@ if event.Type == "message" { handleMessage(event.From, event.Data) }
 journal, err := relay.OpenJournal(privateDir, nil) // 每个目录同一时间只允许一个实例（OS 文件锁）。
 if err != nil { return err }
 defer journal.Close()
-client, err := relay.DialJournal(ctx, endpoint, deviceToken, identity, journal, relay.Options{})
+client, err := relay.DialJournal(ctx, endpoint, deviceToken, identity, journal, relay.Options{Password: relayPassword})
 id, _ := relay.NewMessageID() // 应用先持久化 ID，重试同一逻辑发送时复用。
 receipt, err := client.MessageOffline(ctx, "peer-device", id, data) // stored 或 received
 // 接收：业务事务提交后再确认。
@@ -74,3 +75,7 @@ go test -race ./...
 ```
 
 测试覆盖共享密码向量（含流与离线向量）、libsodium secretstream 逐字节一致与计数回绕换钥、上下文与公钥固定、篡改/过期拒绝、在线消息、查询、超时取消、关闭、重定向、无日志离线拒绝、日志重启重试/冲突/过期/终态/7 天清理/批量上限/目录独占、ACK 丢失重投去重、流 credit 窗口与 FINAL、文件加解密拒绝及上传续传/下载续传。仓库根目录的 `go test ./...` **不会**运行此独立 module，需单独执行。`scripts/lightweight-interop.py` 使用临时回环服务和身份验证 Python ↔ Go 在线互通；`examples/echo` 在配置含 `state_path` 时还回显离线消息（并 ACK）与流，可供 `scripts/local-interop.py` 驱动（双向离线 + 8 MiB 双向流）。
+
+## 服务器接入密码
+
+服务端强制要求接入密码时，`Options.Password`（`Dial`/`DialJournal`/`NewFiles`）和 `GroupConfig.Password`（JSON 键 `password`）必须设置为同一密码：8–128 个可打印 ASCII 字符（0x21–0x7E，不含空格），格式不合法时构造直接报错。SDK 在 WebSocket 升级、组/入组/短邀请解析及文件请求上都发送 `Relay-Access` 头；`ResolveInvitation` 使用本机配置的密码，密码不会写入邀请、短链接或日志。

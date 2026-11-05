@@ -27,7 +27,7 @@ import CommonRelay
         let identity = try RelayIdentity(app: object["app"] as! String, group: object["group"] as! String, device: object["device"] as! String, secretKey: Data(relayHex: object["secret_key"] as! String), trustedPeers: peers)
         let journal = try (object["state_path"] as? String).map { try RelayJournal(directory: URL(fileURLWithPath: $0)) }
         let client = RelayClient(identity: identity, journal: journal)
-        let events = try await client.connect(url: URL(string: object["url"] as! String)!, token: object["token"] as! String, allowLocalTest: object["allow_local_test"] as? Bool ?? false)
+        let events = try await client.connect(url: URL(string: object["url"] as! String)!, token: object["token"] as! String, password: object["password"] as? String, allowLocalTest: object["allow_local_test"] as? Bool ?? false)
         print("READY")
         for try await event in events {
             if object["group_notice_only"] as? Bool == true, event["type"] as? String == "group.changed" {

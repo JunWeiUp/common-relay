@@ -1,5 +1,6 @@
 """Encrypted staged files. Keep the encrypted staging file to resume uploads."""
 import hashlib
+from .access import access_headers
 import json
 import os
 import struct
@@ -62,11 +63,11 @@ def decrypt(identity, sender, info, staged, destination):
         temporary.unlink(missing_ok=True)
 
 class Files:
-    def __init__(self,url,token,*,allow_local_test=False):
+    def __init__(self,url,token,*,allow_local_test=False,password=None):
         parsed=httpx.URL(url)
         if parsed.scheme!='https' and not (allow_local_test and parsed.scheme=='http' and parsed.host in ('127.0.0.1','localhost')):
             raise ValueError('HTTPS required')
-        self.http=httpx.AsyncClient(base_url=url.rstrip('/')+'/',headers={'Authorization':'Bearer '+token},timeout=60,follow_redirects=False,trust_env=False)
+        self.http=httpx.AsyncClient(base_url=url.rstrip('/')+'/',headers={'Authorization':'Bearer '+token,**access_headers(password)},timeout=60,follow_redirects=False,trust_env=False)
 
     async def close(self):
         await self.http.aclose()

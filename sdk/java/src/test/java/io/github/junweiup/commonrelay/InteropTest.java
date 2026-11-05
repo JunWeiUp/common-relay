@@ -23,7 +23,7 @@ public class InteropTest {
                 else if(e.getString("type").equals("stream.open")){RelayClient.Stream stream=holder[0].acceptStream(e).get(45,TimeUnit.SECONDS);while(!stream.receivedFinal()){byte[] data=stream.receive();stream.send(data,stream.receivedFinal());}Thread.sleep(1500);done.countDown();}
             }catch(Throwable error){failure.set(error);done.countDown();}});}
         },c.has("state_path")?new RelayJournal(Path.of(c.getString("state_path"))):null);holder[0]=client;
-        try{client.connect(c.getString("url"),c.getString("token"),c.optBoolean("allow_local_test"));assertTrue("Interop timeout",done.await(120,TimeUnit.SECONDS));if(failure.get()!=null)throw new AssertionError(failure.get());}
+        try{client.connect(c.getString("url"),c.getString("token"),c.isNull("password")?null:c.getString("password"),c.optBoolean("allow_local_test"));assertTrue("Interop timeout",done.await(120,TimeUnit.SECONDS));if(failure.get()!=null)throw new AssertionError(failure.get());}
         finally{client.close();worker.shutdownNow();http.dispatcher().executorService().shutdown();http.connectionPool().evictAll();}
     }
 }

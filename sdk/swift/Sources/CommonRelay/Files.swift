@@ -56,15 +56,21 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate {
 }
 
 public actor RelayFiles {
-    private let base: URL, token: String
+    private let base: URL, token: String, password: String?
     private let session = URLSession(configuration: .ephemeral, delegate: NoRedirect(), delegateQueue: nil)
-    public init(base: URL, token: String, allowLocalTest: Bool = false) throws {
+    /// `password` is the server-wide access password (sent as `Relay-Access`); required by production relays.
+    public init(base: URL, token: String, password: String? = nil, allowLocalTest: Bool = false) throws {
         guard base.scheme == "https" || (allowLocalTest && base.scheme == "http" && base.host == "127.0.0.1") else { throw RelayError.invalid("HTTPS required") }
-        self.base = base; self.token = token
+        try RelayAccess.validate(password)
+        self.base = base; self.token = token; self.password = password
     }
-    private func request(_ method: String, path: String = "", body: Data? = nil, headers: [String: String] = [:]) async throws -> (Data, Int) {
+    func makeRequest(_ method: String, path: String = "", body: Data? = nil, headers: [String: String] = [:]) -> URLRequest {
         var request = URLRequest(url: path.isEmpty ? base : base.appendingPathComponent(path)); request.httpMethod = method; request.timeoutInterval = 60; request.httpBody = body; request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        RelayAccess.apply(password, to: &request); return request
+    }
+    private func request(_ method: String, path: String = "", body: Data? = nil, headers: [String: String] = [:]) async throws -> (Data, Int) {
+        let request = makeRequest(method, path: path, body: body, headers: headers)
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw RelayError.invalid("response") }; return (data, response.statusCode)
     }

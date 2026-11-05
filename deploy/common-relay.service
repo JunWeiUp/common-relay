@@ -8,7 +8,9 @@ Type=simple
 DynamicUser=yes
 StateDirectory=common-relay
 StateDirectoryMode=0700
-ExecStart=/usr/local/bin/common-relay serve --data /var/lib/common-relay --listen 127.0.0.1:47805
+# Server access password hash (root:root 0600); see docs/DEPLOYMENT.md.
+LoadCredential=access:/etc/common-relay/access-password.sha256
+ExecStart=/usr/local/bin/common-relay serve --data /var/lib/common-relay --listen 127.0.0.1:47805 --access-password-file ${CREDENTIALS_DIRECTORY}/access
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes

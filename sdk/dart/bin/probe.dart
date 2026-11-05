@@ -26,7 +26,7 @@ Future<void> main(List<String> args) async {
   }
   final identity = RelayIdentity(sodium: sodium, app: c['app'] as String, group: c['group'] as String, device: c['device'] as String, secretKey: SecureKey.fromList(sodium, unhex(c['secret_key'] as String)), publicKey: unhex(c['public_key'] as String), trustedPeers: (c['trusted_peers'] as Map<String, dynamic>).map((name, key) => MapEntry(name, unhex(key as String))));
   final client = RelayClient(identity, journal: c['state_path'] == null ? null : RelayJournal(Directory(c['state_path'] as String)));
-  await client.connect(c['url'] as String, c['token'] as String, allowLocalTest: c['allow_local_test'] == true);
+  await client.connect(c['url'] as String, c['token'] as String, allowLocalTest: c['allow_local_test'] == true, password: c['password'] as String?);
   stdout.writeln('READY');
   await for (final event in client.events) {
     if (event['type'] == 'stream.open') {

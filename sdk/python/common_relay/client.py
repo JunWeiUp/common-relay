@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from .access import access_headers
 import contextlib
 import json
 import struct
@@ -70,11 +71,12 @@ class Stream:
         self.incoming.put_nowait(RelayError('Stream interrupted; do not replay operations'))
 
 class Client:
-    def __init__(self, url, token, identity, state_path=None, *, allow_local_test=False, clock=time.time):
+    def __init__(self, url, token, identity, state_path=None, *, allow_local_test=False, clock=time.time, password=None):
         u = urlsplit(url)
         if u.scheme != 'wss' and not (allow_local_test and u.scheme == 'ws' and u.hostname in ('127.0.0.1', 'localhost')):
             raise ValueError('WSS required')
         self.url, self.token, self.identity = url, token, identity
+        self._access = access_headers(password)
         self.clock = clock
         self.scope = json.dumps([identity.app, identity.group, identity.device])
         self.journal = Journal(state_path, self.scope, clock) if state_path else None
@@ -84,7 +86,7 @@ class Client:
         self.ws, self.reader = None, None
 
     async def __aenter__(self):
-        self.ws = await connect(self.url, additional_headers={'Authorization': 'Bearer '+self.token}, subprotocols=['common-relay.v1'], compression=None, max_size=270336, max_queue=16, ping_interval=20, ping_timeout=20)
+        self.ws = await connect(self.url, additional_headers={'Authorization': 'Bearer '+self.token, **self._access}, subprotocols=['common-relay.v1'], compression=None, max_size=270336, max_queue=16, ping_interval=20, ping_timeout=20)
         welcome = json.loads(await asyncio.wait_for(self.ws.recv(), 10))
         expected = self.identity
         own = welcome.get('identity', {})

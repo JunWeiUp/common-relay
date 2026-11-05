@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -35,13 +36,16 @@ func run() error {
 	appQuota := f.Int64("app-quota", 2<<30, "per application bytes")
 	globalQuota := f.Int64("global-quota", 5<<30, "global bytes")
 	selfService := f.String("self-service-apps", "", "comma-separated app namespaces allowed to create new groups")
+	accessFile := f.String("access-password-file", "", "file with lowercase hex SHA-256 of the required Relay-Access password")
 	reserve := f.Uint64("disk-reserve", 2<<30, "minimum free disk bytes")
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check [flags]")
+		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check|hash-password [flags]")
 	}
 	command := os.Args[1]
 	switch command {
 	case "serve", "device-add", "device-revoke", "group-bootstrap", "check":
+	case "hash-password":
+		return hashPassword()
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -50,6 +54,16 @@ func run() error {
 	}
 	if f.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", f.Args())
+	}
+	var accessHash []byte
+	if command == "serve" {
+		if *accessFile == "" {
+			return fmt.Errorf("--access-password-file required")
+		}
+		var err error
+		if accessHash, err = relay.LoadAccessHash(*accessFile); err != nil {
+			return err
+		}
 	}
 	s, err := relay.OpenStore(*dir)
 	if err != nil {
@@ -118,6 +132,7 @@ func run() error {
 	case "serve":
 		server := relay.New(s)
 		server.DiskReserve = *reserve
+		server.AccessHash = accessHash
 		server.SelfServiceApps = map[string]bool{}
 		for _, name := range strings.Split(*selfService, ",") {
 			if name = strings.TrimSpace(name); name != "" {
@@ -157,4 +172,18 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+// hashPassword reads one password line from stdin and prints its SHA-256 for --access-password-file.
+func hashPassword() error {
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return fmt.Errorf("read password from stdin: %w", err)
+	}
+	p := strings.TrimRight(line, "\r\n")
+	if !relay.ValidAccessPassword(p) {
+		return fmt.Errorf("password must be 8-128 printable ASCII characters without spaces")
+	}
+	fmt.Println(relay.AccessPasswordHash(p))
+	return nil
 }

@@ -1,3 +1,4 @@
+import { accessHeaders, checkAccessPassword } from './access.js';
 import { randomBytes } from 'node:crypto';
 import nacl from 'tweetnacl';
 import WebSocket from 'ws';
@@ -10,6 +11,7 @@ export { DecryptStream, EncryptStream, RECORD_PLAINTEXT, recordAAD, encodeFrame,
 export type { StreamDescriptor } from './stream-crypto.js';
 export { Files, prepareFile, decryptFile, safeFileName } from './files.js';
 export type { FileInfo, FileStatus, FilesOptions } from './files.js';
+export { ACCESS_HEADER, checkAccessPassword } from './access.js';
 
 type ObjectValue = Record<string, unknown>;
 export type EnvelopeKind = 'message' | 'stream.open' | 'stream.accept' | 'file';
@@ -102,6 +104,8 @@ export interface Presence { type: 'peer.up' | 'peer.down' | 'group.changed'; [ke
 export type RelayEvent = Message | StreamRequest | Presence;
 export interface ClientOptions {
   allowLocalTest?: boolean; timeoutMs?: number;
+  /** Server access password sent as `Relay-Access` (8–128 printable ASCII). Required by production relays. */
+  password?: string;
   /** Persistent journal required for offline send/receive. The caller owns and closes it. */
   journal?: Journal;
   /** Unix seconds; for tests. */
@@ -238,10 +242,11 @@ export class Client {
     const local = options.allowLocalTest === true && endpoint.protocol === 'ws:' && endpoint.hostname === '127.0.0.1';
     if ((endpoint.protocol !== 'wss:' && !local) || endpoint.username || endpoint.password || endpoint.hash || endpoint.search || endpoint.pathname !== '/relay/v1/ws') throw new Error('A WSS relay endpoint is required');
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error('Invalid device credential');
+    const access = checkAccessPassword(options.password);
     const timeout = options.timeoutMs ?? 45000;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120000) throw new Error('Invalid timeout');
     const ws = new WebSocket(endpoint, 'common-relay.v1', {
-      headers: { Authorization: `Bearer ${token}` }, perMessageDeflate: false,
+      headers: { Authorization: `Bearer ${token}`, ...accessHeaders(access) }, perMessageDeflate: false,
       followRedirects: false, handshakeTimeout: timeout, maxPayload: 1 << 20,
     });
     const client = new Client(identity, ws, timeout, options);

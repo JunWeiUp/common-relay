@@ -11,8 +11,10 @@ import java.util.*;
 /** Blocking file API: invoke on an application I/O executor. Staging contains ciphertext only. */
 public final class RelayFiles {
     private final OkHttpClient http;
-    private final String base,token;
-    public RelayFiles(OkHttpClient http,String base,String token){if(!base.startsWith("https://"))throw new IllegalArgumentException("HTTPS required");this.http=http.newBuilder().followRedirects(false).followSslRedirects(false).build();this.base=base.replaceAll("/+$","");this.token=token;}
+    private final String base,token,password;
+    public RelayFiles(OkHttpClient http,String base,String token){this(http,base,token,null);}
+    /** @param password server access password sent as Relay-Access, or null. */
+    public RelayFiles(OkHttpClient http,String base,String token,String password){if(!base.startsWith("https://"))throw new IllegalArgumentException("HTTPS required");this.password=RelayAccess.validate(password);this.http=http.newBuilder().followRedirects(false).followSslRedirects(false).build();this.base=base.replaceAll("/+$","");this.token=token;}
     public static JSONObject prepare(Crypto crypto,String to,File source,File staging,JSONObject metadata)throws Exception{
         if(!staging.createNewFile())throw new IOException("Staging already exists");staging.setReadable(false,false);staging.setWritable(false,false);staging.setReadable(true,true);staging.setWritable(true,true);
         String id=Crypto.hex(Crypto.random(16));MessageDigest digest=MessageDigest.getInstance("SHA-256");
@@ -33,6 +35,7 @@ public final class RelayFiles {
     }
     private Response request(String method,String path,byte[] body,Map<String,String> headers)throws IOException{
         Request.Builder builder=new Request.Builder().url(base+path).header("Authorization","Bearer "+token);
+        if(password!=null)builder.header(RelayAccess.HEADER,password);
         for(Map.Entry<String,String> h:headers.entrySet())builder.header(h.getKey(),h.getValue());
         RequestBody payload=body==null?null:RequestBody.create(body,MediaType.get("application/octet-stream"));
         if((method.equals("POST")||method.equals("PUT"))&&payload==null)payload=RequestBody.create(new byte[0],null);
