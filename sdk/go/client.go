@@ -44,7 +44,12 @@ type Event struct {
 	Data     []byte `json:"-"` // Authenticated plaintext, only populated for messages.
 }
 
-type Options struct{ AllowLocalTest bool }
+// Options configures a connection. Password is the relay server's access password,
+// sent as the Relay-Access header on every request when non-empty.
+type Options struct {
+	AllowLocalTest bool
+	Password       string
+}
 type reply struct {
 	event Event
 	err   error
@@ -93,11 +98,16 @@ func DialJournal(ctx context.Context, endpoint, token string, identity *Identity
 	if !tokenPattern.MatchString(token) {
 		return nil, errors.New("invalid device credential")
 	}
+	if err := validAccessPassword(options.Password); err != nil {
+		return nil, err
+	}
+	header := http.Header{"Authorization": []string{"Bearer " + token}}
+	setAccess(header, options.Password)
 	dialCtx, stop := context.WithTimeout(ctx, 45*time.Second)
 	defer stop()
 	httpClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("relay redirects forbidden") }}
 	conn, response, err := websocket.Dial(dialCtx, endpoint, &websocket.DialOptions{
-		HTTPClient: httpClient, HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}},
+		HTTPClient: httpClient, HTTPHeader: header,
 		Subprotocols: []string{"common-relay.v1"}, CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {

@@ -2,6 +2,7 @@
 """Local-only SDK interop: temporary server, identities, journals; never reads .local/qa."""
 import argparse
 import asyncio
+import hashlib
 import contextlib
 import json
 import os
@@ -13,6 +14,9 @@ from nacl.public import PrivateKey
 from common_relay import Client, Identity
 
 ROOT=Path(__file__).resolve().parents[1]
+ACCESS='interop-access-1'
+def access_file(directory):
+    path=directory/'access-password-hash';path.write_text(hashlib.sha256(ACCESS.encode()).hexdigest());return path
 # TypeScript must be built first: (cd sdk/typescript && npm ci && npm run build).
 NATIVE=['typescript','go','rust']
 JVM_OR_SWIFT={'swift','java','kotlin'}
@@ -30,9 +34,9 @@ async def run(args, directory):
     for name,key in keys.items():
         credential=directory/(name+'-credential.json')
         subprocess.run([args.server,'device-add','--data',str(directory/'server'),'--app','interop','--group','local','--device',name,'--public-key',bytes(key.public_key).hex(),'--credential-out',str(credential)],check=True)
-        c={'app':'interop','group':'local','device':name,'secret_key':bytes(key).hex(),'public_key':bytes(key.public_key).hex(),'trusted_peers':{n:bytes(k.public_key).hex() for n,k in keys.items() if n!=name},'url':url,'token':json.loads(credential.read_text())['token'],'allow_local_test':True,'state_path':str(directory/(name+'-state'))}
+        c={'app':'interop','group':'local','device':name,'secret_key':bytes(key).hex(),'public_key':bytes(key.public_key).hex(),'trusted_peers':{n:bytes(k.public_key).hex() for n,k in keys.items() if n!=name},'url':url,'password':ACCESS,'token':json.loads(credential.read_text())['token'],'allow_local_test':True,'state_path':str(directory/(name+'-state'))}
         path=directory/(name+'.json');path.write_text(json.dumps(c));path.chmod(0o600);configs[name]=c
-    server=subprocess.Popen([args.server,'serve','--data',str(directory/'server'),'--listen',f'127.0.0.1:{port}','--disk-reserve','0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    server=subprocess.Popen([args.server,'serve','--data',str(directory/'server'),'--listen',f'127.0.0.1:{port}','--disk-reserve','0','--access-password-file',str(access_file(directory))],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
         for _ in range(100):
             try:
@@ -54,7 +58,7 @@ async def run(args, directory):
                 probe=subprocess.Popen(cmd,cwd=cwd,env=env,stdout=log,stderr=log)
                 try:
                     c=configs['python'];identity=Identity(c['app'],c['group'],c['device'],c['secret_key'],c['trusted_peers'])
-                    async with Client(url,c['token'],identity,directory/'python.db',allow_local_test=True) as client:
+                    async with Client(url,c['token'],identity,directory/'python.db',allow_local_test=True,password=ACCESS) as client:
                         for _ in range(600):
                             if probe.poll() is not None: raise RuntimeError(f'{name} exited: '+(directory/(name+'.log')).read_text()[-4000:])
                             if any(d['device']==name for d in await client.peers()):break

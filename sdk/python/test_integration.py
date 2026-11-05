@@ -34,6 +34,8 @@ class CryptoTests(unittest.TestCase):
         self.assertEqual(dec.pull(cipher,b'context'),b'hello')
         with self.assertRaises(ValueError): dec.pull(cipher,b'context')
 
+ACCESS='interop-access-1'
+
 class Integration(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.dir=Path(self.tmp.name)
@@ -49,7 +51,8 @@ class Integration(unittest.IsolatedAsyncioTestCase):
             sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
         self.url=f'ws://127.0.0.1:{port}/relay/v1/ws'
         self.files_url=f'http://127.0.0.1:{port}/relay/v1/files'
-        self.server=subprocess.Popen([binary,'serve','--data',str(self.dir/'server'),'--listen',f'127.0.0.1:{port}','--disk-reserve','0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        (self.dir/'access').write_text(hashlib.sha256(ACCESS.encode()).hexdigest())
+        self.server=subprocess.Popen([binary,'serve','--data',str(self.dir/'server'),'--listen',f'127.0.0.1:{port}','--disk-reserve','0','--access-password-file',str(self.dir/'access')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
                 r,w=await asyncio.open_connection('127.0.0.1',port);w.close();await w.wait_closed();break
@@ -60,7 +63,13 @@ class Integration(unittest.IsolatedAsyncioTestCase):
         self.server.terminate();self.server.wait(timeout=10);self.tmp.cleanup()
 
     def client(self,name):
-        return Client(self.url,self.tokens[name],self.ids[name],self.dir/(name+'.db'),allow_local_test=True)
+        return Client(self.url,self.tokens[name],self.ids[name],self.dir/(name+'.db'),allow_local_test=True,password=ACCESS)
+
+    async def test_access_password_required(self):
+        for password in (None, 'wrong-access-1'):
+            client=Client(self.url,self.tokens['a'],self.ids['a'],allow_local_test=True,password=password)
+            with self.assertRaises(Exception): await client.__aenter__()
+        with self.assertRaises(ValueError): Client(self.url,self.tokens['a'],self.ids['a'],allow_local_test=True,password='short')
 
     async def test_encrypted_stream_and_offline_message(self):
         async with self.client('a') as a:
@@ -121,8 +130,8 @@ class Integration(unittest.IsolatedAsyncioTestCase):
     async def test_encrypted_file_roundtrip(self):
         source=self.dir/'source';source.write_bytes(os.urandom(3<<20))
         staged=self.dir/'encrypted';info=prepare(self.ids['a'],'b',source,staged)
-        a=Files(self.files_url,self.tokens['a'],allow_local_test=True)
-        b=Files(self.files_url,self.tokens['b'],allow_local_test=True)
+        a=Files(self.files_url,self.tokens['a'],allow_local_test=True,password=ACCESS)
+        b=Files(self.files_url,self.tokens['b'],allow_local_test=True,password=ACCESS)
         try:
             info=await a.upload(info,staged)
             inbox=await b.inbox();self.assertEqual(len(inbox),1)

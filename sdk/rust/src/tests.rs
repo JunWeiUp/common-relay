@@ -18,6 +18,7 @@ use crate::{generate_key_pair, Client, Error, Event, Identity, Options, Peer};
 
 const LOCAL: Options = Options {
     allow_local_test: true,
+    password: None,
 };
 
 fn vectors() -> HashMap<String, String> {
@@ -963,6 +964,14 @@ impl LocalRelay {
         }
         let dir = TempDir::new();
         let data = dir.path().join("server");
+        let access_file = dir.path().join("access-password.sha256");
+        std::fs::write(
+            &access_file,
+            hex::encode(<sha2::Sha256 as sha2::Digest>::digest(
+                RELAY_PASSWORD.as_bytes(),
+            )),
+        )
+        .unwrap();
         let mut devices = HashMap::new();
         for name in names {
             let (secret, public) = generate_key_pair().unwrap();
@@ -996,7 +1005,9 @@ impl LocalRelay {
                 &format!("127.0.0.1:{port}"),
                 "--disk-reserve",
                 "0",
+                "--access-password-file",
             ])
+            .arg(&access_file)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -1026,7 +1037,15 @@ impl LocalRelay {
     fn token(&self, name: &str) -> &str {
         &self.devices[name].2
     }
+    fn options(&self) -> Options {
+        Options {
+            allow_local_test: true,
+            password: Some(RELAY_PASSWORD.to_owned()),
+        }
+    }
 }
+
+const RELAY_PASSWORD: &str = "local-test-access-1";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn local_relay_offline_streams_and_files() {
@@ -1041,7 +1060,7 @@ async fn local_relay_offline_streams_and_files() {
         &relay.url,
         relay.token("alice"),
         relay.identity("alice"),
-        LOCAL,
+        relay.options(),
         alice_journal,
     )
     .await
@@ -1070,7 +1089,7 @@ async fn local_relay_offline_streams_and_files() {
             &relay.url,
             relay.token("bob"),
             relay.identity("bob"),
-            LOCAL,
+            relay.options(),
             bob_journal,
         )
         .await
@@ -1146,7 +1165,8 @@ async fn local_relay_offline_streams_and_files() {
     )
     .unwrap();
     let sender =
-        crate::RelayFiles::for_relay_endpoint(&relay.url, relay.token("alice"), LOCAL).unwrap();
+        crate::RelayFiles::for_relay_endpoint(&relay.url, relay.token("alice"), relay.options())
+            .unwrap();
     let ready = sender.upload(&descriptor, &staged).await.unwrap();
     assert_eq!(
         (ready.state.as_str(), ready.offset),
@@ -1165,7 +1185,8 @@ async fn local_relay_offline_streams_and_files() {
         "ID conflict accepted"
     );
     let receiver =
-        crate::RelayFiles::for_relay_endpoint(&relay.url, relay.token("bob"), LOCAL).unwrap();
+        crate::RelayFiles::for_relay_endpoint(&relay.url, relay.token("bob"), relay.options())
+            .unwrap();
     let inbox = receiver.inbox().await.unwrap();
     let info = inbox
         .iter()
@@ -1196,4 +1217,155 @@ async fn local_relay_offline_streams_and_files() {
         .iter()
         .all(|f| f.id != info.id));
     assert_eq!(receiver.status(&info.id).await, Err(Error::Http(404)));
+}
+
+#[tokio::test]
+async fn access_password_validated_and_redacted() {
+    for bad in [
+        "short",
+        "has space1",
+        "tab\tpassword",
+        &"a".repeat(129),
+        "pässword1",
+    ] {
+        let options = Options {
+            allow_local_test: true,
+            password: Some(bad.to_owned()),
+        };
+        assert!(matches!(
+            Client::connect(
+                "ws://127.0.0.1:9/relay/v1/ws",
+                &token(),
+                Arc::new(bob()),
+                options.clone()
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            crate::RelayFiles::for_relay_endpoint(
+                "ws://127.0.0.1:9/relay/v1/ws",
+                &token(),
+                options
+            ),
+            Err(Error::Invalid(_))
+        ));
+        let config = serde_json::json!({"url": "ws://127.0.0.1:9/relay/v1/ws", "password": bad});
+        assert!(crate::Groups::new(config, true).is_err());
+    }
+    assert!(crate::Groups::new(
+        serde_json::json!({"url": "ws://127.0.0.1:9/relay/v1/ws", "password": 5}),
+        true
+    )
+    .is_err());
+    let options = Options {
+        allow_local_test: true,
+        password: Some(RELAY_PASSWORD.to_owned()),
+    };
+    assert!(!format!("{options:?}").contains(RELAY_PASSWORD));
+    assert!(crate::RelayFiles::for_relay_endpoint(
+        "ws://127.0.0.1:9/relay/v1/ws",
+        &token(),
+        options
+    )
+    .is_ok());
+}
+
+/// Captures one raw HTTP request and answers `{}`.
+async fn capture_http() -> (String, tokio::task::JoinHandle<String>) {
+    use tokio::io::AsyncReadExt;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !data.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&data).to_lowercase()
+    });
+    (format!("ws://127.0.0.1:{port}/relay/v1/ws"), task)
+}
+
+#[tokio::test]
+async fn groups_send_access_header_only_when_configured() {
+    let (url, task) = capture_http().await;
+    let g = crate::Groups::new(
+        serde_json::json!({"url": url, "password": RELAY_PASSWORD}),
+        true,
+    )
+    .unwrap();
+    g.call(reqwest::Method::GET, "/group", None, None)
+        .await
+        .unwrap();
+    let request = task.await.unwrap();
+    assert!(request.contains(&format!("relay-access: {}", RELAY_PASSWORD.to_lowercase())));
+
+    let (url, task) = capture_http().await;
+    let g = crate::Groups::new(serde_json::json!({"url": url}), true).unwrap();
+    g.call(reqwest::Method::GET, "/group", None, None)
+        .await
+        .unwrap();
+    assert!(!task.await.unwrap().contains("relay-access"));
+}
+
+#[tokio::test]
+async fn files_send_access_header() {
+    let (url, task) = capture_http().await;
+    let options = Options {
+        allow_local_test: true,
+        password: Some(RELAY_PASSWORD.to_owned()),
+    };
+    let files = crate::RelayFiles::for_relay_endpoint(&url, &token(), options).unwrap();
+    let _ = files.inbox().await;
+    let request = task.await.unwrap();
+    assert!(request.contains(&format!("relay-access: {}", RELAY_PASSWORD.to_lowercase())));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_relay_requires_access_password() {
+    let Some(relay) = LocalRelay::start(&["alice"]).await else {
+        return;
+    };
+    let missing = Client::connect(
+        &relay.url,
+        relay.token("alice"),
+        relay.identity("alice"),
+        LOCAL,
+    )
+    .await;
+    assert!(
+        missing.is_err(),
+        "relay accepted a connection without the access password"
+    );
+    let wrong = Options {
+        allow_local_test: true,
+        password: Some("wrong-password".into()),
+    };
+    assert!(Client::connect(
+        &relay.url,
+        relay.token("alice"),
+        relay.identity("alice"),
+        wrong
+    )
+    .await
+    .is_err());
+    let ok = Client::connect(
+        &relay.url,
+        relay.token("alice"),
+        relay.identity("alice"),
+        relay.options(),
+    )
+    .await
+    .unwrap();
+    ok.close();
 }

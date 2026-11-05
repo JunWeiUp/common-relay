@@ -148,9 +148,39 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+/// Header carrying the server-wide access password on every `/relay/v1` request.
+pub const ACCESS_HEADER: &str = "Relay-Access";
+
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Options {
     pub allow_local_test: bool,
+    /// Server access password (8-128 printable ASCII, no spaces), sent as `Relay-Access`
+    /// on the WebSocket upgrade and every HTTP request. Required by production relays.
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Options")
+            .field("allow_local_test", &self.allow_local_test)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// 8..=128 bytes, each printable ASCII 0x21..=0x7e.
+pub(crate) fn valid_access_password(p: &str) -> bool {
+    (8..=128).contains(&p.len()) && p.bytes().all(|b| (0x21..=0x7e).contains(&b))
+}
+
+/// Validates an optional access password; `None` means no header is sent.
+pub(crate) fn checked_access_password(p: Option<&str>) -> Result<Option<&str>> {
+    match p {
+        Some(p) if !valid_access_password(p) => Err(Error::Invalid(
+            "access password must be 8-128 printable ASCII characters without spaces",
+        )),
+        other => Ok(other),
+    }
 }
 
 struct Pending {
@@ -329,7 +359,7 @@ fn new_id() -> Result<String> {
     Ok(hex::encode(random::<16>()?))
 }
 
-pub(crate) fn validate_endpoint(endpoint: &str, options: Options) -> Option<Url> {
+pub(crate) fn validate_endpoint(endpoint: &str, options: &Options) -> Option<Url> {
     let u = Url::parse(endpoint).ok()?;
     let local = options.allow_local_test && u.scheme() == "ws" && u.host_str() == Some("127.0.0.1");
     let valid = (u.scheme() == "wss" || local)
@@ -394,7 +424,8 @@ impl Client {
         options: Options,
         journal: Option<Arc<RelayJournal>>,
     ) -> Result<Self> {
-        let url = validate_endpoint(endpoint, options).ok_or(Error::Invalid(
+        let access = checked_access_password(options.password.as_deref())?;
+        let url = validate_endpoint(endpoint, &options).ok_or(Error::Invalid(
             "a WSS relay endpoint and identity are required",
         ))?;
         if !valid_token(token) {
@@ -410,6 +441,12 @@ impl Client {
             HeaderValue::from_str(&format!("Bearer {token}"))
                 .map_err(|_| Error::Invalid("invalid device credential"))?,
         );
+        if let Some(p) = access {
+            let mut value =
+                HeaderValue::from_str(p).map_err(|_| Error::Invalid("invalid access password"))?;
+            value.set_sensitive(true);
+            headers.insert(ACCESS_HEADER, value);
+        }
         headers.insert(
             "Sec-WebSocket-Protocol",
             HeaderValue::from_static(SUBPROTOCOL),

@@ -95,7 +95,8 @@ jobs:
           binary="$RUNNER_TEMP/common-relay-server-$RELEASE_TAG-linux-amd64/build/common-relay-linux-amd64"
           "$binary" serve --help
           "$binary" check --data "$RUNNER_TEMP/relay-smoke-data"
-          "$binary" serve --data "$RUNNER_TEMP/relay-smoke-data" --listen 127.0.0.1:47805 &
+          echo smoke-access-1 | "$binary" hash-password > "$RUNNER_TEMP/access.sha256"
+          "$binary" serve --data "$RUNNER_TEMP/relay-smoke-data" --listen 127.0.0.1:47805 --access-password-file "$RUNNER_TEMP/access.sha256" &
           server_pid=$!
           trap 'kill "$server_pid"; wait "$server_pid" || true' EXIT
           curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:47805/healthz

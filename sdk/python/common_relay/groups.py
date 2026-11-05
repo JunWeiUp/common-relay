@@ -4,6 +4,7 @@ The invitation must arrive over a trusted out-of-band channel (QR/link). Never
 learn the first signing key from the relay. No private key is uploaded.
 """
 import base64
+from .access import access_headers
 import copy
 import hashlib
 import json
@@ -91,9 +92,10 @@ class Groups:
         u = urlsplit(config['url'])
         if u.username or getattr(u, "pass" + "word") or u.query or u.fragment or u.path != '/relay/v1/ws' or (u.scheme != 'wss' and not (allow_local_test and u.scheme == 'ws' and u.hostname == '127.0.0.1')): raise ValueError('WSS URL required')
         self.base = ('https' if u.scheme == 'wss' else 'http') + '://' + u.netloc + '/relay/v1'
+        self._access = access_headers(config.get('password'))
     async def call(self, method, path, value=None, authorization=None):
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as session:
-            async with session.stream(method, self.base + path, json=value, headers={'Authorization': authorization or 'Bearer ' + self.config.get('token', '')}) as response:
+            async with session.stream(method, self.base + path, json=value, headers={'Authorization': authorization or 'Bearer ' + self.config.get('token', ''), **self._access}) as response:
                 if response.status_code != 200: raise RuntimeError(f'Group request failed ({response.status_code})')
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -164,7 +166,8 @@ class Groups:
         import time
         from . import invitation_links as links
         url,identifier,key=links.parse_link(text.strip(),self.allow_local_test)
-        endpoint=Groups({'url':url},allow_local_test=self.allow_local_test)
+        # Only send our access password to our own relay; a foreign link must not learn it.
+        endpoint=Groups({'url':url,**({'password':self.config['password']} if self.config.get('password') is not None and url==self.config.get('url') else {})},allow_local_test=self.allow_local_test)
         result=await endpoint.call('GET','/enroll/'+identifier+'/link',authorization='InvitationLink '+links.read_token(key))
         if result.get('version')!=1: raise ValueError('Invalid invitation packet version')
         inv=links.open_packet(result['packet'],key)

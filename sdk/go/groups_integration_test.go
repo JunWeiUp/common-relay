@@ -1,12 +1,15 @@
 package relay
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,7 +28,13 @@ func TestGroupsLoopback(t *testing.T) {
 	}
 	address := l.Addr().String()
 	_ = l.Close()
-	cmd := exec.Command(binary, "serve", "--data", t.TempDir(), "--listen", address, "--disk-reserve", "0", "--self-service-apps", "example")
+	const access = "{{SECRET_rkfekrmh}}"
+	digest := sha256.Sum256([]byte(access))
+	accessFile := filepath.Join(t.TempDir(), "access")
+	if err = os.WriteFile(accessFile, []byte(hex.EncodeToString(digest[:])+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "serve", "--data", t.TempDir(), "--listen", address, "--disk-reserve", "0", "--self-service-apps", "example", "--access-password-file", accessFile)
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +57,7 @@ func TestGroupsLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := &GroupConfig{URL: "ws://" + address + "/relay/v1/ws", App: "example", Device: "one", SecretKey: secret}
+	config := &GroupConfig{URL: "ws://" + address + "/relay/v1/ws", App: "example", Device: "one", SecretKey: secret, Password: access}
 	g, err := NewGroups(config, true)
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +71,13 @@ func TestGroupsLoopback(t *testing.T) {
 	if err = g.Create(); err != nil {
 		t.Fatal(err)
 	}
+	if inv, e := g.Invite("manual", true); e != nil {
+		t.Fatal(e)
+	} else if anon, e := NewGroups(&GroupConfig{URL: config.URL, App: config.App, Device: "anon", SecretKey: secret}, true); e != nil {
+		t.Fatal(e)
+	} else if _, e = anon.ResolveInvitation(inv.ShortLink); e == nil || !strings.Contains(e.Error(), "401") {
+		t.Fatalf("missing access password must be rejected: %v", e)
+	}
 	for _, mode := range []string{"manual", "auto"} {
 		t.Run(mode, func(t *testing.T) {
 			inv, e := g.Invite(mode, true)
@@ -72,7 +88,7 @@ func TestGroupsLoopback(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			c := &GroupConfig{URL: config.URL, App: config.App, Group: config.Group, Device: fmt.Sprintf("peer-%s", mode), SecretKey: secret}
+			c := &GroupConfig{URL: config.URL, App: config.App, Group: config.Group, Device: fmt.Sprintf("peer-%s", mode), SecretKey: secret, Password: access}
 			peer, e := NewGroups(c, true)
 			if e != nil {
 				t.Fatal(e)

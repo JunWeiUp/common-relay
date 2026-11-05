@@ -22,6 +22,8 @@ struct Config {
     allow_local_test: bool,
     #[serde(default)]
     state_path: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
 }
 
 async fn echo_stream(stream: RelayStream) -> common_relay::Result<()> {
@@ -50,6 +52,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     let options = Options {
         allow_local_test: true,
+        password: config.password.clone(),
     };
     let client = Arc::new(match &config.state_path {
         Some(path) => {

@@ -84,6 +84,7 @@ type GroupConfig struct {
 	Device        string            `json:"device"`
 	SecretKey     string            `json:"secret_key"`
 	Token         string            `json:"token,omitempty"`
+	Password      string            `json:"password,omitempty"` // relay access password; never copied into invitations
 	PublicKey     string            `json:"public_key,omitempty"`
 	TrustedPeers  map[string]string `json:"trusted_peers,omitempty"`
 	GroupEntry    *GroupEntry       `json:"group_entry,omitempty"`

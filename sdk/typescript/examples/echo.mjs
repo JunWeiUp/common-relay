@@ -8,7 +8,7 @@ const c=JSON.parse(readFileSync(process.argv[2], 'utf8'));
 if (c.allow_local_test!==true) throw new Error('This probe is for isolated local tests only');
 const identity=new Identity(c.app,c.group,c.device,c.secret_key,c.trusted_peers);
 const journal=c.state_path ? new Journal(c.state_path) : undefined;
-const client=await Client.connect(c.url,c.token,identity,{allowLocalTest:true,journal});
+const client=await Client.connect(c.url,c.token,identity,{allowLocalTest:true,journal,...(c.password===undefined?{}:{password:c.password})});
 process.on('SIGTERM',()=>client.close());
 async function echo(request) {
   const stream=await client.acceptStream(request);

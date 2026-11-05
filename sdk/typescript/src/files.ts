@@ -1,3 +1,4 @@
+import { accessHeaders, checkAccessPassword } from './access.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open, link, unlink, stat } from 'node:fs/promises';
@@ -8,7 +9,11 @@ import { DecryptStream, EncryptStream, RECORD_PLAINTEXT, parseDescriptor, record
 /** Upload descriptor sent to `POST /relay/v1/files`. size and sha256 cover the complete ciphertext file. */
 export interface FileInfo { id: string; to: string; size: number; metadata: string; sha256: string; expires?: number }
 export interface FileStatus extends FileInfo { offset: number; [key: string]: unknown }
-export interface FilesOptions { allowLocalTest?: boolean; timeoutMs?: number }
+export interface FilesOptions {
+  allowLocalTest?: boolean; timeoutMs?: number;
+  /** Server access password sent as `Relay-Access` (8–128 printable ASCII). */
+  password?: string;
+}
 
 const CHUNK = 1 << 20;
 const objectID = /^[a-f0-9]{32}$/;
@@ -132,6 +137,7 @@ export class Files {
   readonly base: string;
   readonly #token: string;
   readonly #timeoutMs: number;
+  readonly #access: string | undefined;
   /** `url` is `https://host/relay/v1/files` or the relay `wss://host/relay/v1/ws` endpoint. */
   constructor(url: string, token: string, options: FilesOptions = {}) {
     const endpoint = new URL(url);
@@ -144,6 +150,7 @@ export class Files {
     const local = options.allowLocalTest === true && endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1';
     if ((endpoint.protocol !== 'https:' && !local) || endpoint.pathname.replace(/\/$/, '') !== '/relay/v1/files') throw new Error('An HTTPS files endpoint is required');
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error('Invalid device credential');
+    this.#access = checkAccessPassword(options.password);
     const timeout = options.timeoutMs ?? 60000;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 600000) throw new Error('Invalid timeout');
     this.base = endpoint.origin + '/relay/v1/files';
@@ -155,7 +162,7 @@ export class Files {
     if (path && !/^\/[a-f0-9]{32}(\/data|\/commit)?$/.test(path)) throw new Error('Invalid file path');
     return fetch(this.base + path, {
       method, body: body as BodyInit | undefined, redirect: 'error', signal: AbortSignal.timeout(this.#timeoutMs),
-      headers: { Authorization: `Bearer ${this.#token}`, ...headers },
+      headers: { ...headers, Authorization: `Bearer ${this.#token}`, ...accessHeaders(this.#access) },
     });
   }
   async #json(response: Response, expected: number[], what: string): Promise<unknown> {

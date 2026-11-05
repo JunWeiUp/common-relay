@@ -31,6 +31,9 @@ func NewGroups(c *GroupConfig, allowLocalTest bool) (*Groups, error) {
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Path != "/relay/v1/ws" || u.RawPath != "" || (u.Scheme != "wss" && !(allowLocalTest && u.Scheme == "ws" && u.Hostname() == "127.0.0.1")) {
 		return nil, errors.New("WSS URL required")
 	}
+	if err := validAccessPassword(c.Password); err != nil {
+		return nil, err
+	}
 	scheme := "https"
 	if u.Scheme == "ws" {
 		scheme = "http"
@@ -54,6 +57,7 @@ func (g *Groups) call(method, path string, body any, auth string, out any) error
 		auth = "Bearer " + g.Config.Token
 	}
 	req.Header.Set("Authorization", auth)
+	setAccess(req.Header, g.Config.Password)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -328,7 +332,7 @@ func (g *Groups) ResolveInvitation(text string) (GroupInvitation, error) {
 	if err != nil {
 		return inv, err
 	}
-	endpoint, err := NewGroups(&GroupConfig{URL: u}, g.local)
+	endpoint, err := NewGroups(&GroupConfig{URL: u, Password: sameRelayPassword(u, g.Config)}, g.local)
 	if err != nil {
 		return inv, err
 	}
@@ -350,4 +354,13 @@ func (g *Groups) ResolveInvitation(text string) (GroupInvitation, error) {
 		return inv, errors.New("invitation scope mismatch")
 	}
 	return inv, nil
+}
+
+// sameRelayPassword returns the caller's access password only for its own configured relay,
+// so a short link pointing elsewhere never receives it.
+func sameRelayPassword(u string, c *GroupConfig) string {
+	if u == c.URL {
+		return c.Password
+	}
+	return ""
 }

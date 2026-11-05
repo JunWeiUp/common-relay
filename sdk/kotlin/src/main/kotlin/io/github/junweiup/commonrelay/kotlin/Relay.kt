@@ -2,6 +2,8 @@ package io.github.junweiup.commonrelay.kotlin
 
 import io.github.junweiup.commonrelay.Crypto
 import io.github.junweiup.commonrelay.RelayClient
+import io.github.junweiup.commonrelay.RelayFiles
+import okhttp3.OkHttpClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runInterruptible
@@ -15,6 +17,17 @@ fun relayIdentity(
     secretKey: String,
     trustedPeers: Map<String, String>,
 ): Crypto = Crypto(app, group, device, secretKey, trustedPeers)
+
+/**
+ * Connects with the server access password sent as `Relay-Access` (8-128 printable ASCII).
+ * Pass null only for relays that do not require one. The password is not an end-to-end key.
+ */
+fun RelayClient.connectRelay(url: String, token: String, password: String? = null, allowLocalTest: Boolean = false) =
+    connect(url, token, password, allowLocalTest)
+
+/** Blocking file API (call from Dispatchers.IO); every request carries `Relay-Access` when password is set. */
+fun relayFiles(http: OkHttpClient, base: String, token: String, password: String? = null): RelayFiles =
+    RelayFiles(http, base, token, password)
 
 /** Cancellation removes the pending wait; it cannot undo a frame already sent. */
 suspend fun RelayClient.onlinePeers(): JSONObject = peers().await()

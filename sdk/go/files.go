@@ -269,9 +269,10 @@ func SafeFileName(name string) string {
 // Files is the /relay/v1/files client. Redirects and environment proxies are not
 // followed so the bearer credential only reaches the configured relay.
 type Files struct {
-	base  string
-	token string
-	http  *http.Client
+	base     string
+	token    string
+	password string
+	http     *http.Client
 }
 
 // NewFiles takes the files base URL, e.g. https://relay.example.com/relay/v1/files.
@@ -287,11 +288,15 @@ func NewFiles(base, token string, options Options) (*Files, error) {
 	if !tokenPattern.MatchString(token) {
 		return nil, errors.New("invalid device credential")
 	}
+	if err := validAccessPassword(options.Password); err != nil {
+		return nil, err
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	return &Files{
-		base:  u.Scheme + "://" + u.Host + "/relay/v1/files",
-		token: token,
+		base:     u.Scheme + "://" + u.Host + "/relay/v1/files",
+		token:    token,
+		password: options.Password,
 		http: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
 			return errors.New("relay redirects forbidden")
 		}},
@@ -320,6 +325,7 @@ func (f *Files) do(ctx context.Context, method, path string, body []byte, header
 		request.Header[k] = v
 	}
 	request.Header.Set("Authorization", "Bearer "+f.token)
+	setAccess(request.Header, f.password)
 	response, err := f.http.Do(request)
 	if err != nil {
 		cancel()

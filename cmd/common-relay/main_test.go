@@ -11,7 +11,7 @@ import (
 func TestInvalidInvocationDoesNotCreateStore(t *testing.T) {
 	original := os.Args
 	t.Cleanup(func() { os.Args = original })
-	for _, command := range [][]string{{"typo"}, {"check", "extra"}, {"serve", "--help"}} {
+	for _, command := range [][]string{{"typo"}, {"check", "extra"}, {"serve", "--help"}, {"serve"}} {
 		t.Run(command[0], func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "must-not-exist")
 			os.Args = append([]string{"common-relay", command[0], "--data", dir}, command[1:]...)
@@ -19,7 +19,7 @@ func TestInvalidInvocationDoesNotCreateStore(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected argument error or help")
 			}
-			if command[0] == "serve" && !errors.Is(err, flag.ErrHelp) {
+			if command[0] == "serve" && len(command) > 1 && !errors.Is(err, flag.ErrHelp) {
 				t.Fatalf("expected help: %v", err)
 			}
 			if _, err := os.Stat(dir); !os.IsNotExist(err) {

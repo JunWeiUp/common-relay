@@ -17,7 +17,8 @@ use common_relay::{Client, Identity, Options, RelayJournal, new_message_id};
 // secret_key、trusted_peers、device_token 均由应用从私有存储提供。
 let identity = Arc::new(Identity::new("example", "my-group", "my-device", &secret_key, trusted_peers)?);
 let journal = Arc::new(RelayJournal::open(private_state_dir)?); // 每个目录只能有一个实例
-let client = Client::connect_with_journal(endpoint, &device_token, identity, Options::default(), journal).await?;
+let options = Options { password: Some(relay_password), ..Options::default() };
+let client = Client::connect_with_journal(endpoint, &device_token, identity, options, journal).await?;
 let peers = client.peers().await?;                     // 发现信息不能自动成为可信公钥
 client.message("peer-device", b"hello").await?;        // 在线：forwarded 只表示进入转发队列
 let id = new_message_id()?;                            // 应用先持久化此 ID，重试复用
@@ -43,11 +44,13 @@ match event.kind.as_str() {
 
 ## 文件
 
+服务器访问密码：`Options.password` 与组配置 `"password"`（8–128 个可打印 ASCII，不含空格），设置后在 WebSocket 升级、组/入组及文件的每个请求上发送 `Relay-Access` 头；生产中继强制要求。密码不写入邀请/短链接，`Debug` 中脱敏；解析短链接时仅当链接地址与本机 `url` 相同才携带。
+
 `prepare_file` 把源文件加密为 `length[4 BE] | secretstream 记录` 的暂存密文；`RelayFiles::for_relay_endpoint(endpoint, token, options)` 提供 `upload`（409 时严格核对原描述后续传，每块 ≤1 MiB）、`inbox`、`status`、`download`（Range 续传）、`delete`。`decrypt_file` 先校验长度与 SHA-256，再逐条认证并要求 FINAL，最后以硬链接发布到不存在的目标路径，不覆盖已有文件；远端文件名仅经 `safe_file_name` 清洗后使用。`prepare_file` / `decrypt_file` 是阻塞 IO，大文件请放入 `spawn_blocking`。
 
 ## 设备组
 
-`Groups::new(config, allow_local_test)` 使用与 Python/Dart 相同的 JSON 配置（`app`、`group`、`device`、`secret_key`、`trusted_peers`、`url`、`token` 及 `pending_*` 状态）。每次调用后，应用必须把 `groups.config` 持久化到私有存储。
+`Groups::new(config, allow_local_test)` 使用与 Python/Dart 相同的 JSON 配置（`app`、`group`、`device`、`secret_key`、`trusted_peers`、`url`、`password`、`token` 及 `pending_*` 状态）。每次调用后，应用必须把 `groups.config` 持久化到私有存储。
 
 - 创建/初始化：`prepare_create(group_name, device_name)` 先生成并保存已签名草稿，再 `create()`；运维初始化用 `bootstrap(code, name)`。
 - 邀请：`invite(mode, compact)`（`"manual"` / `"auto"`，`compact` 时返回 `short_link`）、`resolve_invitation(link)`、`pending`、`approve(invitation, request, manager)`、`cancel`。

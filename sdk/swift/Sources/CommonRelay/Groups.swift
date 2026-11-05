@@ -62,13 +62,19 @@ public final class RelayGroups: @unchecked Sendable {
         let close = next["closed"] as? Bool == true && actor["manager"] as? Bool == true && after.isEmpty && next["invitation"] as? String == "" && next["request_hash"] as? String == ""
         guard add || remove || close else { throw RelayError.invalid("membership transition") }; return entry
     }
-    public func call(_ method: String, _ path: String, value: [String:Any]? = nil, authorization: String? = nil) async throws -> [String:Any] {
+    /// Builds the HTTP request; `config["password"]` (server access password) is sent as `Relay-Access`.
+    func makeRequest(_ method: String, _ path: String, value: [String:Any]? = nil, authorization: String? = nil) throws -> URLRequest {
+        let password = config["password"] as? String; try RelayAccess.validate(password)
         guard let text = config["url"] as? String, var url = URLComponents(string:text), url.user == nil, url.password == nil, url.query == nil, url.fragment == nil, url.path == "/relay/v1/ws", url.scheme == "wss" || (allowLocalTest && url.scheme == "ws" && url.host == "127.0.0.1") else { throw RelayError.invalid("WSS required") }
         url.scheme = url.scheme == "wss" ? "https" : "http"; url.path = "/relay/v1"
         guard let base = url.url, let endpoint = URL(string:base.absoluteString + path) else { throw RelayError.invalid("URL") }
         var req = URLRequest(url:endpoint);req.httpMethod = method;req.timeoutInterval = 15
         req.setValue(authorization ?? "Bearer \(config["token"] as? String ?? "")",forHTTPHeaderField:"Authorization")
         if let value { req.httpBody = try json(value); req.setValue("application/json",forHTTPHeaderField:"Content-Type") }
+        RelayAccess.apply(password, to: &req); return req
+    }
+    public func call(_ method: String, _ path: String, value: [String:Any]? = nil, authorization: String? = nil) async throws -> [String:Any] {
+        let req = try makeRequest(method, path, value: value, authorization: authorization)
         let session = URLSession(configuration:.ephemeral,delegate:GroupRedirectBlocker(),delegateQueue:nil); defer { session.invalidateAndCancel() }
         let (bytes,response) = try await session.bytes(for:req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RelayError.invalid("group HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)") }
@@ -134,9 +140,13 @@ public final class RelayGroups: @unchecked Sendable {
         _ = try await call("POST","/group/invitations/\(id)/link",value:["read_hash":Self.digest(Data(try RelayInvitationLinks.readToken(key).utf8)),"packet":packet])
         let link=try RelayInvitationLinks.make(invitation,key:key);invitation["short_link"]=link;return link
     }
+    /// The access password is only sent to the relay this app is configured for, never to a foreign relay named by a link.
+    func invitationEndpointConfig(_ url: String) -> [String:Any] {
+        var c:[String:Any]=["url":url]; if url == config["url"] as? String { c["password"]=config["password"] }; return c
+    }
     public func resolveInvitation(_ text: String) async throws -> [String:Any] {
         let p=try RelayInvitationLinks.parse(text.trimmingCharacters(in:.whitespacesAndNewlines),allowLocalTest:allowLocalTest)
-        let endpoint=RelayGroups(config:["url":p.url],allowLocalTest:allowLocalTest)
+        let endpoint=RelayGroups(config:invitationEndpointConfig(p.url),allowLocalTest:allowLocalTest)
         let result=try await endpoint.call("GET","/enroll/\(p.id)/link",authorization:"InvitationLink \(try RelayInvitationLinks.readToken(p.key))")
         guard result["version"] as? Int == 1,let packet=result["packet"] as? String else { throw RelayError.invalid("invitation packet version") }
         let inv=try RelayInvitationLinks.open(packet,key:p.key)

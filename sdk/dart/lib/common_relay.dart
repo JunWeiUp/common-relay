@@ -25,6 +25,20 @@ Uint8List unhex(String value) {
 }
 Uint8List jsonBytes(Object value) => Uint8List.fromList(utf8.encode(jsonEncode(value)));
 
+/// Header carrying the server-wide access password on every `/relay/v1` request.
+const relayAccessHeader = 'Relay-Access';
+
+/// Validates an optional server access password: 8-128 printable ASCII characters (0x21-0x7E).
+/// The value itself is never included in the error.
+String? relayAccessPassword(Object? value) {
+  if (value == null) return null;
+  if (value is! String || value.length < 8 || value.length > 128 || value.codeUnits.any((c) => c < 0x21 || c > 0x7e)) {
+    throw ArgumentError('Relay access password must be 8-128 printable ASCII characters without spaces');
+  }
+  return value;
+}
+Map<String, String> _accessHeaders(String? password) => password == null ? const {} : {relayAccessHeader: password};
+
 class RelayIdentity {
   final Sodium sodium;
   final String app, group, device;
@@ -126,10 +140,11 @@ class RelayClient {
   void cleanup() => journal?.cleanup();
   Stream<Map<String, dynamic>> get events => _events.stream.map((event) { _eventCount--; return event; });
   String newId() => hex(identity.sodium.randombytes.buf(16));
-  Future<void> connect(String url, String token, {bool allowLocalTest = false}) async {
+  Future<void> connect(String url, String token, {bool allowLocalTest = false, String? password}) async {
+    final access = relayAccessPassword(password);
     final uri = Uri.parse(url);
     if (_socket != null || (uri.scheme != 'wss' && !(allowLocalTest && uri.scheme == 'ws' && uri.host == '127.0.0.1'))) throw ArgumentError('WSS required');
-    final ws = await WebSocket.connect(url, headers: {'Authorization': 'Bearer $token'}, protocols: ['common-relay.v1'], compression: CompressionOptions.compressionOff).timeout(const Duration(seconds: 12));
+    final ws = await WebSocket.connect(url, headers: {'Authorization': 'Bearer $token', ..._accessHeaders(access)}, protocols: ['common-relay.v1'], compression: CompressionOptions.compressionOff).timeout(const Duration(seconds: 12));
     _socket = ws; ws.pingInterval = const Duration(seconds: 20);
     final ready = Completer<void>();
     _reader = ws.listen((raw) {
