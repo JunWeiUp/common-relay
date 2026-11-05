@@ -59,6 +59,22 @@ public class AccessTest {
         assertThrows(Exception.class,()->other.resolveInvitation(v.getString("link")));
         assertEquals(1,foreign.size());assertEquals("relay.example.com",foreign.get(0).url().host());
         assertNull("password must not be sent to a different relay",foreign.get(0).header(RelayAccess.HEADER));
+        List<Request> carried=new ArrayList<>();
+        RelayGroups scanner=new RelayGroups(new JSONObject(config.toString()).put("url","wss://other.example.com/relay/v1/ws"),false,recording(carried));
+        assertThrows(Exception.class,()->scanner.resolveInvitation(v.getString("link_with_password")));
+        assertEquals("link password wins",v.getString("access_password"),carried.get(0).header(RelayAccess.HEADER));
+    }
+    @Test public void joinAdoptsInvitationPassword()throws Exception{
+        List<Request> seen=new ArrayList<>();
+        JSONObject config=new JSONObject().put("url","wss://relay.example.com/relay/v1/ws").put("app","example").put("group","test").put("device","bob").put("secret_key","02".repeat(32));
+        RelayGroups groups=new RelayGroups(config,false,recording(seen));
+        JSONObject inv=new JSONObject().put("version",1).put("mode","manual").put("url",config.getString("url")).put("app","example").put("group","test").put("id","ab".repeat(16)).put("expires",System.currentTimeMillis()/1000+600).put("secret","cd".repeat(32)).put("password","bad pass");
+        assertThrows(IllegalArgumentException.class,()->groups.join(inv,"Bob"));
+        assertTrue(seen.isEmpty());
+        inv.put("password",PASSWORD);
+        assertThrows(Exception.class,()->groups.join(inv,"Bob"));
+        assertEquals(PASSWORD,config.getString("password"));
+        assertEquals(1,seen.size());assertEquals(PASSWORD,seen.get(0).header(RelayAccess.HEADER));
     }
     @Test public void fileRequestsSendPassword()throws Exception{
         List<Request> seen=new ArrayList<>();

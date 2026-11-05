@@ -138,19 +138,23 @@ public final class RelayGroups: @unchecked Sendable {
         let packet=try RelayInvitationLinks.seal(invitation,key:key,nonce:Data(nonce))
         guard let id=invitation["id"] as? String else { throw RelayError.invalid("invitation id") }
         _ = try await call("POST","/group/invitations/\(id)/link",value:["read_hash":Self.digest(Data(try RelayInvitationLinks.readToken(key).utf8)),"packet":packet])
-        let link=try RelayInvitationLinks.make(invitation,key:key);invitation["short_link"]=link;return link
+        let link=try RelayInvitationLinks.make(invitation,key:key,password:config["password"] as? String);invitation["short_link"]=link;return link
     }
     /// The access password is only sent to the relay this app is configured for, never to a foreign relay named by a link.
-    func invitationEndpointConfig(_ url: String) -> [String:Any] {
-        var c:[String:Any]=["url":url]; if url == config["url"] as? String { c["password"]=config["password"] }; return c
+    /// A password carried by the link wins; otherwise ours is only sent to our own relay.
+    func invitationEndpointConfig(_ url: String, linkPassword: String? = nil) -> [String:Any] {
+        var c:[String:Any]=["url":url]
+        if let linkPassword { c["password"]=linkPassword } else if url == config["url"] as? String { c["password"]=config["password"] }
+        return c
     }
     public func resolveInvitation(_ text: String) async throws -> [String:Any] {
         let p=try RelayInvitationLinks.parse(text.trimmingCharacters(in:.whitespacesAndNewlines),allowLocalTest:allowLocalTest)
-        let endpoint=RelayGroups(config:invitationEndpointConfig(p.url),allowLocalTest:allowLocalTest)
+        let endpoint=RelayGroups(config:invitationEndpointConfig(p.url,linkPassword:p.password),allowLocalTest:allowLocalTest)
         let result=try await endpoint.call("GET","/enroll/\(p.id)/link",authorization:"InvitationLink \(try RelayInvitationLinks.readToken(p.key))")
         guard result["version"] as? Int == 1,let packet=result["packet"] as? String else { throw RelayError.invalid("invitation packet version") }
         let inv=try RelayInvitationLinks.open(packet,key:p.key)
-        guard inv["version"] as? Int == 1,inv["url"] as? String == p.url,inv["id"] as? String == p.id,inv["app"] as? String == config["app"] as? String,(inv["expires"] as? Double ?? 0)>Date().timeIntervalSince1970 else { throw RelayError.invalid("invalid or expired invitation scope") };return inv
+        guard inv["version"] as? Int == 1,inv["url"] as? String == p.url,inv["id"] as? String == p.id,inv["app"] as? String == config["app"] as? String,(inv["expires"] as? Double ?? 0)>Date().timeIntervalSince1970 else { throw RelayError.invalid("invalid or expired invitation scope") }
+        var resolved=inv;if let linkPassword=p.password { resolved["password"]=linkPassword };return resolved
     }
     public func pending(_ invitation: [String:Any]) async throws -> [String:Any]? {
         let result = try await call("GET","/group/invitations/\(invitation["id"] as? String ?? "")")
@@ -161,6 +165,8 @@ public final class RelayGroups: @unchecked Sendable {
         guard invitation["version"] as? Int == 1, (invitation["expires"] as? Double ?? 0) > Date().timeIntervalSince1970, ["url","app","group"].allSatisfy({invitation[$0] as? String == config[$0] as? String}) else { throw RelayError.invalid("expired invitation or scope") }
         let mode = invitation["mode"] as? String ?? "manual"
         guard ["manual","auto"].contains(mode) else { throw RelayError.invalid("unknown invitation mode") }
+        // A password carried by the scanned link becomes this device's relay access password.
+        if let password = invitation["password"] { guard let text = password as? String else { throw RelayError.invalid("invitation access password") }; try RelayAccess.validate(text); config["password"] = text }
         if mode == "auto" { _ = try invitationGrant(invitation) }
         if config["token"] == nil { config["token"] = RelayIdentity.generateSecretKey().relayHex }
         var e = try sign(["version":1,"app":config["app"] ?? "","group":config["group"] ?? "","invitation":invitation["id"] ?? "","member":try member(name:name),"token_hash":Self.digest(Data((config["token"] as? String ?? "").utf8))])

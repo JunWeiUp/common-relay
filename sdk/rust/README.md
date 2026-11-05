@@ -44,7 +44,7 @@ match event.kind.as_str() {
 
 ## 文件
 
-服务器访问密码：`Options.password` 与组配置 `"password"`（8–128 个可打印 ASCII，不含空格），设置后在 WebSocket 升级、组/入组及文件的每个请求上发送 `Relay-Access` 头；生产中继强制要求。密码不写入邀请/短链接，`Debug` 中脱敏；解析短链接时仅当链接地址与本机 `url` 相同才携带。
+服务器访问密码：`Options.password` 与组配置 `"password"`（8–128 个可打印 ASCII，不含空格），设置后在 WebSocket 升级、组/入组及文件的每个请求上发送 `Relay-Access` 头；生产中继强制要求。密码不写入加密邀请包，`Debug` 中脱敏。`invite(.., compact=true)` 会把邀请方密码以 `#<key>.<base64url密码>` 附在短链接片段（不进入 HTTP）；`invitation_links::make_link`/`parse_link` 相应多一个可选密码。`resolve_invitation` 优先使用链接中的密码并写入返回值 `"password"`，否则仅当链接地址与本机 `url` 相同才携带自身密码；`join` 遇到 `"password"` 会校验并存入 `config["password"]`。
 
 `prepare_file` 把源文件加密为 `length[4 BE] | secretstream 记录` 的暂存密文；`RelayFiles::for_relay_endpoint(endpoint, token, options)` 提供 `upload`（409 时严格核对原描述后续传，每块 ≤1 MiB）、`inbox`、`status`、`download`（Range 续传）、`delete`。`decrypt_file` 先校验长度与 SHA-256，再逐条认证并要求 FINAL，最后以硬链接发布到不存在的目标路径，不覆盖已有文件；远端文件名仅经 `safe_file_name` 清洗后使用。`prepare_file` / `decrypt_file` 是阻塞 IO，大文件请放入 `spawn_blocking`。
 

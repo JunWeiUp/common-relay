@@ -322,17 +322,22 @@ func (g *Groups) Invite(mode string, compact bool) (GroupInvitation, error) {
 		if err = g.call("POST", "/group/invitations/"+inv.ID+"/link", map[string]any{"read_hash": groupDigest([]byte(invitationToken(key))), "packet": packet}, "", &response); err != nil {
 			return inv, err
 		}
-		inv.ShortLink, err = invitationMakeLink(inv, key)
+		inv.ShortLink, err = invitationMakeLink(inv, key, g.Config.Password)
 	}
 	return inv, err
 }
 func (g *Groups) ResolveInvitation(text string) (GroupInvitation, error) {
 	var inv GroupInvitation
-	u, id, key, err := invitationParseLink(strings.TrimSpace(text), g.local)
+	u, id, key, linkPassword, err := invitationParseLink(strings.TrimSpace(text), g.local)
 	if err != nil {
 		return inv, err
 	}
-	endpoint, err := NewGroups(&GroupConfig{URL: u, Password: sameRelayPassword(u, g.Config)}, g.local)
+	// Prefer the link's password; otherwise only our own relay ever receives ours.
+	password := linkPassword
+	if password == "" {
+		password = sameRelayPassword(u, g.Config)
+	}
+	endpoint, err := NewGroups(&GroupConfig{URL: u, Password: password}, g.local)
 	if err != nil {
 		return inv, err
 	}
@@ -353,6 +358,7 @@ func (g *Groups) ResolveInvitation(text string) (GroupInvitation, error) {
 	if inv.Version != 1 || inv.URL != u || inv.ID != id || inv.App != g.Config.App || inv.Expires <= time.Now().Unix() {
 		return inv, errors.New("invitation scope mismatch")
 	}
+	inv.Password = linkPassword // only the scanned link may supply it, never the packet
 	return inv, nil
 }
 

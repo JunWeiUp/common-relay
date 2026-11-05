@@ -12,5 +12,11 @@ public class InvitationLinksTest {
   assertThrows(Exception.class,()->InvitationLinks.open(v.getString("packet"),new byte[32]));
   assertThrows(Exception.class,()->InvitationLinks.parse(v.getString("link")+"=",false));
   assertThrows(Exception.class,()->InvitationLinks.parse(v.getString("link").replace("relay.example.com","user@relay.example.com"),false));
+  assertNull(InvitationLinks.parse(v.getString("link"),false).password);
+  assertEquals(v.getString("link_with_password"),InvitationLinks.make(inv,key,v.getString("access_password")));
+  InvitationLinks.Parsed withPassword=InvitationLinks.parse(v.getString("link_with_password"),false);
+  assertEquals(v.getString("access_password"),withPassword.password);assertArrayEquals(key,withPassword.key);assertEquals(inv.getString("id"),withPassword.id);
+  org.json.JSONArray bad=v.getJSONArray("invalid_link_suffixes");
+  for(int i=0;i<bad.length();i++){String suffix=bad.getString(i);assertThrows(suffix,Exception.class,()->InvitationLinks.parse(v.getString("link")+suffix,false));}
  }
 }

@@ -34,7 +34,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
  async def test_compact_auto_and_manual_without_inviter_online(self):
   from common_relay import invitation_links as links
   for mode in ('auto','manual'):
-   inv=await self.a.invite(mode,compact=True);link=inv['short_link'];self.assertLess(len(link),130)
+   inv=await self.a.invite(mode,compact=True);link=inv['short_link'];self.assertLess(len(link),160);self.assertTrue(link.endswith('.'+links.b64url(ACCESS.encode())))
    b=self.device('compact-'+mode);resolved=await b.resolve_invitation(link)
    self.assertNotIn('short_link',resolved);self.assertEqual(resolved['id'],inv['id'])
    await b.join(resolved,'Compact '+mode)
@@ -42,9 +42,17 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
     self.assertFalse(await b.finish_join());await self.a.approve(inv,await self.a.pending(inv))
    self.assertTrue(await b.finish_join());await self.a.refresh()
    with self.assertRaises(RuntimeError):await self.device('replay').resolve_invitation(link)
+ async def test_scanned_link_supplies_access_password(self):
+  inv=await self.a.invite('auto',compact=True)
+  fresh=self.device('fresh');del fresh.config['password'];fresh=Groups(fresh.config,allow_local_test=True)
+  resolved=await fresh.resolve_invitation(inv['short_link']);self.assertEqual(resolved['password'],ACCESS)
+  await fresh.join(resolved,'Fresh');self.assertEqual(fresh.config['password'],ACCESS);self.assertTrue(await fresh.finish_join())
+  bare=inv['short_link'].rsplit('.',1)[0]
+  other=self.device('no-password');del other.config['password'];other=Groups(other.config,allow_local_test=True)
+  with self.assertRaises(RuntimeError):await other.resolve_invitation(bare)
  async def test_compact_packet_confidentiality_tamper_and_revocation(self):
   from common_relay import invitation_links as links
-  inv=await self.a.invite('auto',compact=True);url,identifier,key=links.parse_link(inv['short_link'],True);b=self.device('reader')
+  inv=await self.a.invite('auto',compact=True);url,identifier,key,_=links.parse_link(inv['short_link'],True);b=self.device('reader')
   db=sqlite3.connect(self.path/'db/relay.db');row=db.execute('select read_hash,packet from group_invite_links where id=?',(identifier,)).fetchone()
   self.assertEqual(row[0],digest(links.read_token(key).encode()))
   for secret in (key.hex(),inv['secret'],inv['delegate_secret']):self.assertNotIn(secret,' '.join(row))

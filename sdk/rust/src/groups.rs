@@ -536,19 +536,29 @@ impl Groups {
                 None,
             )
             .await?;
-            inv["short_link"] = json!(crate::invitation_links::make_link(&inv, &key)?);
+            inv["short_link"] = json!(crate::invitation_links::make_link(
+                &inv,
+                &key,
+                self.access.as_deref()
+            )?);
         }
         Ok(inv)
     }
     pub async fn resolve_invitation(&self, text: &str) -> Result<Value> {
-        let (url, id, key) = crate::invitation_links::parse_link(text.trim(), self.local)?;
-        // The own access password is only sent to the own relay; a link for another relay
-        // cannot be joined anyway (join requires the same url) and must not learn it.
-        let mut endpoint_config = json!({ "url": url });
-        if self.config.get("url").and_then(Value::as_str) == Some(url.as_str()) {
-            if let Some(p) = &self.access {
-                endpoint_config["password"] = json!(p);
+        let (url, id, key, link_password) =
+            crate::invitation_links::parse_link(text.trim(), self.local)?;
+        // Prefer the link's password; otherwise send ours only to our own relay. A link for
+        // another relay cannot be joined anyway (join requires the same url) and must not learn it.
+        let password = match &link_password {
+            Some(p) => Some(p.as_str()),
+            None if self.config.get("url").and_then(Value::as_str) == Some(url.as_str()) => {
+                self.access.as_deref()
             }
+            None => None,
+        };
+        let mut endpoint_config = json!({ "url": url });
+        if let Some(p) = password {
+            endpoint_config["password"] = json!(p);
         }
         let endpoint = Groups::new(endpoint_config, self.local)?;
         let r = endpoint
@@ -565,7 +575,7 @@ impl Groups {
         if number(&r, "version")? != 1 {
             return Err(invalid());
         }
-        let inv = crate::invitation_links::open_packet(field(&r, "packet")?, &key)?;
+        let mut inv = crate::invitation_links::open_packet(field(&r, "packet")?, &key)?;
         if number(&inv, "version")? != 1
             || field(&inv, "url")? != url
             || field(&inv, "id")? != id
@@ -573,6 +583,9 @@ impl Groups {
             || number(&inv, "expires")? <= now()?
         {
             return Err(invalid());
+        }
+        if let Some(p) = link_password {
+            inv["password"] = json!(p);
         }
         Ok(inv)
     }
@@ -635,6 +648,18 @@ impl Groups {
         }
         if mode == "auto" {
             self.invitation_grant(inv)?;
+        }
+        match inv.get("password") {
+            None | Some(Value::Null) => {}
+            // A password carried by the scanned link becomes this device's relay access password.
+            Some(Value::String(p)) => {
+                let p = checked_access_password(Some(p))?
+                    .unwrap_or_default()
+                    .to_owned();
+                self.config["password"] = json!(p);
+                self.access = Some(p);
+            }
+            Some(_) => return Err(Error::Invalid("access password must be a string")),
         }
         self.ensure_token()?;
         let j = json!({"version":1,"app":self.config["app"],"group":self.config["group"],"invitation":inv["id"],"member":member(&self.config,name)?,"token_hash":hash(field(&self.config,"token")?.as_bytes())});
@@ -1113,14 +1138,20 @@ mod tests {
         a.prepare_create("Devices", "Creator").unwrap();
         a.create().await.unwrap();
         let inv = a.invite("auto", true).await.unwrap();
+        assert!(inv["short_link"].as_str().unwrap().contains('.'));
+        assert!(inv.get("password").is_none());
+        // A fresh device without a configured password learns it from the scanned link.
         let mut c = config("phone");
+        c.as_object_mut().unwrap().remove("password");
         c["group"] = a.config["group"].clone();
         let mut b = Groups::new(c, true).unwrap();
         let resolved = b
             .resolve_invitation(inv["short_link"].as_str().unwrap())
             .await
             .unwrap();
+        assert_eq!(resolved["password"], password);
         b.join(&resolved, "Phone").await.unwrap();
+        assert_eq!(b.config["password"], password);
         assert!(b.finish_join().await.unwrap());
         a.refresh().await.unwrap();
         b.rename("phone", "Renamed").await.unwrap();

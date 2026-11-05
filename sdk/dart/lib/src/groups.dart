@@ -421,7 +421,7 @@ class RelayGroups {
         'packet': packet,
       },
     );
-    final link = RelayInvitationLinks.make(invitation, key);
+    final link = RelayInvitationLinks.make(invitation, key, password: config['password'] as String?);
     invitation['short_link'] = link;
     return link;
   }
@@ -433,8 +433,11 @@ class RelayGroups {
     );
     final endpoint = RelayGroups(sodium, {
       'url': p.url,
-      // Only share the access password with the caller's own relay, never a foreign one.
-      if (config['password'] != null && p.url == config['url']) 'password': config['password'],
+      // Prefer the link's password; otherwise only share ours with our own relay, never a foreign one.
+      if (p.password != null)
+        'password': p.password
+      else if (config['password'] != null && p.url == config['url'])
+        'password': config['password'],
     }, allowLocalTest: allowLocalTest);
     final result = await endpoint.call(
       'GET',
@@ -454,6 +457,7 @@ class RelayGroups {
         (inv['expires'] as int) <=
             DateTime.now().millisecondsSinceEpoch ~/ 1000)
       throw StateError('Invalid or expired invitation scope');
+    if (p.password != null) inv['password'] = p.password;
     return inv;
   }
 
@@ -478,6 +482,10 @@ class RelayGroups {
             DateTime.now().millisecondsSinceEpoch ~/ 1000 ||
         ['url', 'app', 'group'].any((k) => invitation[k] != config[k]))
       throw StateError('Invalid or expired invitation');
+    if (invitation['password'] != null) {
+      // A password carried by the scanned link becomes this device's relay access password.
+      config['password'] = relayAccessPassword(invitation['password']);
+    }
     final mode = invitation['mode'] ?? 'manual';
     if (!['manual', 'auto'].contains(mode))
       throw StateError('Unknown invitation mode');

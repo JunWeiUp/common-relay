@@ -1,5 +1,6 @@
 """Authenticated compact invitations; fragment keys never enter HTTP requests."""
 import base64, hashlib, json, re
+from .access import access_headers
 from urllib.parse import urlsplit
 from nacl.secret import SecretBox
 
@@ -21,11 +22,22 @@ def open_packet(packet,key):
     value=json.loads(SecretBox(key).decrypt(raw))
     if value.get('version')!=1 or value.get('purpose')!=PURPOSE: raise ValueError('Invalid invitation packet scope')
     return value['invitation']
-def make_link(inv,key):
-    return 'common-relay://'+urlsplit(inv['url']).netloc+'/i/'+b64url(bytes.fromhex(inv['id']))+'#'+b64url(key)
+def make_link(inv,key,password=None):
+    # Optional server access password rides in the fragment, which never reaches HTTP.
+    suffix='' if password is None else '.'+b64url(access_headers(password)['Relay-Access'].encode())
+    return 'common-relay://'+urlsplit(inv['url']).netloc+'/i/'+b64url(bytes.fromhex(inv['id']))+'#'+b64url(key)+suffix
+def _fragment_password(text):
+    if not re.fullmatch('[A-Za-z0-9_-]+',text): raise ValueError('Invalid compact invitation')
+    raw=base64.urlsafe_b64decode(text+'='*(-len(text)%4))
+    if b64url(raw)!=text: raise ValueError('Invalid compact invitation')
+    try: password=raw.decode('ascii')
+    except UnicodeDecodeError: raise ValueError('Invalid compact invitation')
+    access_headers(password)
+    return password
 def parse_link(text,allow_local_test=False):
     if len(text)>2048: raise ValueError('Invitation link too long')
     u=urlsplit(text)
     if u.scheme!='common-relay' or not u.hostname or u.username or getattr(u,'pass'+'word') or u.query or not re.fullmatch('/i/[A-Za-z0-9_-]{22}',u.path): raise ValueError('Invalid compact invitation')
     scheme='ws' if allow_local_test and u.hostname=='127.0.0.1' else 'wss'
-    return scheme+'://'+u.netloc+'/relay/v1/ws',unb64url(u.path[3:],16).hex(),unb64url(u.fragment,32)
+    key,dot,password=u.fragment.partition('.')
+    return scheme+'://'+u.netloc+'/relay/v1/ws',unb64url(u.path[3:],16).hex(),unb64url(key,32),(_fragment_password(password) if dot else None)
