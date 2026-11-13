@@ -10,6 +10,11 @@
 - TypeScript、Go、Rust 补齐完整能力：持久化离线消息（日志、ACK、去重、清理）、secretstream 双向流、加密文件、签名设备组（严格载荷、委托授权、自助创建、改名、退出、解散）及加密短邀请；七类 SDK 共用向量，`local-interop.py`、`group-interop.py` 增加三者的互通探针。
 - 源码快照工具支持 Kotlin、TypeScript、Go、Rust；保留文件续传偏移检查与 Python 流关闭唤醒修复。
 
+## 0.1.6
+
+- Swift：WebSocket 传输由 `URLSessionWebSocketTask` 改为 Network.framework（`NWConnection` + `NWProtocolWebSocket`）。macOS 26 上 CFNetwork 会在 cancel + invalidate 后仍保留每个 WebSocket 任务及其会话，长驻客户端每次重连泄漏一整套会话；新传输取消即释放。握手失败时补一次普通 HTTP 状态探测，401/403 仍以 `NSURLErrorUserAuthenticationRequired` 上报；协议与其他 SDK 不变，新增回环 `SocketTests`。
+- SDK 清单、依赖示例和源码快照版本统一更新至 0.1.6。
+
 ## 0.1.5
 
 - **不兼容**：新增服务器访问密码。`serve` 必须提供 `--access-password-file`（仅存 SHA-256，`hash-password` 生成），所有 `/relay/v1/*` 请求须带 `Relay-Access`，否则 401；七类 SDK 新增 `password` 配置，互通脚本、systemd（LoadCredential）与安装脚本同步更新。
