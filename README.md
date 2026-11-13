@@ -89,7 +89,7 @@ Self-service group creation is disabled by default. Enable selected application 
 
 ## Client SDKs
 
-SDKs install directly from this repository's Git tags (for example `v0.1.5`); they are not published to npm, PyPI, crates.io, pub.dev, or Maven Central. There are no stable API guarantees before 1.0.
+SDKs install directly from this repository's Git tags (for example `v0.1.6`); they are not published to npm, PyPI, crates.io, pub.dev, or Maven Central. There are no stable API guarantees before 1.0.
 
 | SDK | Source | Requirements |
 | --- | --- | --- |
@@ -103,13 +103,13 @@ SDKs install directly from this repository's Git tags (for example `v0.1.5`); th
 | Rust client | [sdk/rust](sdk/rust) | Rust 1.89+ (tokio, pure Rust) |
 
 ```text
-Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.5")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.5'    // or :kotlin:, via JitPack
-Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.5, path: sdk/dart }
-Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.5#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.5/common-relay-typescript-0.1.5.tgz
-Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.5
-Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.5" }
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.6")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.6'    // or :kotlin:, via JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.6, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.6#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.6/common-relay-typescript-0.1.6.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.6
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.6" }
 ```
 
 The [SDK distribution guide](docs/REGISTRY.md) covers repository setup, the release process, and optional source snapshots for auditing or local patches.

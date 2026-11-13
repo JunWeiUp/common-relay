@@ -1,15 +1,15 @@
 # SDK 与产物分发
 
-服务端通过 Release 提供 Linux amd64 / arm64 部署包，含二进制、安装脚本、systemd/Nginx 配置、部署说明和来源校验记录；详见[部署指南](DEPLOYMENT.md)。各语言 SDK 通过本仓库的 Git 标签（如 `v0.1.5`）作为依赖接入，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。升级时修改依赖中的标签即可。
+服务端通过 Release 提供 Linux amd64 / arm64 部署包，含二进制、安装脚本、systemd/Nginx 配置、部署说明和来源校验记录；详见[部署指南](DEPLOYMENT.md)。各语言 SDK 通过本仓库的 Git 标签（如 `v0.1.6`）作为依赖接入，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。升级时修改依赖中的标签即可。
 
 ## 按 Git 标签接入
 
-以下以 `v0.1.5` 为例。
+以下以 `v0.1.6` 为例。
 
 **Swift**（仓库根目录 `Package.swift` 只导出 `CommonRelay`；SPM 接受带 `v` 的标签）：
 
 ```swift
-.package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.5")
+.package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.6")
 // target 依赖：.product(name: "CommonRelay", package: "common-relay")
 ```
 
@@ -19,8 +19,8 @@
 // settings.gradle
 dependencyResolutionManagement { repositories { google(); mavenCentral(); maven { url 'https://jitpack.io' } } }
 // build.gradle
-implementation 'com.github.JunWeiUp.common-relay:java:v0.1.5'
-implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.5'
+implementation 'com.github.JunWeiUp.common-relay:java:v0.1.6'
+implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.6'
 ```
 
 **Dart**：
@@ -28,31 +28,31 @@ implementation 'com.github.JunWeiUp.common-relay:kotlin:v0.1.5'
 ```yaml
 dependencies:
   common_relay:
-    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.5, path: sdk/dart }
+    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.6, path: sdk/dart }
 ```
 
 **Python**：
 
 ```sh
-pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.5#subdirectory=sdk/python"
+pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.6#subdirectory=sdk/python"
 ```
 
 **TypeScript（Node.js）**：npm 不支持 Git 子目录，使用 Release 附带的打包产物（已包含 `dist`）：
 
 ```sh
-npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.5/common-relay-typescript-0.1.5.tgz
+npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.6/common-relay-typescript-0.1.6.tgz
 ```
 
-**Go**（子目录 module 使用 `sdk/go/v0.1.5` 标签）：
+**Go**（子目录 module 使用 `sdk/go/v0.1.6` 标签）：
 
 ```sh
-go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.5
+go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.6
 ```
 
 **Rust**：
 
 ```toml
-common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.5" }
+common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.6" }
 ```
 
 平台 libsodium 由各 SDK 的固定依赖打包，不依赖用户安装的桌面原生库（Java 单测除外）。

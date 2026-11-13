@@ -75,8 +75,7 @@ public final class RelayGroups: @unchecked Sendable {
     }
     public func call(_ method: String, _ path: String, value: [String:Any]? = nil, authorization: String? = nil) async throws -> [String:Any] {
         let req = try makeRequest(method, path, value: value, authorization: authorization)
-        let session = URLSession(configuration:.ephemeral,delegate:GroupRedirectBlocker(),delegateQueue:nil); defer { session.invalidateAndCancel() }
-        let (bytes,response) = try await session.bytes(for:req)
+        let (bytes,response) = try await RelayHTTP.session.bytes(for:req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RelayError.invalid("group HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)") }
         var data = Data();for try await byte in bytes { data.append(byte); if data.count > 3*1024*1024 { throw RelayError.invalid("response too large") } };return try dictionary(data)
     }
@@ -283,7 +282,4 @@ public final class RelayGroups: @unchecked Sendable {
     private func change(_ state: [String:Any]) async throws {
         guard let old = config["group_entry"] as? [String:Any] else { throw RelayError.invalid("enrollment") };var g = state;g["revision"] = (g["revision"] as? Int ?? 0)+1;g["previous"] = Self.digest(try Self.payload(old));let e = try sign(g);_ = try advance(old,e);_ = try await call("PUT","/group",value:e);try accept(e)
     }
-}
-private final class GroupRedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }

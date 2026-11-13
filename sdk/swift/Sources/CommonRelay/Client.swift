@@ -3,8 +3,7 @@ import Foundation
 /// Owns a single connection. Applications explicitly reconnect; this object never replays operations.
 public actor RelayClient {
     public let identity: RelayIdentity
-    private var socket: URLSessionWebSocketTask?
-    private var session: URLSession?
+    private var socket: RelaySocket?
     private var reader: Task<Void, Never>?
     private var pending: [String: CheckedContinuation<RelayEvent, Error>] = [:]
     private var requestTokens: [String: UUID] = [:]
@@ -24,9 +23,10 @@ public actor RelayClient {
     public func connect(url: URL, token: String, password: String? = nil, allowLocalTest: Bool = false) async throws -> AsyncThrowingStream<RelayEvent, Error> {
         guard socket == nil, url.scheme == "wss" || (allowLocalTest && url.scheme == "ws" && url.host == "127.0.0.1") else { throw RelayError.invalid("WSS required") }
         let request = try Self.upgradeRequest(url: url, token: token, password: password)
-        let session = URLSession(configuration: .ephemeral); self.session = session
-        let socket = session.webSocketTask(with: request); socket.maximumMessageSize = 270336; self.socket = socket; socket.resume()
+        let socket = try RelaySocket(request: request, maximumMessageSize: 270336); self.socket = socket
         do {
+            do { try await socket.open() } catch { throw await RelaySocket.upgradeFailure(error, request: request) }
+            guard self.socket === socket else { throw RelayError.closed }
             let welcome = try await socket.receive(); guard case .string(let text) = welcome else { throw RelayError.invalid("welcome") }
             let object = try dictionary(Data(text.utf8))
             guard object["version"] as? Int == 1, let own = object["identity"] as? [String: Any], own["app"] as? String == identity.app, own["group"] as? String == identity.group, own["device"] as? String == identity.device, own["public_key"] as? String == identity.publicKey.relayHex else { throw RelayError.invalid("identity mismatch") }
@@ -45,7 +45,7 @@ public actor RelayClient {
                 }
             }
             return events
-        } catch { await close(error: error); throw error }
+        } catch { if self.socket == nil || self.socket === socket { await close(error: error) } else { socket.cancel() }; throw error }
     }
     func send(_ event: [String: Any]) async throws { guard let socket else { throw RelayError.closed }; let data = try json(event); guard data.count <= 270336, let text = String(data: data, encoding: .utf8) else { throw RelayError.invalid("frame size") }; try await socket.send(.string(text)) }
     func binary(_ data: Data) async throws { guard let socket else { throw RelayError.closed }; try await socket.send(.data(data)) }
@@ -114,7 +114,7 @@ public actor RelayClient {
         try await send(["type": "stream.close", "id": id])
     }
     func removeStream(_ id: String) async { streams.removeValue(forKey: id); try? await send(["type": "stream.close", "id": id]) }
-    private func dispatch(_ message: URLSessionWebSocketTask.Message) async throws {
+    private func dispatch(_ message: RelaySocket.Message) async throws {
         switch message {
         case .data(let data):
             guard data.count >= 26, data.count <= 65561, data.first == 1 else { throw RelayError.invalid("binary frame") }
@@ -133,12 +133,11 @@ public actor RelayClient {
                 if expired || duplicate { if e["offline"] as? Bool == true { try await send(["type": "ack", "id": id, "from": from]) }; return }
                 guard let encoded = plain["data"] as? String, let data = Data(base64Encoded: encoded) else { throw RelayError.invalid("payload") }; e["data"] = data }
             if ["message", "stream.open", "peer.up", "peer.down", "group.changed"].contains(type) { if case .dropped = eventContinuation?.yield(try RelayEvent(e)) { throw RelayError.backpressure } }
-        @unknown default: throw RelayError.invalid("message type")
         }
     }
     public func close(error: Error = RelayError.closed) async {
         cleaner?.cancel(); cleaner = nil
-        reader?.cancel(); reader = nil; socket?.cancel(with: .goingAway, reason: nil); socket = nil; session?.invalidateAndCancel(); session = nil
+        reader?.cancel(); reader = nil; socket?.cancel(); socket = nil
         let requests = pending; pending.removeAll(); requestTokens.removeAll(); for continuation in requests.values { continuation.resume(throwing: error) }
         let old = streams; streams.removeAll(); for stream in old.values { await stream.abort() }
         eventContinuation?.finish(throwing: error); eventContinuation = nil
