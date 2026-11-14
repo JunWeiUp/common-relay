@@ -89,7 +89,7 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-passwor
 
 ## 客户端 SDK
 
-SDK 直接按本仓库 Git 标签（如 `v0.1.6`）安装，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。1.0 之前不保证 API 稳定。
+SDK 直接按本仓库 Git 标签（如 `v0.1.7`）安装，不发布到 npm、PyPI、crates.io、pub.dev 或 Maven Central。1.0 之前不保证 API 稳定。
 
 | SDK | 源码 | 环境要求 |
 | --- | --- | --- |
@@ -103,13 +103,13 @@ SDK 直接按本仓库 Git 标签（如 `v0.1.6`）安装，不发布到 npm、P
 | Rust 客户端 | [sdk/rust](sdk/rust) | Rust 1.89+（tokio，纯 Rust） |
 
 ```text
-Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.6")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.6'    // 或 :kotlin:，经 JitPack
-Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.6, path: sdk/dart }
-Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.6#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.6/common-relay-typescript-0.1.6.tgz
-Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.6
-Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.6" }
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.7")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.7'    // 或 :kotlin:，经 JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.7, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.7#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.7/common-relay-typescript-0.1.7.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.7
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.7" }
 ```
 
 [SDK 分发指南](docs/REGISTRY.md)介绍仓库配置、发布流程，以及用于审计或本地补丁的可选源码快照。
@@ -163,3 +163,11 @@ README 和贡献指南提供中英文版本。详细指南目前主要使用中�
 [MIT](LICENSE) © JunWeiUp。第三方依赖保留各自许可证。
 
 基于 [libsodium](https://github.com/jedisct1/libsodium)、[coder/websocket](https://github.com/coder/websocket) 和 [modernc SQLite](https://pkg.go.dev/modernc.org/sqlite) 构建。
+
+## 可选 WebDAV 上传接入
+
+只支持「备份到 WebDAV」的应用可以用账号和授权密码直接上传到中继。每个上传的文件加密后投递给固定的接收设备，接收端使用现有 Files 接口；服务器只收不读，不提供下载。默认关闭，与 Webhook 一样桥接端能看到传输中的明文；说明见 [WebDAV 上传接入](docs/WEBDAV.md)。
+
+## 可选 Webhook 接入
+
+普通 JSON 推送可由同一服务转为标准加密文件，无需独立转发 worker。默认关闭，桥接端能看到明文；配置、确认语义和迁移说明见 [通用 Webhook 接入](docs/WEBHOOKS.md)。

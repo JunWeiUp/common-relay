@@ -53,6 +53,10 @@ type stream struct {
 	deadline   time.Time
 }
 type Server struct {
+	webhooks                       map[string]*WebhookRoute
+	webhookSlots                   chan struct{}
+	davRoutes                      map[string]*WebDAVRoute
+	davSlots                       chan struct{}
 	SelfServiceApps                map[string]bool
 	AccessHash                     []byte // SHA-256 of the required Relay-Access password; nil disables the check
 	Store                          *Store
@@ -67,7 +71,7 @@ type Server struct {
 }
 
 func New(s *Store) *Server {
-	return &Server{Store: s, peers: map[string]*peer{}, streams: map[string]*stream{}, fileLocks: map[string]*fileLock{}, MaxConnections: 128, AppConnections: 64, DiskReserve: 2 << 30}
+	return &Server{webhookSlots: make(chan struct{}, 2), davSlots: make(chan struct{}, 2), Store: s, peers: map[string]*peer{}, streams: map[string]*stream{}, fileLocks: map[string]*fileLock{}, MaxConnections: 128, AppConnections: 64, DiskReserve: 2 << 30}
 }
 func key(d Device) string { return d.App + "/" + d.Group + "/" + d.ID }
 func (s *Server) presence(d Device, kind string) {
@@ -81,6 +85,8 @@ func (s *Server) presence(d Device, kind string) {
 }
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
+	m.HandleFunc("/relay/v1/webhooks/", s.webhook)
+	m.HandleFunc(davPrefix, s.webdav)
 	m.HandleFunc("/relay/v1/ws", s.requireAccess(s.websocket))
 	m.HandleFunc("/relay/v1/group", s.requireAccess(s.groups))
 	m.HandleFunc("/relay/v1/group/", s.requireAccess(s.groups))

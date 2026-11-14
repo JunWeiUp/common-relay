@@ -74,6 +74,8 @@ public final class RelayGroups: @unchecked Sendable {
         RelayAccess.apply(password, to: &req); return req
     }
     public func call(_ method: String, _ path: String, value: [String:Any]? = nil, authorization: String? = nil) async throws -> [String:Any] {
+        // Task cancellation aborts the request; an already-cancelled task never contacts the relay.
+        try Task.checkCancellation()
         let req = try makeRequest(method, path, value: value, authorization: authorization)
         let (bytes,response) = try await RelayHTTP.session.bytes(for:req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw RelayError.invalid("group HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)") }

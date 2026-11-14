@@ -63,6 +63,7 @@ await files.upload(info, stagingPath);            // 409 时严格核对原描�
 
 - 创建/初始化：`prepareCreate(groupName, deviceName)` 生成已签名草稿，应用保存后再 `create()`；运维初始化用 `bootstrap(code, name)`。
 - 邀请：`invite('manual' | 'auto', { compact })`（compact 时返回 `short_link`）、`resolveInvitation(link)`、`pending`、`approve(invitation, request, { manager })`、`cancel`。
+- 取消：`withSignal(signal)` 返回共享 `config` 的请求级视图，AbortSignal 中止进行中的组/入组/短邀请请求（已中止时不连接中继，与 15 秒超时并存）；并发修改共享配置需调用方串行。
 - 加入：`join(invitation, name)` 后由应用驱动 `finishJoin()`；auto 模式由扫码方验证授权链后自行签署入组，邀请端可离线。
 - 成员变更：`refresh`、`remove`、`rename`、`prepareExit({ disband })` + `exit()`（`leave()` / `disband()` 为便捷封装）。
 

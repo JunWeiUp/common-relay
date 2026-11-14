@@ -37,6 +37,8 @@ func run() error {
 	globalQuota := f.Int64("global-quota", 5<<30, "global bytes")
 	selfService := f.String("self-service-apps", "", "comma-separated app namespaces allowed to create new groups")
 	accessFile := f.String("access-password-file", "", "file with lowercase hex SHA-256 of the required Relay-Access password")
+	webhooks := f.String("webhook-config", "", "optional private webhook route configuration")
+	webdav := f.String("webdav-config", "", "optional private WebDAV upload route configuration")
 	reserve := f.Uint64("disk-reserve", 2<<30, "minimum free disk bytes")
 	if len(os.Args) < 2 {
 		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check|hash-password [flags]")
@@ -133,6 +135,19 @@ func run() error {
 		server := relay.New(s)
 		server.DiskReserve = *reserve
 		server.AccessHash = accessHash
+		if err := server.RecoverWebhooks(); err != nil {
+			return err
+		}
+		if *webhooks != "" {
+			if err := server.LoadWebhooks(*webhooks); err != nil {
+				return err
+			}
+		}
+		if *webdav != "" {
+			if err := server.LoadWebDAV(*webdav); err != nil {
+				return err
+			}
+		}
 		server.SelfServiceApps = map[string]bool{}
 		for _, name := range strings.Split(*selfService, ",") {
 			if name = strings.TrimSpace(name); name != "" {

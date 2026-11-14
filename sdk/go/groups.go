@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -21,6 +22,7 @@ type Groups struct {
 	base   string
 	local  bool
 	client *http.Client
+	ctx    context.Context
 }
 
 func NewGroups(c *GroupConfig, allowLocalTest bool) (*Groups, error) {
@@ -38,8 +40,27 @@ func NewGroups(c *GroupConfig, allowLocalTest bool) (*Groups, error) {
 	if u.Scheme == "ws" {
 		scheme = "http"
 	}
-	return &Groups{Config: c, base: scheme + "://" + u.Host + "/relay/v1", local: allowLocalTest, client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect forbidden") }}}, nil
+	return &Groups{ctx: context.Background(), Config: c, base: scheme + "://" + u.Host + "/relay/v1", local: allowLocalTest, client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect forbidden") }}}, nil
 }
+
+// WithContext returns a request-scoped view sharing the configuration and pool.
+// Callers must serialize mutations of the shared configuration.
+func (g *Groups) WithContext(ctx context.Context) *Groups {
+	copy := *g
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	copy.ctx = ctx
+	return &copy
+}
+
+// Close releases idle connections; use WithContext to cancel active requests.
+func (g *Groups) Close() {
+	if g.client != nil {
+		g.client.CloseIdleConnections()
+	}
+}
+
 func (g *Groups) call(method, path string, body any, auth string, out any) error {
 	var r io.Reader
 	if body != nil {
@@ -49,7 +70,11 @@ func (g *Groups) call(method, path string, body any, auth string, out any) error
 		}
 		r = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, g.base+path, r)
+	ctx := g.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, g.base+path, r)
 	if err != nil {
 		return err
 	}
@@ -341,6 +366,8 @@ func (g *Groups) ResolveInvitation(text string) (GroupInvitation, error) {
 	if err != nil {
 		return inv, err
 	}
+	endpoint = endpoint.WithContext(g.ctx)
+	defer endpoint.Close()
 	var result struct {
 		Version int    `json:"version"`
 		Packet  string `json:"packet"`

@@ -10,6 +10,19 @@
 - TypeScript、Go、Rust 补齐完整能力：持久化离线消息（日志、ACK、去重、清理）、secretstream 双向流、加密文件、签名设备组（严格载荷、委托授权、自助创建、改名、退出、解散）及加密短邀请；七类 SDK 共用向量，`local-interop.py`、`group-interop.py` 增加三者的互通探针。
 - 源码快照工具支持 Kotlin、TypeScript、Go、Rust；保留文件续传偏移检查与 Python 流关闭唤醒修复。
 
+## 0.1.7
+
+- 新增可选 WebDAV 上传入口 `/relay/v1/dav/{route}/`（`--webdav-config`）：HTTP Basic 账号 + 授权密码（只存 SHA-256，失败限流），支持 OPTIONS/PROPFIND/MKCOL/PUT/HEAD/DELETE/MOVE/PROPPATCH；每次 PUT 加密为标准 v1 文件投递给固定接收设备，只收不读。同路径相同内容与 0 字节文件不重复投递。
+- Webhook 与 WebDAV 共用 `ingress.go` 的私密配置加载、设备公钥校验、加密暂存与持久发布；Webhook 行为不变。
+- nginx 模板新增 `/relay/v1/dav/` location；rclone 真实客户端互通测试（可选）。
+- 新增可选通用 Webhook 入口 `POST /relay/v1/webhooks/{route}`（`--webhook-config`），复用标准加密文件和各 SDK 接收接口。
+- 增加路由令牌哈希、固定目标、持久队列、7 天幂等回执与重启恢复。
+- 新入口明确采用服务器桥接信任模型，默认关闭；现有服务与普通文件 TTL 保持原行为。
+- 补充可配置的时间戳/HMAC-SHA256 请求签名，保留现有 Webhook 的签名校验；兼容 systemd 私有只读凭据目录。
+- 设备组请求支持调用方取消并在各 SDK 对齐：Go `WithContext`/`Close`，TypeScript `withSignal(AbortSignal)`，Dart `withAbort(Future)`，Java 中断调用线程即取消进行中的请求（抛 `InterruptedException`），Kotlin 新增 `groupCall {}` 协程取消；Swift/Python/Rust 沿用原生 Task/asyncio/future 取消，Swift 已取消任务不再发起请求。短邀请解析沿用调用方取消；协议不变。
+- 新增独立 MCP 客户端连通性探针示例 `examples/mcp-probe`（固定测试文字，不属于中继服务）。
+- SDK 清单、依赖示例和源码快照版本统一更新至 0.1.7。
+
 ## 0.1.6
 
 - Swift：WebSocket 传输由 `URLSessionWebSocketTask` 改为 Network.framework（`NWConnection` + `NWProtocolWebSocket`）。macOS 26 上 CFNetwork 会在 cancel + invalidate 后仍保留每个 WebSocket 任务及其会话，长驻客户端每次重连泄漏一整套会话；新传输取消即释放。握手失败时补一次普通 HTTP 状态探测，401/403 仍以 `NSURLErrorUserAuthenticationRequired` 上报；协议与其他 SDK 不变，新增回环 `SocketTests`。

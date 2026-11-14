@@ -15,3 +15,7 @@ final files = RelayFiles(Uri.parse('https://relay.example.com/relay/v1/files'), 
 
 `resolveInvitation` reuses the caller's configured password. The password is never written into
 invitations or short-link packets; distribute it to devices separately.
+
+`groups.withAbort(trigger)` returns a request-scoped view sharing `config`; completing `trigger`
+aborts in-flight group, enrollment and short-link requests with `RequestAbortedException`
+(an already-completed trigger never contacts the relay). Serialize mutations of the shared config.

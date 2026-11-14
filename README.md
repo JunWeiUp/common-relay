@@ -89,7 +89,7 @@ Self-service group creation is disabled by default. Enable selected application 
 
 ## Client SDKs
 
-SDKs install directly from this repository's Git tags (for example `v0.1.6`); they are not published to npm, PyPI, crates.io, pub.dev, or Maven Central. There are no stable API guarantees before 1.0.
+SDKs install directly from this repository's Git tags (for example `v0.1.7`); they are not published to npm, PyPI, crates.io, pub.dev, or Maven Central. There are no stable API guarantees before 1.0.
 
 | SDK | Source | Requirements |
 | --- | --- | --- |
@@ -103,13 +103,13 @@ SDKs install directly from this repository's Git tags (for example `v0.1.6`); th
 | Rust client | [sdk/rust](sdk/rust) | Rust 1.89+ (tokio, pure Rust) |
 
 ```text
-Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.6")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.6'    // or :kotlin:, via JitPack
-Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.6, path: sdk/dart }
-Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.6#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.6/common-relay-typescript-0.1.6.tgz
-Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.6
-Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.6" }
+Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.7")
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.7'    // or :kotlin:, via JitPack
+Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.7, path: sdk/dart }
+Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.7#subdirectory=sdk/python"
+Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.7/common-relay-typescript-0.1.7.tgz
+Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.7
+Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.7" }
 ```
 
 The [SDK distribution guide](docs/REGISTRY.md) covers repository setup, the release process, and optional source snapshots for auditing or local patches.
@@ -163,3 +163,11 @@ Bug reports, documentation improvements, examples, and pull requests are welcome
 [MIT](LICENSE) © JunWeiUp. Third-party dependencies retain their own licenses.
 
 Built with [libsodium](https://github.com/jedisct1/libsodium), [coder/websocket](https://github.com/coder/websocket), and [modernc SQLite](https://pkg.go.dev/modernc.org/sqlite).
+
+## Optional WebDAV upload ingress
+
+Apps that can only "back up to WebDAV" can upload straight to the relay with a username and password. Each uploaded file is encrypted for one pinned receiving device and delivered through the existing Files API; contents are never served back (write-only). Disabled by default and, like webhooks, the server-side bridge sees plaintext in transit; see [WebDAV ingress](docs/WEBDAV.md).
+
+## Optional Webhook ingress
+
+Accept ordinary JSON and deliver it as a standard encrypted file using an explicitly trusted server-side bridge identity. Disabled by default; see [Webhook configuration and trust boundary](docs/WEBHOOKS.md). Existing receiver SDKs use their Files API.

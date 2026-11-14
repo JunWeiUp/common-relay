@@ -37,7 +37,7 @@ def main():
                            cwd=ROOT, env={**os.environ, 'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': arch}, check=True)
             shutil.copytree(ROOT / 'deploy', stage / 'deploy')
             (stage / 'docs').mkdir()
-            for doc in ('DEPLOYMENT.md', 'DEVICE-GROUPS.md'):
+            for doc in ('DEPLOYMENT.md', 'DEVICE-GROUPS.md', 'WEBHOOKS.md'):
                 shutil.copy2(ROOT / 'docs' / doc, stage / 'docs' / doc)
             (stage / 'protocol').mkdir()
             shutil.copy2(ROOT / 'protocol/README.md', stage / 'protocol/README.md')

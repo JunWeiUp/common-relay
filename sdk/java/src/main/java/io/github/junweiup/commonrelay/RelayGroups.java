@@ -8,9 +8,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
 import java.io.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
-/** Call off the UI thread. Persist config privately after every operation.
+/** Call off the UI thread; interrupting the calling thread cancels the in-flight request. Persist config privately after every operation.
  * Pin the initial manager via a trusted invitation, never via a relay response. */
 public final class RelayGroups {
     public final JSONObject config;
@@ -54,7 +56,19 @@ public final class RelayGroups {
     public JSONObject call(String method,String path,JSONObject value,String authorization)throws Exception{
         RequestBody body=value==null?null:RequestBody.create(bytes(value.toString()),MediaType.get("application/json"));Request.Builder builder=new Request.Builder().url(base+path).header("Authorization",authorization==null?"Bearer "+config.optString("token"):authorization).method(method,body);
         if(password!=null)builder.header(RelayAccess.HEADER,password);Request request=builder.build();
-        try(Response r=http.newCall(request).execute()){if(r.code()!=200||r.body()==null)throw new IOException("Group request failed ("+r.code()+")");try(InputStream in=r.body().byteStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] b=new byte[8192];int n;while((n=in.read(b))!=-1){if(out.size()+n>3*1024*1024)throw new IOException("Response too large");out.write(b,0,n);}return new JSONObject(out.toString("UTF-8"));}}
+        // Interrupting the calling thread (e.g. Kotlin runInterruptible) cancels the HTTP request.
+        if(Thread.interrupted())throw new InterruptedException("Group request interrupted");
+        Call call=http.newCall(request);CompletableFuture<JSONObject> result=new CompletableFuture<>();
+        call.enqueue(new Callback(){
+            @Override public void onFailure(Call c,IOException e){result.completeExceptionally(e);}
+            @Override public void onResponse(Call c,Response response){try{result.complete(read(response));}catch(Exception e){result.completeExceptionally(e);}}
+        });
+        try{return result.get();}
+        catch(InterruptedException e){call.cancel();throw e;}
+        catch(ExecutionException e){Throwable cause=e.getCause();if(cause instanceof Exception)throw (Exception)cause;throw new IOException(cause);}
+    }
+    private static JSONObject read(Response response)throws Exception{
+        try(Response r=response){if(r.code()!=200||r.body()==null)throw new IOException("Group request failed ("+r.code()+")");try(InputStream in=r.body().byteStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] b=new byte[8192];int n;while((n=in.read(b))!=-1){if(out.size()+n>3*1024*1024)throw new IOException("Response too large");out.write(b,0,n);}return new JSONObject(out.toString("UTF-8"));}}
     }
     public void accept(JSONObject entry)throws Exception{config.put("group_entry",entry);JSONObject peers=new JSONObject();for(JSONObject m:members(unpack(entry)).values())if(!m.getString("device").equals(config.getString("device")))peers.put(m.getString("device"),m.getString("public_key"));config.put("trusted_peers",peers).put("public_key",member("").getString("public_key"));}
     public JSONObject refresh()throws Exception{JSONObject current=config.getJSONObject("group_entry");while(true){JSONObject result=call("GET","/group?after="+unpack(current).getInt("revision"),null,null);JSONArray entries=result.getJSONArray("entries");for(int i=0;i<entries.length();i++)current=advance(current,entries.getJSONObject(i));accept(current);if(entries.length()==0||unpack(current).getInt("revision")>=result.getInt("revision"))return new JSONObject().put("state",unpack(current)).put("online",result.getJSONArray("online"));}}
