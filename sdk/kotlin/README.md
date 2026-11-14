@@ -27,7 +27,7 @@ val receipt = client.sendMessage("peer-device", "hello".toByteArray())
 
 **服务器访问密码**：中继要求每个 `/relay/v1` 请求带 `Relay-Access` 请求头（8–128 个可打印 ASCII 字符，不含空格）。Kotlin 用 `client.connectRelay(url, token, password = ...)` 与 `relayFiles(http, base, token, password)`；Java 用 `connect(url, token, password[, allowLocalTest])`、`new RelayFiles(http, base, token, password)`；`RelayGroups` 读取配置 JSON 的 `"password"` 键（与 `url`/`token` 并列），短链接可在片段末尾携带 `.base64url(密码)`（`invite(mode, true)` 自动附带本机密码）；解析时优先用链接里的密码，否则仅当链接地址与本机 `url` 相同才发送本机密码，`join` 会把链接密码写入配置。密码不是端到端密钥；不合法时构造即抛 `IllegalArgumentException`。
 
-协程取消会取消 pending future，但不能撤销已经发出的消息。`readChunk` / `writeChunk` 在 IO dispatcher 运行并在异常或取消时关闭流；`openByteStream` / `acceptByteStream` 返回 Java future，调用方负责接受成功后的流生命周期。设备组与文件的同步 HTTP 方法应在 `Dispatchers.IO` 上调用；应用需保存 pending join / exit 状态。参考 [设备组](../../docs/DEVICE-GROUPS.md)、[可靠性](../../docs/RELIABILITY.md)。
+协程取消会取消 pending future，但不能撤销已经发出的消息。`readChunk` / `writeChunk` 在 IO dispatcher 运行并在异常或取消时关闭流；`openByteStream` / `acceptByteStream` 返回 Java future，调用方负责接受成功后的流生命周期。设备组与文件的同步 HTTP 方法应在 `Dispatchers.IO` 上调用；`groups.groupCall { refresh() }` 在 IO 上运行组操作，协程取消会中断线程并取消进行中的 HTTP 请求（Java 侧中断调用线程同样抛出 `InterruptedException`）；应用需保存 pending join / exit 状态。参考 [设备组](../../docs/DEVICE-GROUPS.md)、[可靠性](../../docs/RELIABILITY.md)。
 
 ```sh
 SODIUM_LIBRARY_PATH=/opt/homebrew/lib gradle testDebugUnitTest :java:testDebugUnitTest lintDebug

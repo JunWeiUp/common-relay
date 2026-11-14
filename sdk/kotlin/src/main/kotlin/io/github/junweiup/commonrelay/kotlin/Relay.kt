@@ -3,6 +3,7 @@ package io.github.junweiup.commonrelay.kotlin
 import io.github.junweiup.commonrelay.Crypto
 import io.github.junweiup.commonrelay.RelayClient
 import io.github.junweiup.commonrelay.RelayFiles
+import io.github.junweiup.commonrelay.RelayGroups
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.future.await
@@ -56,3 +57,10 @@ suspend fun RelayClient.Stream.writeChunk(data: ByteArray, final: Boolean = fals
     try { runInterruptible(Dispatchers.IO) { send(data, final) } }
     catch (error: Exception) { close(); throw error }
 }
+
+/**
+ * Runs blocking group operations on IO; coroutine cancellation interrupts the
+ * thread and cancels the in-flight HTTP request. Persist config afterwards.
+ */
+suspend fun <T> RelayGroups.groupCall(block: RelayGroups.() -> T): T =
+    runInterruptible(Dispatchers.IO) { block() }

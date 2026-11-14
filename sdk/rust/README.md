@@ -54,6 +54,7 @@ match event.kind.as_str() {
 
 - 创建/初始化：`prepare_create(group_name, device_name)` 先生成并保存已签名草稿，再 `create()`；运维初始化用 `bootstrap(code, name)`。
 - 邀请：`invite(mode, compact)`（`"manual"` / `"auto"`，`compact` 时返回 `short_link`）、`resolve_invitation(link)`、`pending`、`approve(invitation, request, manager)`、`cancel`。
+- 取消：丢弃组操作的 future（或 `tokio::time::timeout`）即中止进行中的 HTTP 请求。
 - 加入：`join(invitation, name)` 后由应用驱动 `finish_join()`；auto 模式由扫码方验证授权链后自行签署入组，邀请端可离线。
 - 成员变更：`refresh`、`remove`、`rename`、`prepare_exit(disband)` + `exit()`（`leave()` / `disband()` 为便捷封装）。
 

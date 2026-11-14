@@ -36,7 +36,7 @@ bash deploy/install.sh /etc/nginx/sites-available/relay.conf
 也可在仓库根目录本地打包（产物默认位于 `build/server-release/`；未提交改动会标为 `dirty: true`）：
 
 ```sh
-python3 scripts/package-server.py --version v0.1.6-local
+python3 scripts/package-server.py --version v0.1.7-local
 # 或仅构建目标服务器的二进制，保留 build/ 与 deploy/ 目录结构
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o build/common-relay-linux-amd64 ./cmd/common-relay
 ```
@@ -61,3 +61,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o build/common-relay-l
 回滚需使用支持当前签名链和数据库的版本。启用自动邀请前升级组内所有 SDK；产生委托签名记录后，不能回退到不认识该格式的版本。短邀请依赖 `/enroll/{id}/link`，自动加入依赖 `/enroll/{id}/auto`，参考配置已包含两者。
 
 保留当前消息和成员数据，不用旧数据库覆盖新数据。确需恢复备份时，应先停止写入并协调客户端状态。生产凭据、备份路径和发布证据存于仓库外或忽略的 `.local/`，不提交。
+
+可选通用 Webhook：在现有服务参数追加 `--webhook-config`，使用单独的桥接身份和路由令牌。默认关闭；私密配置、代理要求、队列保留、备份和迁移步骤见 [WEBHOOKS.md](WEBHOOKS.md)。启用前须明确服务器可见请求明文。
+
+可选 WebDAV 上传：追加 `--webdav-config`，每条路由一个账号 + 授权密码（`hash-password` 生成 SHA-256）和独立桥接身份。默认关闭；配置、代理与投递语义见 [WEBDAV.md](WEBDAV.md)。

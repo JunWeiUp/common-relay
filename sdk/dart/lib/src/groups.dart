@@ -8,9 +8,31 @@ class RelayGroups {
   final bool allowLocalTest;
   /// `config['password']` is the optional server access password, sent as
   /// `Relay-Access` on every group, enrollment and invitation-link request.
-  RelayGroups(this.sodium, this.config, {this.allowLocalTest = false}) {
+  ///
+  /// [abortTrigger] cancels every request made through this instance once it
+  /// completes; requests then fail with [http.RequestAbortedException].
+  RelayGroups(
+    this.sodium,
+    this.config, {
+    this.allowLocalTest = false,
+    this.abortTrigger,
+  }) {
     relayAccessPassword(config['password']);
+    abortTrigger?.whenComplete(() => _aborted = true).ignore();
   }
+
+  /// Completing this future aborts in-flight and later requests of this view.
+  final Future<void>? abortTrigger;
+  bool _aborted = false;
+
+  /// Returns a request-scoped view sharing [config]; completing [trigger]
+  /// aborts its requests. Callers must serialize mutations of the shared config.
+  RelayGroups withAbort(Future<void> trigger) => RelayGroups(
+    sodium,
+    config,
+    allowLocalTest: allowLocalTest,
+    abortTrigger: trigger,
+  );
   static const domain = 'common-relay/group-signing/v1\u0000';
   static String digest(List<int> data) =>
       hashes.sha256.convert(data).toString();
@@ -211,9 +233,15 @@ class RelayGroups {
           path: '/relay/v1',
         )
         .toString();
+    final target = Uri.parse('$base$path');
+    if (abortTrigger != null) {
+      // Let an already-completed trigger mark us aborted before connecting.
+      await Future<void>.value();
+      if (_aborted) throw http.RequestAbortedException(target);
+    }
     final client = http.Client();
     try {
-      final req = http.Request(method, Uri.parse('$base$path'))
+      final req = http.AbortableRequest(method, target, abortTrigger: abortTrigger)
         ..followRedirects = false;
       req.headers['Authorization'] =
           authorization ?? 'Bearer ${config['token'] ?? ''}';
@@ -438,7 +466,7 @@ class RelayGroups {
         'password': p.password
       else if (config['password'] != null && p.url == config['url'])
         'password': config['password'],
-    }, allowLocalTest: allowLocalTest);
+    }, allowLocalTest: allowLocalTest, abortTrigger: abortTrigger);
     final result = await endpoint.call(
       'GET',
       '/enroll/${p.id}/link',

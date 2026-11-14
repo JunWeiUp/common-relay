@@ -17,3 +17,7 @@
 短邀请：`invitation_links.go` 管理加密包发布和按派生能力读取，`group_invite_links` 与邀请级联删除。各 SDK 的 InvitationLinks 辅助模块负责 SecretBox、用途隔离的读取令牌与规范化短 URI；服务端没有解密密钥。
 
 SDK 不使用共享 Rust 核心，不维护自有 FFI/JNI 桥接或多目标静态库。原有四类实现仍依赖各平台的 libsodium 封装；TypeScript 使用 TweetNaCl 与 libsodium-wrappers（secretstream），Go 使用 x/crypto 及自有 secretstream，Rust 使用纯 Rust 的 crypto_box、ed25519-dalek 与自有 secretstream（独立 crate，不作为其他 SDK 的共享核心）。共享向量和隔离互通测试约束协议一致性。离线日志在 TypeScript/Go/Rust 中与 Swift/Java/Dart 一样使用逐记录原子替换的文件存储。
+
+可选 `internal/relay/webhooks.go` 在同一进程内将普通 JSON 转为现有加密文件；根模块复用 `sdk/go` 的加密实现。专用桥接身份持有自己的私钥，接收方的私钥不进入服务端。SQLite `webhook_receipts` 保存限时幂等回执；文件暂存状态支持启动恢复。该入口的服务器信任边界不同于普通客户端端到端加密，见 [WEBHOOKS.md](WEBHOOKS.md)。
+
+可选 `internal/relay/webdav.go` 提供只收不读的 WebDAV 上传入口（HTTP Basic），与 Webhook 共用 `ingress.go` 的加密、暂存与持久发布流程；SQLite `webdav_entries` 只保存目录列表元数据（路径、大小、摘要、修改时间），不保存明文。见 [WEBDAV.md](WEBDAV.md)。

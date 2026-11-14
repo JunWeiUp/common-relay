@@ -45,7 +45,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 		case "POST":
 			s.createFile(w, r, d)
 		case "GET":
-			rows, err := s.Store.DB.Query("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM files WHERE app=? AND grp=? AND recipient=? AND state='ready' AND expires>? LIMIT 100", d.App, d.Group, d.ID, time.Now().Unix())
+			rows, err := s.Store.DB.Query("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM files WHERE app=? AND grp=? AND recipient=? AND state='ready' AND expires>? ORDER BY rowid LIMIT 100", d.App, d.Group, d.ID, time.Now().Unix())
 			if err != nil {
 				http.Error(w, "storage", 500)
 				return
@@ -288,6 +288,9 @@ func (s *Server) lockFile(id string) func() {
 }
 func (s *Server) Collect() error {
 	now := time.Now().Unix()
+	if _, err := s.Store.DB.Exec("DELETE FROM webhook_receipts WHERE expires<=?", now); err != nil {
+		return err
+	}
 	if _, err := s.Store.DB.Exec("DELETE FROM group_invites WHERE expires<=?", now); err != nil {
 		return err
 	}

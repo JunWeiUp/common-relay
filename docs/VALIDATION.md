@@ -11,6 +11,7 @@
 | Java | `gradle testDebugUnitTest lintDebug`（sdk/java） | Android SDK 单测与 Lint |
 | 跨语言传输 | `scripts/local-interop.py` | 四语言双向离线消息及每方向 8 MiB 加密流 |
 | 跨语言管理 | `scripts/group-interop.py` | 手动/自动加入、短邀请与成员管理 |
+| HTTP 接入 | `scripts/webhook-interop.py --server <二进制>`、`scripts/webdav-interop.py --server <二进制>` | Webhook / WebDAV 上传经真实服务端加密，未修改的 Python SDK 解密与确认 |
 | 入门示例 | `examples/python/*.py` | 独立服务、随机身份与实际 SDK 调用 |
 
 工具链及完整命令见[开发指南](DEVELOPMENT.md)。运行结果应记录使用的提交、工具链、命令和失败信息；本页不代表任何环境的验收证明。

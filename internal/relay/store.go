@@ -51,6 +51,9 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
+ CREATE TABLE IF NOT EXISTS webdav_entries(route TEXT NOT NULL,path TEXT NOT NULL,parent TEXT NOT NULL,collection INTEGER NOT NULL,size INTEGER NOT NULL,digest TEXT NOT NULL,content_type TEXT NOT NULL,modified INTEGER NOT NULL,file_id TEXT NOT NULL,PRIMARY KEY(route,path));
+ CREATE INDEX IF NOT EXISTS webdav_children ON webdav_entries(route,parent);
+ CREATE TABLE IF NOT EXISTS webhook_receipts(scope TEXT NOT NULL,key_hash TEXT NOT NULL,body_hash TEXT NOT NULL,file_id TEXT NOT NULL,expires INTEGER NOT NULL,ready INTEGER NOT NULL,PRIMARY KEY(scope,key_hash));
  CREATE TABLE IF NOT EXISTS devices(app TEXT NOT NULL, grp TEXT NOT NULL, id TEXT NOT NULL, token TEXT UNIQUE NOT NULL, public_key TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(app,grp,id));
  CREATE TABLE IF NOT EXISTS messages(app TEXT NOT NULL, grp TEXT NOT NULL, sender TEXT NOT NULL, recipient TEXT NOT NULL, id TEXT NOT NULL, body BLOB NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(app,grp,sender,id));
  CREATE INDEX IF NOT EXISTS inbox ON messages(app,grp,recipient,expires);

@@ -57,3 +57,5 @@ Kotlin 完整回环互通：给上文 `scripts/local-interop.py` 增加 `--kotli
 ```
 
 完整互通：`local-interop.py --only typescript go rust`（离线消息与 8 MiB 双向流）和 `group-interop.py --only typescript go rust`（设备组全流程）；两个脚本的 `--swift`/`--gradle` 仅在选中对应 SDK 时必需。脚本只启动临时回环服务，生成隔离身份，`lightweight-interop.py` 验证 Python ↔ TypeScript/Go/Rust 的设备查询及空消息、Unicode 和 100 KB 二进制消息双向加密传输；不读取生产配置、不操作真实设备。
+
+Webhook 定向验证：`go test -race ./internal/relay -run TestWebhook`；构建服务后运行 `PYTHONPATH=sdk/python .venv/bin/python scripts/webhook-interop.py --server build/common-relay`，仅使用临时身份和回环服务。SDK 接收接口不变，新增应用元数据契约见 WEBHOOKS.md。

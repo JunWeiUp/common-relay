@@ -62,6 +62,7 @@ if event.Type == "message" { process(event); err = client.Acknowledge(ctx, event
 
 - 创建/初始化：`PrepareCreate(groupName, deviceName)` 生成已签名草稿，应用保存后再 `Create()`；运维初始化用 `Bootstrap(code, name)`。
 - 邀请：`Invite("manual"|"auto", compact)`（compact 时返回 `ShortLink`）、`ResolveInvitation(link)`、`Pending`、`Approve(invitation, request, manager)`、`Cancel`。
+- 取消：`WithContext(ctx)` 返回共享配置与连接池的请求级视图，ctx 取消会中止进行中的组/入组/短邀请请求（已取消时不连接中继）；并发修改共享配置需调用方串行。`Close` 释放空闲连接。
 - 加入：`Join(invitation, name)` 后由应用驱动 `FinishJoin()`；auto 模式由扫码方验证授权链后自行签署入组，邀请端可离线。
 - 成员变更：`Refresh`、`Remove`、`Rename`、`PrepareExit(disband)` + `Exit()`（退出本机或由管理员解散）。
 
