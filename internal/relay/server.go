@@ -86,6 +86,7 @@ func (s *Server) presence(d Device, kind string) {
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/relay/v1/webhooks/", s.webhook)
+	m.HandleFunc("/relay/v1/dav/.accounts/", s.requireAccess(s.webdavAccounts))
 	m.HandleFunc(davPrefix, s.webdav)
 	m.HandleFunc("/relay/v1/ws", s.requireAccess(s.websocket))
 	m.HandleFunc("/relay/v1/group", s.requireAccess(s.groups))

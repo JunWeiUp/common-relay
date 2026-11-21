@@ -8,3 +8,10 @@
 - 协议变化必须同步所有实现该能力的 SDK、共享测试向量和协议文档；Kotlin 复用 Java；Swift、Java/Kotlin、Dart、Python、TypeScript、Go、Rust 均为完整能力。禁止宣称未执行的真机或持续运行验收已通过。
 - 执行 go test -race ./...，各 SDK 测试及跨语言互通；生产切换前验证真实 WSS、备份和回滚。
 - 私有文件放 .local/；数据目录、构建目录和签名材料不提交。SOURCE.json 为 SDK 来源与文件校验记录。
+
+## v2 通用聚合架构（`internal/v2/`，与 v1 解耦并存）
+
+- 架构规格与插件扩展配方见 [docs/V2-ARCHITECTURE.md](docs/V2-ARCHITECTURE.md)。
+- 目录边界：`internal/v2/core/`（`Identity & Space`、`Pipe`、`Box` 四原语内核）、`internal/v2/plugin/`（插件接口与信任等级校验）、`internal/v2/plugins/{drop,webhook,webdav}/`（薄边缘协议插件）、`internal/v2/server/`（`/v2/*` 设备面、`/v2/admin/*` 管理员面、`/edge/*` 插件面）。
+- 新增外部协议一律在 `internal/v2/plugins/<name>/` 实现 `plugin.Plugin` 接口并声明 `RequiredTrust()`，禁止修改内核硬编码业务协议，禁止绕过 `Space.TrustLevel` 校验。
+- 启动开启 v2：在 `common-relay serve` 追加 `--v2-admin-hash-file <sha256文件>` 即可同进程挂载 `/v2/*` 与 `/edge/*`，不影响存量 v1 服务。
