@@ -396,3 +396,152 @@ func TestWebDAVRcloneInterop(t *testing.T) {
 		t.Fatal("expected exactly one delivered file", n)
 	}
 }
+
+func TestWebDAVDynamicPerFolderAccounts(t *testing.T) {
+	f := newDAVFixture(t, nil)
+	// Also register an unrelated device in the same group to verify 403 enforcement.
+	_, otherPK, _ := sdk.GenerateKeyPair()
+	otherToken := RandomID() + RandomID()
+	if err := f.s.Store.AddDevice(Device{App: "test", Group: "group", ID: "other-dev", PublicKey: otherPK}, otherToken); err != nil {
+		t.Fatal(err)
+	}
+
+	acctReq := func(method, urlSuffix, token string, body any) (*http.Response, string) {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			rd = bytes.NewReader(b)
+		}
+		r, err := http.NewRequest(method, f.http.URL+"/relay/v1/dav/.accounts/"+urlSuffix, rd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp, string(out)
+	}
+
+	// Auth checks: missing token -> 401, non-recipient device -> 403, unknown route -> 404.
+	if resp, _ := acctReq("GET", "backup", "", nil); resp.StatusCode != 401 {
+		t.Fatalf("missing token: %d", resp.StatusCode)
+	}
+	if resp, _ := acctReq("GET", "backup", otherToken, nil); resp.StatusCode != 403 {
+		t.Fatalf("non-recipient: %d", resp.StatusCode)
+	}
+	if resp, _ := acctReq("GET", "missing", f.receiverToken, nil); resp.StatusCode != 404 {
+		t.Fatalf("unknown route: %d", resp.StatusCode)
+	}
+
+	// Create two isolated folder accounts.
+	pvPass := "pv-secret-password-1234"
+	ymPass := "ym-secret-password-5678"
+	if resp, body := acctReq("PUT", "backup", f.receiverToken, map[string]any{
+		"folder": "VaultApp", "username": "pv-user", "password_sha256": hashToken(pvPass),
+	}); resp.StatusCode != 200 {
+		t.Fatalf("create pv account: %d %s", resp.StatusCode, body)
+	}
+	if resp, body := acctReq("PUT", "backup", f.receiverToken, map[string]any{
+		"folder": "DemoNotes", "username": "unicode-user", "password_sha256": hashToken(ymPass),
+	}); resp.StatusCode != 200 {
+		t.Fatalf("create unicode account: %d %s", resp.StatusCode, body)
+	}
+
+	// Reject shadowing master username and cross-folder username collision.
+	if resp, _ := acctReq("PUT", "backup", f.receiverToken, map[string]any{
+		"folder": "Third", "username": f.user, "password_sha256": hashToken(pvPass),
+	}); resp.StatusCode != 409 {
+		t.Fatalf("master collision expected 409, got %d", resp.StatusCode)
+	}
+	if resp, _ := acctReq("PUT", "backup", f.receiverToken, map[string]any{
+		"folder": "Third", "username": "pv-user", "password_sha256": hashToken(pvPass),
+	}); resp.StatusCode != 409 {
+		t.Fatalf("folder collision expected 409, got %d", resp.StatusCode)
+	}
+
+	// GET lists both accounts without exposing hashes.
+	resp, body := acctReq("GET", "backup", f.receiverToken, nil)
+	if resp.StatusCode != 200 || !strings.Contains(body, `"pv-user"`) || !strings.Contains(body, `"unicode-user"`) || strings.Contains(body, hashToken(pvPass)) {
+		t.Fatalf("GET accounts: %d %s", resp.StatusCode, body)
+	}
+
+	davAs := func(user, pass, method, p string, payload []byte, headers ...string) (*http.Response, string) {
+		t.Helper()
+		oldU, oldP := f.user, f.pass
+		f.user, f.pass = user, pass
+		defer func() { f.user, f.pass = oldU, oldP }()
+		return f.do(t, method, p, payload, headers...)
+	}
+
+	// pv-user PROPFIND at root only sees VaultApp, never DemoNotes.
+	resp, body = davAs("pv-user", pvPass, "PROPFIND", "/", nil, "Depth", "1")
+	if resp.StatusCode != 207 || !strings.Contains(body, "VaultApp") || strings.Contains(body, "DemoNotes") {
+		t.Fatalf("pv root propfind leaked sibling: %d %s", resp.StatusCode, body)
+	}
+	// MKCOL on pre-created own folder returns 405 (exists), matching WebDAV clients.
+	if resp, _ = davAs("pv-user", pvPass, "MKCOL", "/VaultApp", nil); resp.StatusCode != 405 {
+		t.Fatalf("expected 405 on existing folder, got %d", resp.StatusCode)
+	}
+	// PUT inside own folder succeeds and queues encrypted file.
+	if resp, body = davAs("pv-user", pvPass, "PUT", "/VaultApp/vault.backup", []byte("encrypted-blob")); resp.StatusCode != 201 {
+		t.Fatalf("pv upload failed: %d %s", resp.StatusCode, body)
+	}
+	if len(f.inbox(t)) != 1 {
+		t.Fatalf("expected 1 queued file, got %d", len(f.inbox(t)))
+	}
+	// Cross-folder and root write attempts are forbidden (403).
+	if resp, _ = davAs("pv-user", pvPass, "PROPFIND", "/DemoNotes", nil, "Depth", "1"); resp.StatusCode != 403 {
+		t.Fatalf("sibling propfind expected 403, got %d", resp.StatusCode)
+	}
+	if resp, _ = davAs("pv-user", pvPass, "PUT", "/DemoNotes/evil.txt", []byte("x")); resp.StatusCode != 403 {
+		t.Fatalf("sibling put expected 403, got %d", resp.StatusCode)
+	}
+	if resp, _ = davAs("pv-user", pvPass, "PUT", "/root.txt", []byte("x")); resp.StatusCode != 403 {
+		t.Fatalf("root put expected 403, got %d", resp.StatusCode)
+	}
+	if resp, _ = davAs("pv-user", pvPass, "DELETE", "/VaultApp", nil); resp.StatusCode != 403 {
+		t.Fatalf("delete own root expected 403, got %d", resp.StatusCode)
+	}
+	base := f.http.URL + "/relay/v1/dav/backup"
+	if resp, _ = davAs("pv-user", pvPass, "MOVE", "/VaultApp/vault.backup", nil, "Destination", base+"/DemoNotes/escaped.backup"); resp.StatusCode != 403 {
+		t.Fatalf("escape move expected 403, got %d", resp.StatusCode)
+	}
+	if resp, _ = davAs("pv-user", pvPass, "MOVE", "/VaultApp/vault.backup", nil, "Destination", base+"/VaultApp/vault-2.backup"); resp.StatusCode != 201 {
+		t.Fatalf("in-folder move expected 201, got %d", resp.StatusCode)
+	}
+
+	// Master route account still sees both folders.
+	resp, body = f.do(t, "PROPFIND", "/", nil, "Depth", "1")
+	if resp.StatusCode != 207 || !strings.Contains(body, "VaultApp") || !strings.Contains(body, "DemoNotes") {
+		t.Fatalf("master propfind: %d %s", resp.StatusCode, body)
+	}
+
+	// Updating credentials immediately rotates username & password.
+	newPass := "pv-rotated-password-9999"
+	if resp, body = acctReq("PUT", "backup", f.receiverToken, map[string]any{
+		"folder": "VaultApp", "username": "pv-new", "password_sha256": hashToken(newPass),
+	}); resp.StatusCode != 200 {
+		t.Fatalf("rotate account: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ = davAs("pv-user", pvPass, "PROPFIND", "/VaultApp", nil); resp.StatusCode != 401 {
+		t.Fatalf("old creds expected 401, got %d", resp.StatusCode)
+	}
+	if resp, _ = davAs("pv-new", newPass, "PROPFIND", "/VaultApp", nil); resp.StatusCode != 207 {
+		t.Fatalf("new creds expected 207, got %d", resp.StatusCode)
+	}
+
+	// Revoking account via DELETE immediately returns 401.
+	if resp, _ = acctReq("DELETE", "backup?folder=VaultApp", f.receiverToken, nil); resp.StatusCode != 200 {
+		t.Fatalf("delete account: %d", resp.StatusCode)
+	}
+	if resp, _ = davAs("pv-new", newPass, "PROPFIND", "/VaultApp", nil); resp.StatusCode != 401 {
+		t.Fatalf("revoked creds expected 401, got %d", resp.StatusCode)
+	}
+}

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "hash_secret": {
+    "input": "common-relay-v2-vector-secret",
+    "sha256": "adc39f9ca5ad73f3c7e6aa2af6008c4e86e09e0d0c3596226b6b44ea82b20413"
+  },
+  "binary_stream_frame": {
+    "stream_id": "0123456789abcdef",
+    "payload_utf8": "ZIP_STREAM_CHUNK_DATA",
+    "frame_hex": "303132333435363738396162636465665a49505f53545245414d5f4348554e4b5f44415441"
+  },
+  "trust_matrix": [
+    {"space": "strict_e2e", "plugin": "strict_e2e", "allowed": true},
+    {"space": "strict_e2e", "plugin": "client_encrypted", "allowed": false},
+    {"space": "strict_e2e", "plugin": "bridge_allowed", "allowed": false},
+    {"space": "client_encrypted", "plugin": "client_encrypted", "allowed": true},
+    {"space": "client_encrypted", "plugin": "bridge_allowed", "allowed": false},
+    {"space": "bridge_allowed", "plugin": "bridge_allowed", "allowed": true}
+  ]
+}

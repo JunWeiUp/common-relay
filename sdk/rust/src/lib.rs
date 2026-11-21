@@ -10,6 +10,7 @@ mod journal;
 mod payload;
 mod secretstream;
 mod stream;
+pub mod v2;
 
 pub use client::{Client, Event, Options, Peer};
 pub use crypto::new_message_id;

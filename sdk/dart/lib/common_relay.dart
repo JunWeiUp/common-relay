@@ -17,6 +17,8 @@ part 'src/journal.dart';
 part 'src/groups.dart';
 part 'src/invitation_links.dart';
 part 'src/payload.dart';
+part 'src/v2_client.dart';
+part 'src/v2_pipe.dart';
 
 String hex(List<int> bytes) => bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 Uint8List unhex(String value) {

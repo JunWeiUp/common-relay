@@ -10,6 +10,12 @@ import (
 	"flag"
 	"fmt"
 	"github.com/JunWeiUp/common-relay/internal/relay"
+	v2core "github.com/JunWeiUp/common-relay/internal/v2/core"
+	v2drop "github.com/JunWeiUp/common-relay/internal/v2/plugins/drop"
+	v2mcp "github.com/JunWeiUp/common-relay/internal/v2/plugins/mcpedge"
+	v2webdav "github.com/JunWeiUp/common-relay/internal/v2/plugins/webdav"
+	v2webhook "github.com/JunWeiUp/common-relay/internal/v2/plugins/webhook"
+	v2server "github.com/JunWeiUp/common-relay/internal/v2/server"
 	"log"
 	"net/http"
 	"os"
@@ -39,6 +45,7 @@ func run() error {
 	accessFile := f.String("access-password-file", "", "file with lowercase hex SHA-256 of the required Relay-Access password")
 	webhooks := f.String("webhook-config", "", "optional private webhook route configuration")
 	webdav := f.String("webdav-config", "", "optional private WebDAV upload route configuration")
+	v2AdminFile := f.String("v2-admin-hash-file", "", "optional file with lowercase hex SHA-256 of the v2 Root Admin secret; enables /v2/* and /edge/*")
 	reserve := f.Uint64("disk-reserve", 2<<30, "minimum free disk bytes")
 	if len(os.Args) < 2 {
 		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check|hash-password [flags]")
@@ -154,7 +161,43 @@ func run() error {
 				server.SelfServiceApps[name] = true
 			}
 		}
-		httpServer := &http.Server{Addr: *listen, Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 << 10}
+		var handler http.Handler = server.Handler()
+		var v2Store *v2core.Store
+		if *v2AdminFile != "" {
+			adminHashBytes, err := relay.LoadAccessHash(*v2AdminFile)
+			if err != nil {
+				return fmt.Errorf("load v2 admin hash: %w", err)
+			}
+			v2Store, err = v2core.OpenStore(*dir)
+			if err != nil {
+				return fmt.Errorf("open v2 store: %w", err)
+			}
+			defer v2Store.Close()
+			v2Store.SpaceQuota = *appQuota
+			v2Store.GlobalQuota = *globalQuota
+			v2Srv := v2server.New(v2Store, v2server.Config{
+				AccessHash:    hex.EncodeToString(accessHash),
+				RootAdminHash: hex.EncodeToString(adminHashBytes),
+			})
+			for _, regErr := range []error{
+				v2Srv.RegisterPlugin(v2drop.New()),
+				v2Srv.RegisterPlugin(v2webhook.New()),
+				v2Srv.RegisterPlugin(v2webdav.New()),
+				v2Srv.RegisterPlugin(v2mcp.New()),
+			} {
+				if regErr != nil {
+					return regErr
+				}
+			}
+			v1Handler := handler
+			v2Handler := v2Srv.Handler()
+			mux := http.NewServeMux()
+			mux.Handle("/v2/", v2Handler)
+			mux.Handle("/edge/", v2Handler)
+			mux.Handle("/", v1Handler)
+			handler = mux
+		}
+		httpServer := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 << 10}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		go func() {
@@ -167,6 +210,9 @@ func run() error {
 				case <-ticker.C:
 					if err := server.Collect(); err != nil {
 						log.Printf("collection failed")
+					}
+					if v2Store != nil {
+						v2Store.SweepExpired()
 					}
 				}
 			}
