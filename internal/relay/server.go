@@ -52,6 +52,13 @@ type stream struct {
 	ackA, ackB uint64
 	deadline   time.Time
 }
+type SyncedGroupMember struct {
+	ID        string
+	Name      string
+	PublicKey string
+	TokenHash string
+}
+
 type Server struct {
 	webhooks                       map[string]*WebhookRoute
 	webhookSlots                   chan struct{}
@@ -60,6 +67,8 @@ type Server struct {
 	SelfServiceApps                map[string]bool
 	AccessHash                     []byte // SHA-256 of the required Relay-Access password; nil disables the check
 	Store                          *Store
+	OnGroupSynced                  func(app, group, groupName string, members []SyncedGroupMember, removed []string, closed bool, revision int)
+	ExtraOnlinePeers               func(app, group string) []string
 	mu                             sync.Mutex
 	peers                          map[string]*peer
 	streams                        map[string]*stream

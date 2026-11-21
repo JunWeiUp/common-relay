@@ -223,14 +223,14 @@ class RelayGroups {
     if (uri.userInfo.isNotEmpty ||
         uri.hasQuery ||
         uri.hasFragment ||
-        uri.path != '/relay/v1/ws' ||
+        (uri.path != '/relay/v1/ws' && uri.path != '/v2/ws') ||
         (uri.scheme != 'wss' &&
             !(allowLocalTest && uri.scheme == 'ws' && uri.host == '127.0.0.1')))
       throw ArgumentError('WSS required');
     final base = uri
         .replace(
           scheme: uri.scheme == 'wss' ? 'https' : 'http',
-          path: '/relay/v1',
+          path: uri.path == '/v2/ws' ? '/v2' : '/relay/v1',
         )
         .toString();
     final target = Uri.parse('$base$path');

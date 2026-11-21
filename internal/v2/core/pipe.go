@@ -134,6 +134,50 @@ func (h *PipeHub) OnlineCount() int {
 	return len(h.peers)
 }
 
+// OnlineDevices returns the currently connected device IDs subscribed to spaceID.
+func (h *PipeHub) OnlineDevices(spaceID string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, p := range h.peers {
+		if _, ok := p.spaces[spaceID]; ok {
+			out = append(out, p.dev.ID)
+		}
+	}
+	return out
+}
+
+// DisconnectDevice forcefully terminates an active /v2/ws session (e.g. after removal/disband).
+func (h *PipeHub) DisconnectDevice(deviceID string) {
+	h.mu.Lock()
+	p := h.peers[deviceID]
+	h.mu.Unlock()
+	if p != nil {
+		p.cancel()
+	}
+}
+
+// NotifyGroupChanged informs online members of spaceID that signed group membership advanced.
+func (h *PipeHub) NotifyGroupChanged(spaceID string, revision int) {
+	ev := PipeEvent{
+		Type:  "group.changed",
+		Space: spaceID,
+		Seq:   int64(revision),
+	}
+	b, _ := json.Marshal(ev)
+	h.mu.Lock()
+	var targets []*pipePeer
+	for _, p := range h.peers {
+		if _, ok := p.spaces[spaceID]; ok {
+			targets = append(targets, p)
+		}
+	}
+	h.mu.Unlock()
+	for _, p := range targets {
+		h.send(p, websocket.MessageText, b)
+	}
+}
+
 func (h *PipeHub) send(p *pipePeer, kind websocket.MessageType, data []byte) bool {
 	if p == nil {
 		return false

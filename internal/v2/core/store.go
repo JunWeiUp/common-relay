@@ -514,3 +514,108 @@ func (s *Store) Status(onlinePeers int, plugins []string) (StatusSnapshot, error
 	}
 	return st, nil
 }
+
+// ManagedMember describes one active member projected from a signed group ledger into a v2 Space.
+type ManagedMember struct {
+	ID        string
+	Name      string
+	PublicKey string
+	TokenHash string
+}
+
+// SyncManagedGroup mirrors a cryptographically verified self-service group state into v2_spaces,
+// v2_devices, and v2_space_members so group members authenticate natively on /v2/ws.
+// Admin devices and unrelated spaces are never altered.
+func (s *Store) SyncManagedGroup(spaceID, name string, members []ManagedMember, removed []string, closed bool) error {
+	if !ValidIdent(spaceID) {
+		return ErrInvalidInput
+	}
+	now := time.Now().Unix()
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`INSERT INTO v2_spaces(id, name, trust_level, created_at) VALUES(?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name`,
+		spaceID, strings.TrimSpace(name), string(TrustStrictE2E), now,
+	); err != nil {
+		return err
+	}
+
+	active := make(map[string]struct{}, len(members))
+	for _, m := range members {
+		if !ValidIdent(m.ID) || len(m.PublicKey) != 64 || len(m.TokenHash) != 64 {
+			continue
+		}
+		if _, err := hex.DecodeString(m.PublicKey); err != nil {
+			continue
+		}
+		if _, err := hex.DecodeString(m.TokenHash); err != nil {
+			continue
+		}
+		active[m.ID] = struct{}{}
+		var isAdmin int
+		err := tx.QueryRow(`SELECT is_admin FROM v2_devices WHERE id=?`, m.ID).Scan(&isAdmin)
+		if err == sql.ErrNoRows {
+			if _, err := tx.Exec(
+				`INSERT INTO v2_devices(id, name, public_key, token_hash, is_admin, revoked, created_at) VALUES(?,?,?,?,0,0,?)`,
+				m.ID, strings.TrimSpace(m.Name), strings.ToLower(m.PublicKey), strings.ToLower(m.TokenHash), now,
+			); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else if isAdmin == 0 {
+			if _, err := tx.Exec(
+				`UPDATE v2_devices SET name=?, public_key=?, token_hash=?, revoked=0 WHERE id=? AND is_admin=0`,
+				strings.TrimSpace(m.Name), strings.ToLower(m.PublicKey), strings.ToLower(m.TokenHash), m.ID,
+			); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO v2_space_members(space_id, device_id, role, added_at) VALUES(?,?,?,?)
+			 ON CONFLICT(space_id, device_id) DO UPDATE SET role=excluded.role`,
+			spaceID, m.ID, string(RoleMember), now,
+		); err != nil {
+			return err
+		}
+	}
+
+	toRemove := append([]string(nil), removed...)
+	if closed {
+		rows, err := tx.Query(`SELECT device_id FROM v2_space_members WHERE space_id=?`, spaceID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var devID string
+			if rows.Scan(&devID) == nil {
+				toRemove = append(toRemove, devID)
+			}
+		}
+		rows.Close()
+	}
+
+	seen := map[string]struct{}{}
+	for _, devID := range toRemove {
+		if _, stillActive := active[devID]; stillActive && !closed {
+			continue
+		}
+		if _, dup := seen[devID]; dup {
+			continue
+		}
+		seen[devID] = struct{}{}
+		if _, err := tx.Exec(`DELETE FROM v2_space_members WHERE space_id=? AND device_id=?`, spaceID, devID); err != nil {
+			return err
+		}
+		var remaining int
+		if err := tx.QueryRow(`SELECT count(*) FROM v2_space_members WHERE device_id=?`, devID).Scan(&remaining); err == nil && remaining == 0 {
+			_, _ = tx.Exec(`UPDATE v2_devices SET revoked=1 WHERE id=? AND is_admin=0`, devID)
+		}
+	}
+	return tx.Commit()
+}

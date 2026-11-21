@@ -90,5 +90,6 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		groupFailure(w, err)
 		return
 	}
+	s.notifyGroupSynced(g, nil)
 	reply(w, in.Entry)
 }

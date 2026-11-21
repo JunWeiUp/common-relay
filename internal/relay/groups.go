@@ -206,6 +206,54 @@ func groupFailure(w http.ResponseWriter, err error) {
 		http.Error(w, "membership conflict; refresh and retry", 409)
 	}
 }
+// V2GroupHandler serves /v2/group, /v2/group/*, and /v2/enroll/* using the exact signed group
+// ledger and Relay-Access guard, rewriting the path prefix onto the unified group router.
+func (s *Server) V2GroupHandler() http.HandlerFunc {
+	return s.requireAccess(func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		u := *r.URL
+		switch {
+		case u.Path == "/v2/group" || strings.HasPrefix(u.Path, "/v2/group/"):
+			u.Path = "/relay/v1" + strings.TrimPrefix(u.Path, "/v2")
+		case strings.HasPrefix(u.Path, "/v2/enroll/"):
+			u.Path = "/relay/v1" + strings.TrimPrefix(u.Path, "/v2")
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		r2.URL = &u
+		s.groups(w, r2)
+	})
+}
+
+func (s *Server) notifyGroupSynced(g GroupState, removed []Member) {
+	if s.OnGroupSynced == nil {
+		return
+	}
+	var members []SyncedGroupMember
+	if !g.Closed {
+		for _, m := range g.Members {
+			var tokenHash string
+			if err := s.Store.DB.QueryRow(
+				"SELECT token FROM devices WHERE app=? AND grp=? AND id=? AND revoked=0",
+				g.App, g.Group, m.Device,
+			).Scan(&tokenHash); err == nil {
+				members = append(members, SyncedGroupMember{
+					ID:        m.Device,
+					Name:      m.Name,
+					PublicKey: m.PublicKey,
+					TokenHash: tokenHash,
+				})
+			}
+		}
+	}
+	removedIDs := make([]string, 0, len(removed))
+	for _, m := range removed {
+		removedIDs = append(removedIDs, m.Device)
+	}
+	s.OnGroupSynced(g.App, g.Group, g.Name, members, removedIDs, g.Closed, g.Revision)
+}
+
 func (s *Server) groups(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Path == "/relay/v1/group/exit" {
@@ -352,6 +400,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		groupFailure(w, err)
 		return
 	}
+	s.notifyGroupSynced(g, nil)
 	reply(w, in.Entry)
 }
 func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
@@ -393,13 +442,25 @@ func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	online := []string{}
+	seenOnline := map[string]struct{}{}
 	s.mu.Lock()
 	for _, p := range s.peers {
 		if p.d.App == d.App && p.d.Group == d.Group {
-			online = append(online, p.d.ID)
+			if _, ok := seenOnline[p.d.ID]; !ok {
+				seenOnline[p.d.ID] = struct{}{}
+				online = append(online, p.d.ID)
+			}
 		}
 	}
 	s.mu.Unlock()
+	if s.ExtraOnlinePeers != nil {
+		for _, id := range s.ExtraOnlinePeers(d.App, d.Group) {
+			if _, ok := seenOnline[id]; !ok {
+				seenOnline[id] = struct{}{}
+				online = append(online, id)
+			}
+		}
+	}
 	reply(w, map[string]any{"entries": entries, "online": online, "revision": count})
 }
 func (s *Server) invitation(w http.ResponseWriter, r *http.Request, d Device) {
@@ -740,5 +801,6 @@ func (s *Server) changeGroup(w http.ResponseWriter, r *http.Request, d Device) {
 		}
 	}
 	s.mu.Unlock()
+	s.notifyGroupSynced(g, removed)
 	reply(w, e)
 }

@@ -244,6 +244,7 @@ func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mu.Unlock()
+	s.notifyGroupSynced(next, nil)
 	reply(w, entry)
 }
 

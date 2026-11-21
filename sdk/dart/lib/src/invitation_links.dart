@@ -75,7 +75,8 @@ class RelayInvitationLinks {
     final u = Uri.parse(invitation['url'] as String);
     final access = relayAccessPassword(password);
     final suffix = access == null ? '' : '.${base64url(ascii.encode(access))}';
-    return 'common-relay://${u.authority}/i/${base64url(unhex(invitation['id'] as String))}#${base64url(key)}$suffix';
+    final prefix = u.path == '/v2/ws' ? '/v2/i/' : '/i/';
+    return 'common-relay://${u.authority}$prefix${base64url(unhex(invitation['id'] as String))}#${base64url(key)}$suffix';
   }
 
   static String _fragmentPassword(String text) {
@@ -102,12 +103,13 @@ class RelayInvitationLinks {
   }) {
     if (text.length > 2048) throw FormatException('Invitation too long');
     final u = Uri.parse(text);
+    final isV2 = RegExp(r'^/v2/i/[A-Za-z0-9_-]{22}$').hasMatch(u.path);
     if (u.scheme != 'common-relay' ||
         u.host.isEmpty ||
         u.userInfo.isNotEmpty ||
         u.hasQuery ||
         text.contains('%') ||
-        !RegExp(r'^/i/[A-Za-z0-9_-]{22}$').hasMatch(u.path))
+        (!isV2 && !RegExp(r'^/i/[A-Za-z0-9_-]{22}$').hasMatch(u.path)))
       throw FormatException('Compact invitation URL');
     final scheme = allowLocalTest && u.host == '127.0.0.1' ? 'ws' : 'wss';
     final dot = u.fragment.indexOf('.');
@@ -116,9 +118,9 @@ class RelayInvitationLinks {
         scheme: scheme,
         host: u.host,
         port: u.hasPort ? u.port : null,
-        path: '/relay/v1/ws',
+        path: isV2 ? '/v2/ws' : '/relay/v1/ws',
       ).toString(),
-      id: hex(_decode(u.path.substring(3), 16)),
+      id: hex(_decode(u.path.substring(isV2 ? 6 : 3), 16)),
       key: _decode(dot < 0 ? u.fragment : u.fragment.substring(0, dot), 32),
       password: dot < 0 ? null : _fragmentPassword(u.fragment.substring(dot + 1)),
     );

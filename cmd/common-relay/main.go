@@ -191,7 +191,39 @@ func run() error {
 			}
 			v1Handler := handler
 			v2Handler := v2Srv.Handler()
+			server.ExtraOnlinePeers = func(_, group string) []string {
+				return v2Srv.Pipe.OnlineDevices(group)
+			}
+			server.OnGroupSynced = func(_, group, groupName string, members []relay.SyncedGroupMember, removed []string, closed bool, revision int) {
+				projected := make([]v2core.ManagedMember, 0, len(members))
+				for _, m := range members {
+					projected = append(projected, v2core.ManagedMember{
+						ID:        m.ID,
+						Name:      m.Name,
+						PublicKey: m.PublicKey,
+						TokenHash: m.TokenHash,
+					})
+				}
+				if err := v2Store.SyncManagedGroup(group, groupName, projected, removed, closed); err != nil {
+					log.Printf("v2 group sync error for %s: %v", group, err)
+					return
+				}
+				for _, id := range removed {
+					v2Srv.Pipe.DisconnectDevice(id)
+				}
+				if closed {
+					for _, id := range v2Srv.Pipe.OnlineDevices(group) {
+						v2Srv.Pipe.DisconnectDevice(id)
+					}
+				} else {
+					v2Srv.Pipe.NotifyGroupChanged(group, revision)
+				}
+			}
+			v2GroupHandler := server.V2GroupHandler()
 			mux := http.NewServeMux()
+			mux.Handle("/v2/group", v2GroupHandler)
+			mux.Handle("/v2/group/", v2GroupHandler)
+			mux.Handle("/v2/enroll/", v2GroupHandler)
 			mux.Handle("/v2/", v2Handler)
 			mux.Handle("/edge/", v2Handler)
 			mux.Handle("/", v1Handler)
