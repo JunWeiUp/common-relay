@@ -33,6 +33,24 @@ func reply(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 func (s *Server) path(id string) string { return filepath.Join(s.Store.Dir, "files", id) }
+
+// V2FilesHandler serves /v2/files and /v2/files/* using the exact resumable encrypted file
+// plane and Relay-Access guard, rewriting the prefix onto /relay/v1/files.
+func (s *Server) V2FilesHandler() http.HandlerFunc {
+	return s.requireAccess(func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		u := *r.URL
+		if u.Path == "/v2/files" || strings.HasPrefix(u.Path, "/v2/files/") {
+			u.Path = "/relay/v1" + strings.TrimPrefix(u.Path, "/v2")
+		} else {
+			http.NotFound(w, r)
+			return
+		}
+		r2.URL = &u
+		s.files(w, r2)
+	})
+}
+
 func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 	d, err := s.auth(r)
 	if err != nil {

@@ -219,11 +219,15 @@ func run() error {
 					v2Srv.Pipe.NotifyGroupChanged(group, revision)
 				}
 			}
+			server.SyncExistingGroups()
 			v2GroupHandler := server.V2GroupHandler()
+			v2FilesHandler := server.V2FilesHandler()
 			mux := http.NewServeMux()
 			mux.Handle("/v2/group", v2GroupHandler)
 			mux.Handle("/v2/group/", v2GroupHandler)
 			mux.Handle("/v2/enroll/", v2GroupHandler)
+			mux.Handle("/v2/files", v2FilesHandler)
+			mux.Handle("/v2/files/", v2FilesHandler)
 			mux.Handle("/v2/", v2Handler)
 			mux.Handle("/edge/", v2Handler)
 			mux.Handle("/", v1Handler)
