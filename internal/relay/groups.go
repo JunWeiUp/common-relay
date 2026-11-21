@@ -226,6 +226,35 @@ func (s *Server) V2GroupHandler() http.HandlerFunc {
 	})
 }
 
+// SyncExistingGroups replays every active signed group's latest state into OnGroupSynced
+// at startup so existing v1 managed groups can immediately switch to /v2/ws without re-pairing.
+func (s *Server) SyncExistingGroups() {
+	if s.OnGroupSynced == nil {
+		return
+	}
+	rows, err := s.Store.DB.Query(`SELECT app, grp, entry FROM group_entries ge WHERE revision = (SELECT MAX(revision) FROM group_entries WHERE app = ge.app AND grp = ge.grp)`)
+	if err != nil {
+		return
+	}
+	type item struct {
+		entry SignedEntry
+	}
+	var list []item
+	for rows.Next() {
+		var app, grp, raw string
+		var e SignedEntry
+		if rows.Scan(&app, &grp, &raw) == nil && json.Unmarshal([]byte(raw), &e) == nil {
+			list = append(list, item{entry: e})
+		}
+	}
+	rows.Close()
+	for _, it := range list {
+		if g, err := it.entry.state(); err == nil && !g.Closed {
+			s.notifyGroupSynced(g, nil)
+		}
+	}
+}
+
 func (s *Server) notifyGroupSynced(g GroupState, removed []Member) {
 	if s.OnGroupSynced == nil {
 		return

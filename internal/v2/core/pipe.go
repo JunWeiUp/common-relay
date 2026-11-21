@@ -425,14 +425,6 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 		h.mu.Lock()
 		target := h.peers[ev.To]
 		h.mu.Unlock()
-		if target != nil {
-			h.sendEvent(target, PipeEvent{
-				Type: "msg", Space: ev.Space, ID: ev.ID, From: p.dev.ID,
-				To: ev.To, Topic: ev.Topic, Body: ev.Body,
-			})
-			h.sendEvent(p, PipeEvent{Type: "ack", Space: ev.Space, ID: ev.ID})
-			return
-		}
 		if ev.Offline {
 			ttl := ev.TTL
 			if ttl <= 0 {
@@ -446,7 +438,21 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 				h.sendEvent(p, PipeEvent{Type: "error", ID: ev.ID, Code: "storage"})
 				return
 			}
-			h.sendEvent(p, PipeEvent{Type: "ack", Space: ev.Space, ID: ev.ID})
+			if target != nil {
+				h.sendEvent(target, PipeEvent{
+					Type: "msg", Space: ev.Space, ID: ev.ID, From: p.dev.ID,
+					To: ev.To, Topic: ev.Topic, Body: ev.Body, Offline: true,
+				})
+			}
+			h.sendEvent(p, PipeEvent{Type: "ack", Space: ev.Space, ID: ev.ID, Event: "stored"})
+			return
+		}
+		if target != nil {
+			h.sendEvent(target, PipeEvent{
+				Type: "msg", Space: ev.Space, ID: ev.ID, From: p.dev.ID,
+				To: ev.To, Topic: ev.Topic, Body: ev.Body,
+			})
+			h.sendEvent(p, PipeEvent{Type: "ack", Space: ev.Space, ID: ev.ID, Event: "forwarded"})
 			return
 		}
 		h.sendEvent(p, PipeEvent{Type: "error", ID: ev.ID, Code: "offline"})
