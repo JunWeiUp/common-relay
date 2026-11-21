@@ -460,6 +460,12 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 	case "ack":
 		if ev.Space != "" && ev.From != "" && ev.ID != "" {
 			_ = h.store.AckMessage(ev.Space, p.dev.ID, ev.From, ev.ID)
+			h.mu.Lock()
+			sender := h.peers[ev.From]
+			h.mu.Unlock()
+			if sender != nil {
+				h.sendEvent(sender, PipeEvent{Type: "received", Space: ev.Space, ID: ev.ID, From: p.dev.ID})
+			}
 		}
 
 	case "stream.open":
