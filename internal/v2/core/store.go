@@ -42,6 +42,9 @@ type Store struct {
 	SpaceQuota  int64
 	GlobalQuota int64
 	OnBoxChange func(spaceID, boxName, event, ref string, seqOrVer int64)
+	// OnBoxItem, when set, replaces OnBoxChange(..., "item", ...) for new queue/
+	// ephemeral items so the pipe can inline small items into box.changed.
+	OnBoxItem func(item BoxItem)
 
 	// DiskReserve is the minimum free space (bytes) that must remain on the data
 	// volume after any write. Zero disables the check.

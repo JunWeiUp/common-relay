@@ -206,6 +206,14 @@ type BoxItem struct {
 	CreatedAt   int64  `json:"created_at"`
 }
 
+// InlineBoxItem is a queue/ephemeral item carried inside box.changed for
+// peers that opted in (see PipeFeatureBoxInline). It is only a prefetch: the
+// item stays queued until the consumer ACKs it exactly as before.
+type InlineBoxItem struct {
+	BoxItem
+	DataB64 string `json:"data_b64"` // standard base64 of the stored bytes
+}
+
 type BoxObject struct {
 	SpaceID     string `json:"space_id"`
 	BoxName     string `json:"box_name"`

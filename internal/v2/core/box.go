@@ -170,7 +170,9 @@ func (s *Store) PutBoxItem(spaceID, boxName, sender, contentType, metaJSON strin
 		Size: size, SHA256: digest, ContentType: contentType, MetaJSON: metaJSON,
 		ExpiresAt: expiresAt, CreatedAt: now,
 	}
-	if s.OnBoxChange != nil {
+	if s.OnBoxItem != nil {
+		s.OnBoxItem(item)
+	} else if s.OnBoxChange != nil {
 		s.OnBoxChange(spaceID, boxName, "item", item.ID, item.Seq)
 	}
 	return item, nil
@@ -238,6 +240,54 @@ func (s *Store) AckBoxItem(spaceID, boxName, itemID string) error {
 	}
 	_ = os.Remove(s.blobPath(itemID))
 	return nil
+}
+
+// MaxAckBatch bounds the item IDs accepted by one AckBoxItems call.
+const MaxAckBatch = 200
+
+// AckBoxItems deletes several items of one queue/ephemeral Box in a single
+// transaction. IDs that are not (or no longer) in this Box — already acked,
+// expired, or belonging to another Box/Space — are returned in missing and are
+// not an error, so retrying a batch is idempotent and never reveals whether an
+// ID exists elsewhere.
+func (s *Store) AckBoxItems(spaceID, boxName string, ids []string) (acked, missing []string, err error) {
+	if len(ids) == 0 || len(ids) > MaxAckBatch {
+		return nil, nil, ErrInvalidInput
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`DELETE FROM v2_box_items WHERE id=? AND space_id=? AND box_name=?`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer stmt.Close()
+	acked, missing = []string{}, []string{}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		res, err := stmt.Exec(id, spaceID, boxName)
+		if err != nil {
+			return nil, nil, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			acked = append(acked, id)
+		} else {
+			missing = append(missing, id)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	for _, id := range acked {
+		_ = os.Remove(s.blobPath(id))
+	}
+	return acked, missing, nil
 }
 
 /* ───────── Versioned Objects (CAS Optimistic Locking) ───────── */

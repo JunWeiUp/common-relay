@@ -400,6 +400,31 @@ func (c *Client) AckBoxItem(ctx context.Context, spaceID, boxName, itemID string
 	return c.doJSON(ctx, http.MethodDelete, p, nil, nil)
 }
 
+// MaxAckBatch is the server's limit on IDs per AckBoxItems call.
+const MaxAckBatch = 200
+
+// AckBoxItems ACKs (deletes) up to MaxAckBatch items of one Box in a single
+// request. IDs already gone (acked, expired, or not in this Box) come back in
+// missing; retrying a batch is safe. Servers without the endpoint answer with
+// an error for which IsUnsupported reports true.
+func (c *Client) AckBoxItems(ctx context.Context, spaceID, boxName string, ids []string) (acked, missing []string, err error) {
+	if len(ids) == 0 {
+		return []string{}, []string{}, nil
+	}
+	if len(ids) > MaxAckBatch {
+		return nil, nil, fmt.Errorf("relay v2: at most %d ids per batch ack", MaxAckBatch)
+	}
+	p := fmt.Sprintf("/v2/spaces/%s/boxes/%s/items/ack", url.PathEscape(spaceID), boxName)
+	var out struct {
+		Acked   []string `json:"acked"`
+		Missing []string `json:"missing"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, p, map[string]any{"ids": ids}, &out); err != nil {
+		return nil, nil, err
+	}
+	return out.Acked, out.Missing, nil
+}
+
 func (c *Client) PutBoxObject(ctx context.Context, spaceID, boxName, key, contentType, ifMatch string, body io.Reader) (BoxObject, error) {
 	p := fmt.Sprintf("/v2/spaces/%s/boxes/%s/objects/%s", url.PathEscape(spaceID), boxName, strings.TrimLeft(key, "/"))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+p, body)

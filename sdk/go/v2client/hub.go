@@ -2,16 +2,23 @@ package v2client
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 )
 
-// BoxItemHandler processes one downloaded item from a queue/ephemeral Box.
-// Returning nil causes the Hub to ACK and delete the item from the server.
+// BoxItemHandler processes one item from a queue/ephemeral Box, either inline
+// from box.changed (small items, verified against size and SHA-256) or
+// downloaded. Returning nil causes the Hub to ACK and delete the item from the
+// server (batched, within AckFlushDelay); returning an error leaves it queued
+// for redelivery on the next drain.
 type BoxItemHandler func(ctx context.Context, item BoxItem, data []byte) error
 
 // ObjectChangeHandler is called whenever an object-mode Box publishes a new version.
@@ -24,7 +31,9 @@ type boxSub struct {
 	space   string
 	box     string
 	handler BoxItemHandler
+	// lastSeq and synced are owned by the Hub's connection goroutine.
 	lastSeq int64
+	synced  bool // last drain reached the end of the Box and nothing failed since
 }
 
 type objSub struct {
@@ -47,6 +56,10 @@ type Hub struct {
 	lastErr   string
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+
+	// Owned by the connection goroutine (no lock): ACKs waiting for a batch.
+	acks       []pendingAck
+	noBatchAck bool
 
 	// Keepalive is how often the hub pings the relay (0 = DefaultHubKeepalive).
 	// Without traffic, reverse proxies close idle WebSockets; a missing pong also
@@ -141,9 +154,24 @@ func (h *Hub) Close() {
 	h.wg.Wait()
 }
 
+// HubFeatures is the /v2/ws opt-in sent by the Hub: the server may then inline
+// small queue/ephemeral items into box.changed.
+const HubFeatures = "box-inline"
+
+// hubReadLimit bounds one /v2/ws frame (the server caps frames at 256 KiB).
+const hubReadLimit = 1 << 20
+
+const (
+	// AckFlushDelay is how long the Hub collects ACKs of inline-delivered items
+	// before sending one batch request.
+	AckFlushDelay = 200 * time.Millisecond
+	// AckFlushAt flushes the pending ACKs immediately once this many are queued.
+	AckFlushAt = 50
+)
+
 func (h *Hub) runOnce(ctx context.Context) error {
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	conn, _, err := websocket.Dial(dialCtx, h.client.WSURL(), &websocket.DialOptions{
+	conn, _, err := websocket.Dial(dialCtx, h.client.WSURL()+"?features="+HubFeatures, &websocket.DialOptions{
 		HTTPHeader: h.client.authHeaders(),
 	})
 	cancel()
@@ -151,11 +179,20 @@ func (h *Hub) runOnce(ctx context.Context) error {
 		return err
 	}
 	defer conn.CloseNow()
+	conn.SetReadLimit(hubReadLimit)
 
 	h.mu.Lock()
 	h.connected = true
 	h.lastErr = ""
 	h.mu.Unlock()
+
+	// Pending ACKs are flushed whenever this session ends, including on Close
+	// (ctx cancelled), so handled items are not redelivered needlessly.
+	defer func() {
+		fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		h.flushAcks(fctx)
+		fcancel()
+	}()
 
 	// Catch up every subscribed queue/ephemeral Box right after connecting.
 	h.drainAll(ctx)
@@ -187,30 +224,70 @@ func (h *Hub) runOnce(ctx context.Context) error {
 		}
 	}()
 
+	// The reader only decodes frames; box handling, ACK batching and the
+	// subscription cursors all live on this goroutine.
+	events := make(chan PipeEvent, 32)
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			kind, data, err := conn.Read(connCtx)
+			if err != nil {
+				readErr <- err
+				return
+			}
+			if kind != websocket.MessageText {
+				continue
+			}
+			var ev PipeEvent
+			if json.Unmarshal(data, &ev) != nil {
+				continue
+			}
+			switch ev.Type {
+			case "rpc.req":
+				go h.handleRPCReq(ctx, conn, ev)
+			case "box.changed":
+				select {
+				case events <- ev:
+				case <-connCtx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	var flushTimer *time.Timer
+	var flushC <-chan time.Time
+	stopTimer := func() {
+		if flushTimer != nil {
+			flushTimer.Stop()
+			flushTimer, flushC = nil, nil
+		}
+	}
+	defer stopTimer()
 	for {
-		kind, data, err := conn.Read(connCtx)
-		if err != nil {
+		select {
+		case ev := <-events:
+			h.handleBoxChanged(ctx, ev)
+			switch {
+			case h.pendingAcks() >= AckFlushAt:
+				stopTimer()
+				h.flushAcks(ctx)
+			case h.pendingAcks() > 0 && flushC == nil:
+				flushTimer = time.NewTimer(AckFlushDelay)
+				flushC = flushTimer.C
+			case h.pendingAcks() == 0:
+				stopTimer()
+			}
+		case <-flushC:
+			flushTimer, flushC = nil, nil
+			h.flushAcks(ctx)
+		case err := <-readErr:
 			select {
 			case perr := <-pingErr:
 				return errors.New("keepalive: " + perr.Error())
 			default:
 			}
 			return err
-		}
-		if err != nil {
-			return err
-		}
-		if kind != websocket.MessageText {
-			continue
-		}
-		var ev PipeEvent
-		if json.Unmarshal(data, &ev) != nil {
-			continue
-		}
-		if ev.Type == "box.changed" {
-			h.handleBoxChanged(ctx, ev)
-		} else if ev.Type == "rpc.req" {
-			go h.handleRPCReq(ctx, conn, ev)
 		}
 	}
 }
@@ -257,31 +334,160 @@ func (h *Hub) handleBoxChanged(ctx context.Context, ev PipeEvent) {
 	osub := h.objSubs[key]
 	h.mu.Unlock()
 	if bs != nil && ev.Event == "item" {
-		h.drainBox(ctx, bs)
+		if ev.Item == nil || !h.handleInline(ctx, bs, ev) {
+			h.drainBox(ctx, bs)
+		}
 	}
 	if osub != nil && ev.Event == "object" {
 		osub.handler(ctx, ev.Space, ev.Box, ev.Ref, ev.Seq)
 	}
 }
 
+// handleInline delivers an inline item without any HTTP round trip. It returns
+// false when the item cannot be used and the caller must fall back to the
+// list/download path.
+//
+// Inline is only a prefetch, and it is used only when it is provably the next
+// item: the subscription is synced (the last drain reached the end of the Box
+// and nothing failed since) and the item's seq is exactly lastSeq+1. Anything
+// else — a gap (missed or reordered wake-up, another consumer), a failed
+// verification — goes through drainBox, which lists everything after lastSeq.
+func (h *Hub) handleInline(ctx context.Context, s *boxSub, ev PipeEvent) bool {
+	it := ev.Item
+	if it.Seq <= s.lastSeq {
+		return true // already handled by an earlier drain
+	}
+	if !s.synced || it.Seq != s.lastSeq+1 || it.ID != ev.Ref || it.SpaceID != s.space || it.BoxName != s.box {
+		return false
+	}
+	data, err := base64.StdEncoding.DecodeString(it.DataB64)
+	if err != nil || int64(len(data)) != it.Size {
+		return false
+	}
+	sum := sha256.Sum256(data)
+	if !strings.EqualFold(hex.EncodeToString(sum[:]), it.SHA256) {
+		return false
+	}
+	if err := s.handler(ctx, it.BoxItem, data); err != nil {
+		// Not ACKed and the cursor stays put: the next wake-up or reconnect
+		// drains and redelivers it.
+		s.synced = false
+		return true
+	}
+	s.lastSeq = it.Seq
+	h.queueAck(s, it.ID, it.Seq)
+	return true
+}
+
 func (h *Hub) drainBox(ctx context.Context, s *boxSub) {
+	s.synced = false
 	for {
 		items, err := h.client.ListBoxItems(ctx, s.space, s.box, s.lastSeq, 100)
-		if err != nil || len(items) == 0 {
+		if err != nil {
+			return
+		}
+		if len(items) == 0 {
+			s.synced = true
 			return
 		}
 		for _, it := range items {
 			data, err := h.client.DownloadBoxItem(ctx, s.space, s.box, it.ID)
 			if err != nil {
+				h.flushAcks(ctx)
 				return
 			}
 			if err := s.handler(ctx, it, data); err != nil {
-				return
-			}
-			if err := h.client.AckBoxItem(ctx, s.space, s.box, it.ID); err != nil {
+				h.flushAcks(ctx)
 				return
 			}
 			s.lastSeq = it.Seq
+			h.queueAck(s, it.ID, it.Seq)
+		}
+		if !h.flushAcks(ctx) {
+			return
 		}
 	}
+}
+
+/* ───────── Batched ACKs ───────── */
+
+type pendingAck struct {
+	sub *boxSub
+	id  string
+	seq int64
+}
+
+func (h *Hub) queueAck(s *boxSub, id string, seq int64) {
+	h.acks = append(h.acks, pendingAck{sub: s, id: id, seq: seq})
+}
+
+func (h *Hub) pendingAcks() int { return len(h.acks) }
+
+// flushAcks sends the queued ACKs, one batch request per Box (per-item DELETE
+// against servers without the batch endpoint). If a Box's ACK fails, its
+// cursor is rewound to before the first unacknowledged item so a later drain
+// redelivers it (at-least-once, as before). It reports whether all succeeded.
+func (h *Hub) flushAcks(ctx context.Context) bool {
+	if len(h.acks) == 0 {
+		return true
+	}
+	pending := h.acks
+	h.acks = nil
+	type group struct {
+		sub    *boxSub
+		ids    []string
+		minSeq int64
+	}
+	var order []*group
+	bySub := map[*boxSub]*group{}
+	for _, a := range pending {
+		g := bySub[a.sub]
+		if g == nil {
+			g = &group{sub: a.sub, minSeq: a.seq}
+			bySub[a.sub] = g
+			order = append(order, g)
+		}
+		g.ids = append(g.ids, a.id)
+		g.minSeq = min(g.minSeq, a.seq)
+	}
+	ok := true
+	for _, g := range order {
+		if err := h.ackIDs(ctx, g.sub, g.ids); err != nil {
+			ok = false
+			if g.sub.lastSeq >= g.minSeq {
+				g.sub.lastSeq = g.minSeq - 1
+			}
+			g.sub.synced = false
+		}
+	}
+	return ok
+}
+
+func (h *Hub) ackIDs(ctx context.Context, s *boxSub, ids []string) error {
+	for len(ids) > 0 {
+		n := min(len(ids), MaxAckBatch)
+		chunk := ids[:n]
+		ids = ids[n:]
+		if !h.noBatchAck {
+			_, _, err := h.client.AckBoxItems(ctx, s.space, s.box, chunk)
+			if err == nil {
+				continue
+			}
+			if !IsUnsupported(err) {
+				return err
+			}
+			h.noBatchAck = true // older server: per-item DELETE from now on
+		}
+		for _, id := range chunk {
+			if err := h.client.AckBoxItem(ctx, s.space, s.box, id); err != nil && !isNotFound(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isNotFound(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == 404
 }

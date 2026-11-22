@@ -21,6 +21,8 @@ type Metrics struct {
 
 	keepaliveTimeouts int64
 	replaced          int64
+	boxInline         int64
+	boxInlineSkipped  int64
 }
 
 const (
@@ -69,7 +71,12 @@ type MetricsSnapshot struct {
 	Devices           map[string]DeviceConn  `json:"devices"`
 	KeepaliveTimeouts int64                  `json:"keepalive_timeouts"`
 	Replaced          int64                  `json:"replaced"`
-	Recent            []ConnEvent            `json:"recent"` // newest first, at most 30
+	// BoxInline counts box.changed events that carried the item inline;
+	// BoxInlineSkipped counts opted-in peers that got a plain wake-up instead
+	// (item too large for the frame, blob unreadable, or send queue pressure).
+	BoxInline        int64       `json:"box_inline"`
+	BoxInlineSkipped int64       `json:"box_inline_skipped"`
+	Recent           []ConnEvent `json:"recent"` // newest first, at most 30
 }
 
 func NewMetrics() *Metrics {
@@ -109,6 +116,20 @@ func (m *Metrics) Edge(key string, status int) {
 		c.ServerErr++
 	}
 	c.LastErrAt = now
+}
+
+// Inline records one box.changed delivery to an inline-capable peer.
+func (m *Metrics) Inline(sent bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sent {
+		m.boxInline++
+	} else {
+		m.boxInlineSkipped++
+	}
 }
 
 // Connect records a new /v2/ws session.
@@ -174,6 +195,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		StartedAt: m.start.Unix(), UptimeSeconds: int64(now.Sub(m.start).Seconds()),
 		Edge: make(map[string]EdgeCounter, len(m.edge)), Devices: make(map[string]DeviceConn, len(m.devices)),
 		KeepaliveTimeouts: m.keepaliveTimeouts, Replaced: m.replaced,
+		BoxInline: m.boxInline, BoxInlineSkipped: m.boxInlineSkipped,
 	}
 	for k, v := range m.edge {
 		out.Edge[k] = *v

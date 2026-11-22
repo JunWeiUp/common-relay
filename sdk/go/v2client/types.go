@@ -230,6 +230,16 @@ type PipeEvent struct {
 	Offline bool     `json:"offline,omitempty"`
 	Peers   []string `json:"peers,omitempty"`
 	Code    string   `json:"code,omitempty"`
+	// Item is the optional inline prefetch on box.changed (servers send it only
+	// to connections that opted in with features=box-inline).
+	Item *InlineBoxItem `json:"item,omitempty"`
+}
+
+// InlineBoxItem is a small queue/ephemeral item carried inside box.changed.
+// It stays queued on the server until ACKed, exactly like a listed item.
+type InlineBoxItem struct {
+	BoxItem
+	DataB64 string `json:"data_b64"`
 }
 
 // EdgeCounter counts /edge/{plugin}/{mount} requests by outcome.

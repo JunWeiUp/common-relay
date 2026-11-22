@@ -2,9 +2,12 @@ package core
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +19,16 @@ const (
 	MaxPipeMessage   = 256 << 10
 	MaxGlobalQueued  = 32 << 20
 	PeerOutQueueSize = 64
+
+	// InlineMaxBytes is the largest stored item that box.changed may carry
+	// inline (base64 makes the frame ~4/3 of this plus metadata).
+	InlineMaxBytes = 64 << 10
+	// PipeFeatureBoxInline is the /v2/ws opt-in (query "features=box-inline" or
+	// header "X-Relay-Features: box-inline") for inline box.changed items. Only
+	// opted-in peers ever receive the larger frames, so clients with a small
+	// WebSocket read limit (e.g. the 32 KiB default of coder/websocket) keep
+	// working unchanged.
+	PipeFeatureBoxInline = "box-inline"
 )
 
 // PipeEvent is the compact JSON envelope carried over /v2/ws.
@@ -37,6 +50,9 @@ type PipeEvent struct {
 	Offline bool     `json:"offline,omitempty"`
 	Peers   []string `json:"peers,omitempty"`
 	Code    string   `json:"code,omitempty"`
+	// Item is set on box.changed (event "item") for opted-in peers when the new
+	// item is small enough; it is an optional prefetch of list+download.
+	Item *InlineBoxItem `json:"item,omitempty"`
 }
 
 type wsPacket struct {
@@ -47,6 +63,7 @@ type wsPacket struct {
 type pipePeer struct {
 	dev    Device
 	spaces map[string]MemberRole
+	inline bool // opted in to PipeFeatureBoxInline
 	conn   *websocket.Conn
 	out    chan wsPacket
 	outMu  sync.Mutex
@@ -112,6 +129,7 @@ func NewPipeHub(store *Store) *PipeHub {
 		rpcs:    map[string]pendingRPC{},
 	}
 	store.OnBoxChange = h.NotifyBoxChanged
+	store.OnBoxItem = h.NotifyBoxItem
 	return h
 }
 
@@ -285,6 +303,79 @@ func (h *PipeHub) NotifyBoxChanged(spaceID, boxName, event, ref string, seqOrVer
 	}
 }
 
+// NotifyBoxItem announces a new queue/ephemeral item. Peers that opted in to
+// PipeFeatureBoxInline get the item inline when it is at most InlineMaxBytes,
+// the frame fits MaxPipeMessage and their send queue has headroom; everyone
+// else (and any fallback) gets the same compact box.changed as before.
+func (h *PipeHub) NotifyBoxItem(item BoxItem) {
+	ev := PipeEvent{Type: "box.changed", Space: item.SpaceID, Box: item.BoxName, Event: "item", Ref: item.ID, Seq: item.Seq}
+	plain, _ := json.Marshal(ev)
+	h.mu.Lock()
+	var targets []*pipePeer
+	wantInline := false
+	for _, p := range h.peers {
+		if _, ok := p.spaces[item.SpaceID]; ok {
+			targets = append(targets, p)
+			wantInline = wantInline || p.inline
+		}
+	}
+	h.mu.Unlock()
+	var full []byte
+	if wantInline && item.Size <= InlineMaxBytes {
+		full = h.inlineFrame(ev, item)
+	}
+	for _, p := range targets {
+		if p.inline {
+			if full != nil && h.hasInlineRoom(p, len(full)) {
+				h.Metrics.Inline(true)
+				h.send(p, websocket.MessageText, full)
+				continue
+			}
+			h.Metrics.Inline(false)
+		}
+		h.send(p, websocket.MessageText, plain)
+	}
+}
+
+// inlineFrame reads the just-committed blob and builds the inline event, or
+// returns nil (plain fallback) if it is gone, changed size, or would exceed
+// MaxPipeMessage.
+func (h *PipeHub) inlineFrame(ev PipeEvent, item BoxItem) []byte {
+	data, err := os.ReadFile(h.store.blobPath(item.ID))
+	if err != nil || int64(len(data)) != item.Size {
+		return nil
+	}
+	ev.Item = &InlineBoxItem{BoxItem: item, DataB64: base64.StdEncoding.EncodeToString(data)}
+	b, err := json.Marshal(ev)
+	if err != nil || len(b) > MaxPipeMessage {
+		return nil
+	}
+	return b
+}
+
+// hasInlineRoom keeps inlining from pushing a peer toward the limits that make
+// send() drop the session: it requires the peer's queue to be at most half full
+// and the global queued bytes to stay under half of MaxGlobalQueued.
+func (h *PipeHub) hasInlineRoom(p *pipePeer, n int) bool {
+	if len(p.out) >= PeerOutQueueSize/2 {
+		return false
+	}
+	return h.queued.Load()+int64(n) <= MaxGlobalQueued/2
+}
+
+// wantsFeature reports whether the /v2/ws request opted in to feature via the
+// "features" query parameter or X-Relay-Features header (comma-separated).
+func wantsFeature(r *http.Request, feature string) bool {
+	for _, list := range append(r.URL.Query()["features"], r.Header.Values("X-Relay-Features")...) {
+		for _, f := range strings.Split(list, ",") {
+			if strings.EqualFold(strings.TrimSpace(f), feature) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 	spaceIDs, err := h.store.DeviceSpaces(dev.ID)
 	if err != nil {
@@ -310,6 +401,7 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 	p := &pipePeer{
 		dev:    dev,
 		spaces: spaces,
+		inline: wantsFeature(r, PipeFeatureBoxInline),
 		conn:   conn,
 		out:    make(chan wsPacket, PeerOutQueueSize),
 		ctx:    ctx,

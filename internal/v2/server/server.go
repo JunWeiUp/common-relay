@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -334,6 +335,37 @@ func (s *Server) handleBoxItems(w http.ResponseWriter, r *http.Request, dev core
 			return
 		}
 		replyJSON(w, http.StatusCreated, map[string]any{"ok": true, "item": item})
+
+	case sub == "ack" && r.Method == http.MethodPost:
+		// Batch ACK. Item IDs are hex, so "ack" never collides with an item.
+		if !role.CanWrite() {
+			http.Error(w, "read-only role", http.StatusForbidden)
+			return
+		}
+		var in struct {
+			IDs []string `json:"ids"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if len(in.IDs) == 0 || len(in.IDs) > core.MaxAckBatch {
+			replyJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": fmt.Sprintf("ids must hold 1-%d item ids", core.MaxAckBatch)})
+			return
+		}
+		for _, id := range in.IDs {
+			if id == "" || len(id) > 128 {
+				replyJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid item id"})
+				return
+			}
+		}
+		acked, missing, err := s.Store.AckBoxItems(spaceID, boxName, in.IDs)
+		if err != nil {
+			writeCoreErr(w, err)
+			return
+		}
+		replyJSON(w, http.StatusOK, map[string]any{"ok": true, "acked": acked, "missing": missing})
 
 	case sub != "" && r.Method == http.MethodGet:
 		f, item, err := s.Store.OpenBoxItem(spaceID, boxName, sub)
