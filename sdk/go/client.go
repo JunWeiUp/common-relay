@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,22 +28,26 @@ type Peer struct {
 }
 
 type Event struct {
-	Type     string `json:"type"`
-	ID       string `json:"id,omitempty"`
-	From     string `json:"from,omitempty"`
-	To       string `json:"to,omitempty"`
-	Body     string `json:"body,omitempty"`
-	Offline  bool   `json:"offline,omitempty"`
-	TTL      int64  `json:"ttl,omitempty"`
-	Expires  int64  `json:"expires,omitempty"`
-	Sequence uint64 `json:"sequence,omitempty"`
-	Code     string `json:"code,omitempty"`
-	Version  int    `json:"version,omitempty"`
-	Identity *Peer  `json:"identity,omitempty"`
-	Devices  []Peer `json:"devices,omitempty"`
-	Revision int    `json:"revision,omitempty"`
-	Device   string `json:"device,omitempty"`
-	Data     []byte `json:"-"` // Authenticated plaintext, only populated for messages.
+	Type     string   `json:"type"`
+	Space    string   `json:"space,omitempty"`
+	ID       string   `json:"id,omitempty"`
+	From     string   `json:"from,omitempty"`
+	To       string   `json:"to,omitempty"`
+	Topic    string   `json:"topic,omitempty"`
+	Body     string   `json:"body,omitempty"`
+	Offline  bool     `json:"offline,omitempty"`
+	TTL      int64    `json:"ttl,omitempty"`
+	Expires  int64    `json:"expires,omitempty"`
+	Sequence uint64   `json:"sequence,omitempty"`
+	Seq      int64    `json:"seq,omitempty"`
+	Code     string   `json:"code,omitempty"`
+	Version  int      `json:"version,omitempty"`
+	Identity *Peer    `json:"identity,omitempty"`
+	Devices  []Peer   `json:"devices,omitempty"`
+	Peers    []string `json:"peers,omitempty"`
+	Revision int      `json:"revision,omitempty"`
+	Device   string   `json:"device,omitempty"`
+	Data     []byte   `json:"-"` // Authenticated plaintext, only populated for messages.
 }
 
 // Options configures a connection. Password is the relay server's access password,
@@ -66,6 +72,7 @@ type Client struct {
 	identity *Identity
 	journal  *Journal
 	scope    string
+	v2       bool
 	conn     *websocket.Conn
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -92,7 +99,8 @@ func DialJournal(ctx context.Context, endpoint, token string, identity *Identity
 		return nil, errors.New("invalid relay endpoint")
 	}
 	local := options.AllowLocalTest && u.Scheme == "ws" && u.Hostname() == "127.0.0.1"
-	if identity == nil || (u.Scheme != "wss" && !local) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Path != "/relay/v1/ws" {
+	isV2 := u.Path == "/v2/ws"
+	if identity == nil || (u.Scheme != "wss" && !local) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (!isV2 && u.Path != "/relay/v1/ws") {
 		return nil, errors.New("a WSS relay endpoint and identity are required")
 	}
 	if !tokenPattern.MatchString(token) {
@@ -106,10 +114,14 @@ func DialJournal(ctx context.Context, endpoint, token string, identity *Identity
 	dialCtx, stop := context.WithTimeout(ctx, 45*time.Second)
 	defer stop()
 	httpClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("relay redirects forbidden") }}
-	conn, response, err := websocket.Dial(dialCtx, endpoint, &websocket.DialOptions{
+	dialOpts := &websocket.DialOptions{
 		HTTPClient: httpClient, HTTPHeader: header,
-		Subprotocols: []string{"common-relay.v1"}, CompressionMode: websocket.CompressionDisabled,
-	})
+		CompressionMode: websocket.CompressionDisabled,
+	}
+	if !isV2 {
+		dialOpts.Subprotocols = []string{"common-relay.v1"}
+	}
+	conn, response, err := websocket.Dial(dialCtx, endpoint, dialOpts)
 	if err != nil {
 		if response != nil && response.Body != nil {
 			response.Body.Close()
@@ -122,7 +134,7 @@ func DialJournal(ctx context.Context, endpoint, token string, identity *Identity
 			conn.CloseNow()
 		}
 	}()
-	if conn.Subprotocol() != "common-relay.v1" {
+	if !isV2 && conn.Subprotocol() != "common-relay.v1" {
 		return nil, errors.New("protocol mismatch")
 	}
 	conn.SetReadLimit(1 << 20)
@@ -131,16 +143,25 @@ func DialJournal(ctx context.Context, endpoint, token string, identity *Identity
 		return nil, errors.New("welcome read failed")
 	}
 	var welcome Event
-	if kind != websocket.MessageText || json.Unmarshal(raw, &welcome) != nil || welcome.Type != "welcome" || welcome.Version != 1 || welcome.Identity == nil {
+	if kind != websocket.MessageText || json.Unmarshal(raw, &welcome) != nil {
 		return nil, errors.New("invalid welcome")
 	}
-	own := welcome.Identity
-	if own.App != identity.app || own.Group != identity.group || own.Device != identity.device || own.PublicKey != identity.public {
-		return nil, errors.New("welcome identity mismatch")
+	if isV2 {
+		if welcome.Type != "hello" || welcome.From != identity.device {
+			return nil, errors.New("welcome identity mismatch")
+		}
+	} else {
+		if welcome.Type != "welcome" || welcome.Version != 1 || welcome.Identity == nil {
+			return nil, errors.New("invalid welcome")
+		}
+		own := welcome.Identity
+		if own.App != identity.app || own.Group != identity.group || own.Device != identity.device || own.PublicKey != identity.public {
+			return nil, errors.New("welcome identity mismatch")
+		}
 	}
 	scope, _ := json.Marshal([]string{identity.app, identity.group, identity.device})
 	lifetime, cancel := context.WithCancel(context.Background())
-	c := &Client{identity: identity, journal: journal, scope: string(scope), conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), events: make(chan Event, 64), pending: make(map[string]pending), streams: make(map[string]*Stream)}
+	c := &Client{identity: identity, journal: journal, scope: string(scope), v2: isV2, conn: conn, ctx: lifetime, cancel: cancel, done: make(chan struct{}), events: make(chan Event, 64), pending: make(map[string]pending), streams: make(map[string]*Stream)}
 	valid = true
 	go c.readLoop()
 	if journal != nil {
@@ -423,9 +444,38 @@ func (c *Client) readLoop() {
 			return
 		}
 		switch e.Type {
-		case "welcome":
+		case "welcome", "hello":
 			c.fail(errors.New("repeated welcome"))
 			return
+		case "presence", "pong", "box.changed":
+			if c.v2 {
+				c.resolve(e.ID, reply{event: e})
+				continue
+			}
+			c.resolve(e.ID, reply{event: e})
+			continue
+		case "ack":
+			if c.v2 {
+				c.resolve(e.ID, reply{event: e})
+				continue
+			}
+			c.resolve(e.ID, reply{event: e})
+			continue
+		case "msg":
+			if c.v2 && e.Topic == "stream.credit" {
+				if sid, seqStr, ok := strings.Cut(e.Body, ":"); ok {
+					if seq, err := strconv.ParseUint(seqStr, 10, 64); err == nil {
+						if s := c.stream(sid); s != nil && s.peer == e.From {
+							if err = s.credit(seq); err != nil {
+								c.fail(err)
+								return
+							}
+						}
+					}
+				}
+				continue
+			}
+			continue
 		case "stream.credit":
 			if s := c.stream(e.ID); s != nil {
 				if err = s.credit(e.Sequence); err != nil {
@@ -441,7 +491,11 @@ func (c *Client) readLoop() {
 			c.resolve(e.ID, reply{err: errors.New("stream closed")})
 			continue
 		case "stream.open":
-			if !objectID.MatchString(e.ID) || !namePattern.MatchString(e.From) || e.Body == "" {
+			validID := objectID.MatchString(e.ID)
+			if c.v2 {
+				validID = streamIDV2.MatchString(e.ID)
+			}
+			if !validID || !namePattern.MatchString(e.From) || e.Body == "" {
 				c.fail(errors.New("invalid stream request"))
 				return
 			}
@@ -459,6 +513,9 @@ func (c *Client) readLoop() {
 				continue
 			}
 		case "peer.up", "peer.down", "group.changed":
+			if c.v2 && e.Type == "group.changed" && e.Revision == 0 && e.Seq > 0 {
+				e.Revision = int(e.Seq)
+			}
 		default:
 			c.resolve(e.ID, reply{event: e})
 			continue

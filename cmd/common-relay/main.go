@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -47,12 +48,16 @@ func run() error {
 	webdav := f.String("webdav-config", "", "optional private WebDAV upload route configuration")
 	v2AdminFile := f.String("v2-admin-hash-file", "", "optional file with lowercase hex SHA-256 of the v2 Root Admin secret; enables /v2/* and /edge/*")
 	reserve := f.Uint64("disk-reserve", 2<<30, "minimum free disk bytes")
+	wsOrigins := f.String("v2-ws-origins", "", "comma-separated browser Origin patterns allowed on /v2/ws (native clients send none)")
+	importSpace := f.String("space", "", "import-v1: target v2 space (bridge_allowed or client_encrypted)")
+	importSeal := f.String("seal-public-key", "", "import-v1: optional X25519 public key (hex) to seal imported routes' payloads")
+	importDry := f.Bool("dry-run", false, "import-v1: print the bindings without writing")
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check|hash-password [flags]")
+		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check|hash-password|import-v1 [flags]")
 	}
 	command := os.Args[1]
 	switch command {
-	case "serve", "device-add", "device-revoke", "group-bootstrap", "check":
+	case "serve", "device-add", "device-revoke", "group-bootstrap", "check", "import-v1":
 	case "hash-password":
 		return hashPassword()
 	default:
@@ -73,6 +78,9 @@ func run() error {
 		if accessHash, err = relay.LoadAccessHash(*accessFile); err != nil {
 			return err
 		}
+	}
+	if command == "import-v1" {
+		return importV1(*dir, *webhooks, *webdav, *importSpace, *importSeal, *importDry)
 	}
 	s, err := relay.OpenStore(*dir)
 	if err != nil {
@@ -156,13 +164,16 @@ func run() error {
 			}
 		}
 		server.SelfServiceApps = map[string]bool{}
+		var selfServiceList []string
 		for _, name := range strings.Split(*selfService, ",") {
 			if name = strings.TrimSpace(name); name != "" {
 				server.SelfServiceApps[name] = true
+				selfServiceList = append(selfServiceList, name)
 			}
 		}
 		var handler http.Handler = server.Handler()
 		var v2Store *v2core.Store
+		usageRefresh := func() {}
 		if *v2AdminFile != "" {
 			adminHashBytes, err := relay.LoadAccessHash(*v2AdminFile)
 			if err != nil {
@@ -175,10 +186,45 @@ func run() error {
 			defer v2Store.Close()
 			v2Store.SpaceQuota = *appQuota
 			v2Store.GlobalQuota = *globalQuota
+			v2Store.DiskReserve = *reserve
+			// One global quota spans both stores. Each side reads the other's usage
+			// from a cached counter (refreshed every minute and after startup) so no
+			// transaction ever waits on the other database's single connection.
+			var v1Used, v2Used atomic.Int64
+			refreshUsage := func() {
+				if n, err := s.UsedBytes(); err == nil {
+					v1Used.Store(n)
+				}
+				if n, err := v2Store.UsedBytes(); err == nil {
+					v2Used.Store(n)
+				}
+			}
+			refreshUsage()
+			v2Store.ExternalUsage = v1Used.Load
+			s.ExternalUsage = v2Used.Load
+			usageRefresh = refreshUsage
+
+			activeAccessHex, activeAccessSource, activeAccessUpdated, err := resolveAccessHash(v2Store, hex.EncodeToString(accessHash))
+			if err != nil {
+				return err
+			}
+			if raw, decErr := hex.DecodeString(activeAccessHex); decErr == nil && len(raw) == 32 {
+				server.SetAccessHash(raw)
+			}
+
 			v2Srv := v2server.New(v2Store, v2server.Config{
-				AccessHash:    hex.EncodeToString(accessHash),
-				RootAdminHash: hex.EncodeToString(adminHashBytes),
+				AccessHash:      activeAccessHex,
+				AccessSource:    activeAccessSource,
+				AccessUpdatedAt: activeAccessUpdated,
+				RootAdminHash:   hex.EncodeToString(adminHashBytes),
+				SelfServiceAll:  server.SelfServiceApps["*"],
+				SelfServiceApps: selfServiceList,
 			})
+			v2Srv.OnAccessHashChanged = func(hexHash string) {
+				if raw, decErr := hex.DecodeString(hexHash); decErr == nil && len(raw) == 32 {
+					server.SetAccessHash(raw)
+				}
+			}
 			for _, regErr := range []error{
 				v2Srv.RegisterPlugin(v2drop.New()),
 				v2Srv.RegisterPlugin(v2webhook.New()),
@@ -189,12 +235,17 @@ func run() error {
 					return regErr
 				}
 			}
+			for _, o := range strings.Split(*wsOrigins, ",") {
+				if o = strings.TrimSpace(o); o != "" {
+					v2Srv.Pipe.OriginPatterns = append(v2Srv.Pipe.OriginPatterns, o)
+				}
+			}
 			v1Handler := handler
 			v2Handler := v2Srv.Handler()
 			server.ExtraOnlinePeers = func(_, group string) []string {
 				return v2Srv.Pipe.OnlineDevices(group)
 			}
-			server.OnGroupSynced = func(_, group, groupName string, members []relay.SyncedGroupMember, removed []string, closed bool, revision int) {
+			server.OnGroupSynced = func(app, group, groupName string, members []relay.SyncedGroupMember, removed []string, closed bool, revision int) {
 				projected := make([]v2core.ManagedMember, 0, len(members))
 				for _, m := range members {
 					projected = append(projected, v2core.ManagedMember{
@@ -202,9 +253,10 @@ func run() error {
 						Name:      m.Name,
 						PublicKey: m.PublicKey,
 						TokenHash: m.TokenHash,
+						Manager:   m.Manager,
 					})
 				}
-				if err := v2Store.SyncManagedGroup(group, groupName, projected, removed, closed); err != nil {
+				if err := v2Store.SyncManagedGroupWithApp(group, app, groupName, projected, removed, closed); err != nil {
 					log.Printf("v2 group sync error for %s: %v", group, err)
 					return
 				}
@@ -250,6 +302,7 @@ func run() error {
 					if v2Store != nil {
 						v2Store.SweepExpired()
 					}
+					usageRefresh()
 				}
 			}
 		}()
@@ -260,7 +313,11 @@ func run() error {
 			defer cancel()
 			httpServer.Shutdown(shutdown)
 		}()
-		log.Printf("common-relay v1 listening on %s", *listen)
+		if v2Store != nil {
+			log.Printf("common-relay listening on %s (protocol v1 + v2, edge plugins enabled)", *listen)
+		} else {
+			log.Printf("common-relay listening on %s (protocol v1 only; pass --v2-admin-hash-file to enable v2)", *listen)
+		}
 		err = httpServer.ListenAndServe()
 		if err == http.ErrServerClosed {
 			return nil

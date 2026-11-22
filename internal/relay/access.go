@@ -46,11 +46,29 @@ func LoadAccessHash(path string) ([]byte, error) {
 	return raw, nil
 }
 
+// SetAccessHash atomically updates the active Relay-Access SHA-256 digest at runtime.
+func (s *Server) SetAccessHash(raw []byte) {
+	var cp []byte
+	if len(raw) == sha256.Size {
+		cp = append([]byte(nil), raw...)
+	}
+	s.accessMu.Lock()
+	s.AccessHash = cp
+	s.accessMu.Unlock()
+}
+
+func (s *Server) getAccessHash() []byte {
+	s.accessMu.RLock()
+	h := s.AccessHash
+	s.accessMu.RUnlock()
+	return h
+}
+
 func (s *Server) requireAccess(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.AccessHash != nil {
+		if want := s.getAccessHash(); want != nil {
 			got := sha256.Sum256([]byte(r.Header.Get(AccessHeader)))
-			if subtle.ConstantTimeCompare(got[:], s.AccessHash) != 1 {
+			if subtle.ConstantTimeCompare(got[:], want) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

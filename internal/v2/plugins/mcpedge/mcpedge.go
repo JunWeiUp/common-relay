@@ -12,13 +12,17 @@
 package mcpedge
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -47,6 +51,11 @@ type photoLease struct {
 	expires      time.Time
 }
 
+type authCacheEntry struct {
+	ok      bool
+	expires time.Time
+}
+
 var leaseRe = regexp.MustCompile(`^[A-Za-z0-9_-]{32}$`)
 
 type Plugin struct {
@@ -54,6 +63,8 @@ type Plugin struct {
 	slots   chan struct{}
 	leaseMu sync.Mutex
 	leases  map[[32]byte]photoLease
+	authMu  sync.Mutex
+	authMap map[string]authCacheEntry
 }
 
 func New() *Plugin {
@@ -61,11 +72,62 @@ func New() *Plugin {
 		limiter: plugin.NewFailLimiter(30, 10*time.Minute),
 		slots:   make(chan struct{}, 8),
 		leases:  map[[32]byte]photoLease{},
+		authMap: map[string]authCacheEntry{},
 	}
 }
 
 func (p *Plugin) ID() string                     { return "mcpedge" }
 func (p *Plugin) RequiredTrust() core.TrustLevel { return core.TrustBridgeAllowed }
+
+// RPCTimeout bounds each forwarded query so stalled hubes release slots.
+const RPCTimeout = 10 * time.Second
+
+func (p *Plugin) ConfigSchema() []plugin.FieldSpec {
+	return []plugin.FieldSpec{
+		{Key: "target_device", Type: "string", Required: true, Description: "device ID of the Hub answering \"mcp\" RPCs"},
+		{Key: "public_base", Type: "string", Description: "public https base URL used for short-lived photo links"},
+	}
+}
+
+func (p *Plugin) ValidateConfig(cfg map[string]any) error {
+	for k, v := range cfg {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string", k)
+		}
+		switch k {
+		case "target_device":
+			if !core.ValidIdent(s) {
+				return errors.New("target_device must be a device ID")
+			}
+		case "public_base":
+			if s == "" {
+				continue
+			}
+			u, err := url.Parse(s)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+				return errors.New("public_base must be an http(s) base URL")
+			}
+		default:
+			return fmt.Errorf("unknown mcpedge config key %q", k)
+		}
+	}
+	if s, _ := cfg["target_device"].(string); s == "" {
+		return errors.New("target_device is required")
+	}
+	return nil
+}
+
+// acquire takes a forwarding slot; every path that can trigger an RPC (including
+// ck_* verification and photo leases) must hold one.
+func (p *Plugin) acquire() (release func(), ok bool) {
+	select {
+	case p.slots <- struct{}{}:
+		return func() { <-p.slots }, true
+	default:
+		return nil, false
+	}
+}
 
 func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +167,8 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		if p.limiter.Blocked(binding.ID) {
+		srcKey := host.SourceKey(binding.ID, r)
+		if p.limiter.Blocked(srcKey) {
 			http.Error(w, "too many attempts", http.StatusTooManyRequests)
 			return
 		}
@@ -124,15 +187,27 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		// Match against any client account registered under this mcpedge binding (format: clientName:token or direct secret).
-		grantName, authed := p.authorizeClient(host, binding.ID, token)
-		if !authed {
-			p.limiter.Fail(binding.ID)
-			w.Header().Set("WWW-Authenticate", `Bearer realm="console-mcp"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		// Hold a slot before anything that may issue an RPC (ck_* verification).
+		release, ok := p.acquire()
+		if !ok {
+			http.Error(w, "too many queries", http.StatusTooManyRequests)
 			return
 		}
-		p.limiter.Reset(binding.ID)
+		defer release()
+		// Match against registered plugin accounts (including legacy shared token) or
+		// delegate per-client ck_* grant verification to the local Hub via RPC.
+		grantName, authStatus := p.authorizeClient(r.Context(), host, binding, cfg, token)
+		if authStatus != 0 {
+			if authStatus == http.StatusUnauthorized {
+				p.limiter.Fail(srcKey)
+				w.Header().Set("WWW-Authenticate", `Bearer realm="console-mcp"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			} else {
+				http.Error(w, "console offline; cannot verify token", authStatus)
+			}
+			return
+		}
+		p.limiter.Reset(srcKey)
 
 		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			http.Error(w, "JSON required", http.StatusUnsupportedMediaType)
@@ -173,19 +248,23 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 		case "prompts/list":
 			result = map[string]any{"prompts": []any{}}
 		case "tools/list", "tools/call":
-			select {
-			case p.slots <- struct{}{}:
-				defer func() { <-p.slots }()
-			default:
-				http.Error(w, "too many queries", http.StatusTooManyRequests)
-				return
+			if q.Method == "tools/call" {
+				var peek struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal(q.Params, &peek) == nil && peek.Name == "console_connection_test" {
+					result = map[string]any{
+						"content": []map[string]any{{"type": "text", "text": "启动台 MCP 网关已就绪；真实查询使用 Common Relay v2 加密通道。"}},
+					}
+					break
+				}
 			}
 			fwd, _ := json.Marshal(map[string]any{
 				"method": q.Method,
 				"grant":  grantName,
 				"params": json.RawMessage(q.Params),
 			})
-			rawRes, err := host.CallRPC(r.Context(), binding.SpaceID, cfg.TargetDevice, "mcp", string(fwd))
+			rawRes, err := host.CallRPCTimeout(r.Context(), RPCTimeout, binding.SpaceID, cfg.TargetDevice, "mcp", string(fwd))
 			if err != nil {
 				errValue = map[string]any{"code": -32000, "message": "hub offline or unavailable"}
 				break
@@ -214,23 +293,83 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 	})
 }
 
-func (p *Plugin) authorizeClient(host *plugin.Host, bindingID, token string) (string, bool) {
+func (p *Plugin) authorizeClient(ctx context.Context, host *plugin.Host, binding core.PluginBinding, cfg config, token string) (string, int) {
+	if len(token) > 256 {
+		return "", http.StatusUnauthorized
+	}
 	// Support "clientName:secret" direct lookup or fallback scan over binding accounts.
 	if u, sec, ok := strings.Cut(token, ":"); ok && u != "" && sec != "" {
-		if acct, err := host.AuthAccount(bindingID, u, sec); err == nil {
-			return acct.ScopeKey, true
+		if acct, err := host.AuthAccount(binding.ID, u, sec); err == nil {
+			return acct.ScopeKey, 0
 		}
 	}
-	accts, err := host.ListAccounts(bindingID)
+	// Bare tokens are matched only against legacy fast-hash accounts: scanning
+	// salted (scrypt) accounts per request would let one bad token cost N KDFs.
+	if accts, err := host.ListAccounts(binding.ID); err == nil {
+		for _, a := range accts {
+			if plugin.IsSaltedHash(a.SecretHash) {
+				continue
+			}
+			if _, err := host.AuthAccount(binding.ID, a.Username, token); err == nil {
+				return a.ScopeKey, 0
+			}
+		}
+	}
+	// Per-client Hub tokens (ck_...) are validated by SHA-256 hash on the local Hub.
+	if !strings.HasPrefix(token, "ck_") {
+		return "", http.StatusUnauthorized
+	}
+	sum := sha256.Sum256([]byte(token))
+	hash := hex.EncodeToString(sum[:])
+	cacheKey := binding.ID + ":" + hash
+	now := time.Now()
+	p.authMu.Lock()
+	if ent, ok := p.authMap[cacheKey]; ok && now.Before(ent.expires) {
+		p.authMu.Unlock()
+		if ent.ok {
+			return hash, 0
+		}
+		return "", http.StatusUnauthorized
+	}
+	p.authMu.Unlock()
+
+	fwd, _ := json.Marshal(map[string]any{
+		"method": "tools/call",
+		"grant":  hash,
+		"params": map[string]any{"name": "console_auth", "arguments": map[string]any{}},
+	})
+	rawRes, err := host.CallRPCTimeout(ctx, RPCTimeout, binding.SpaceID, cfg.TargetDevice, "mcp", string(fwd))
 	if err != nil {
-		return "", false
+		return "", http.StatusServiceUnavailable
 	}
-	for _, a := range accts {
-		if _, err := host.AuthAccount(bindingID, a.Username, token); err == nil {
-			return a.ScopeKey, true
+	var decoded struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	ok := json.Unmarshal([]byte(rawRes), &decoded) == nil && !decoded.IsError && len(decoded.Content) > 0 && strings.Contains(decoded.Content[0].Text, `"ok":true`)
+	ttl := 15 * time.Second
+	if ok {
+		ttl = 60 * time.Second
+	}
+	p.authMu.Lock()
+	if len(p.authMap) >= 256 {
+		for k, v := range p.authMap {
+			if !now.Before(v.expires) {
+				delete(p.authMap, k)
+			}
+		}
+		if len(p.authMap) >= 256 {
+			p.authMap = map[string]authCacheEntry{}
 		}
 	}
-	return "", false
+	p.authMap[cacheKey] = authCacheEntry{ok: ok, expires: now.Add(ttl)}
+	p.authMu.Unlock()
+	if ok {
+		return hash, 0
+	}
+	return "", http.StatusUnauthorized
 }
 
 func (p *Plugin) maybeAttachPhotoLink(res map[string]any, spaceID string, cfg config, mount, rpcPayload string) {
@@ -268,8 +407,13 @@ func (p *Plugin) maybeAttachPhotoLink(res map[string]any, spaceID string, cfg co
 	p.leases[sum] = photoLease{spaceID: spaceID, targetDevice: cfg.TargetDevice, rpcPayload: rpcPayload, expires: now.Add(5 * time.Minute)}
 	p.leaseMu.Unlock()
 
+	base := strings.TrimRight(cfg.PublicBase, "/")
+	photoURL := base + "/edge/mcpedge/" + mount + "/photo/" + tok
+	if strings.HasSuffix(base, "/console-mcp") {
+		photoURL = base + "/photo/" + tok
+	}
 	note, _ := json.Marshal(map[string]any{
-		"imageUrl":         strings.TrimRight(cfg.PublicBase, "/") + "/edge/mcpedge/" + mount + "/photo/" + tok,
+		"imageUrl":         photoURL,
 		"expiresInSeconds": 300,
 	})
 	res["content"] = append(items, map[string]any{"type": "text", "text": string(note)})
@@ -299,7 +443,13 @@ func (p *Plugin) servePhoto(w http.ResponseWriter, r *http.Request, host *plugin
 		http.NotFound(w, r)
 		return
 	}
-	rawRes, err := host.CallRPC(r.Context(), lease.spaceID, lease.targetDevice, "mcp", lease.rpcPayload)
+	release, ok := p.acquire()
+	if !ok {
+		http.Error(w, "too many queries", http.StatusTooManyRequests)
+		return
+	}
+	defer release()
+	rawRes, err := host.CallRPCTimeout(r.Context(), RPCTimeout, lease.spaceID, lease.targetDevice, "mcp", lease.rpcPayload)
 	if err != nil {
 		http.Error(w, "photo unavailable", http.StatusServiceUnavailable)
 		return

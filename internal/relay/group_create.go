@@ -8,7 +8,14 @@ import (
 	"time"
 )
 
-// Self-service is opt-in per application. A new random namespace cannot claim
+func (s *Server) selfServiceAllowed(app string) bool {
+	if s.SelfServiceApps == nil {
+		return false
+	}
+	return s.SelfServiceApps["*"] || s.SelfServiceApps[app]
+}
+
+// Self-service is opt-in per application (or "*" for all valid app names). A new random namespace cannot claim
 // an existing group. Quotas are durable and global, not spoofable forwarding IPs.
 func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -23,7 +30,7 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, err := in.Entry.state()
-	if in.Entry.Authorization != nil || err != nil || !s.SelfServiceApps[g.App] || len(g.Members) != 1 || g.Revision != 1 || g.Previous != "" || g.Invitation != "" || g.RequestHash != "" || strings.TrimSpace(g.Name) == "" || !strings.HasPrefix(g.Group, "g-") || !validHex(strings.TrimPrefix(g.Group, "g-"), 16) || !validHex(in.TokenHash, 32) {
+	if in.Entry.Authorization != nil || err != nil || !s.selfServiceAllowed(g.App) || len(g.Members) != 1 || g.Revision != 1 || g.Previous != "" || g.Invitation != "" || g.RequestHash != "" || strings.TrimSpace(g.Name) == "" || !strings.HasPrefix(g.Group, "g-") || !validHex(strings.TrimPrefix(g.Group, "g-"), 16) || !validHex(in.TokenHash, 32) {
 		groupFailure(w, ErrDenied)
 		return
 	}

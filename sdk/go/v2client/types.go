@@ -6,7 +6,9 @@ package v2client
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 type APIError struct {
@@ -18,8 +20,20 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("relay v2 http %d: %s", e.Status, e.Msg)
 }
 
+// IsUnsupported reports that the server predates an endpoint (e.g. PATCH
+// /v2/admin/plugins/{id}/{mount}): it answers a plain-text 404/405 instead of a
+// JSON error. Callers can then fall back to the older PUT API.
+func IsUnsupported(err error) bool {
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	return ae.Status == 405 || ae.Status == 501 || (ae.Status == 404 && !strings.HasPrefix(ae.Msg, "{"))
+}
+
 // HashSecret returns the lowercase 64-char hex SHA-256 of a plaintext secret.
-// Plaintext passwords/tokens are never sent to Admin endpoints; only hashes cross the wire.
+// Legacy helper for secret_sha256 fields. Newer endpoints accept plaintext over
+// TLS (e.g. "token", "password") so the server can hash with salt/scrypt.
 func HashSecret(plain string) string {
 	h := sha256.Sum256([]byte(plain))
 	return hex.EncodeToString(h[:])
@@ -34,11 +48,33 @@ type Device struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+type SpaceMemberView struct {
+	DeviceID string `json:"device_id"`
+	Name     string `json:"name"`
+	Role     string `json:"role"` // admin | member | archive_observer
+	Online   bool   `json:"online"`
+}
+
+type SpaceBoxView struct {
+	Name      string `json:"name"`
+	Mode      string `json:"mode"` // queue | object | ephemeral
+	Items     int64  `json:"items"`
+	Objects   int64  `json:"objects"`
+	UsedBytes int64  `json:"used_bytes"`
+}
+
 type Space struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	App        string `json:"app,omitempty"`
 	TrustLevel string `json:"trust_level"` // strict_e2e | client_encrypted | bridge_allowed
 	CreatedAt  int64  `json:"created_at"`
+	// ManagedBy names the projection that owns this space ("v1:<app>" for
+	// signed device groups); empty for admin-created spaces.
+	ManagedBy string            `json:"managed_by,omitempty"`
+	UsedBytes int64             `json:"used_bytes,omitempty"`
+	Members   []SpaceMemberView `json:"members,omitempty"`
+	Boxes     []SpaceBoxView    `json:"boxes,omitempty"`
 }
 
 type SpaceMember struct {
@@ -84,15 +120,67 @@ type BoxObject struct {
 	CreatedAt   int64  `json:"created_at"`
 }
 
+type PluginBindingSummary struct {
+	TargetDevice string   `json:"target_device,omitempty"`
+	TargetOnline bool     `json:"target_online,omitempty"`
+	PublicBase   string   `json:"public_base,omitempty"`
+	Tag          string   `json:"tag,omitempty"`
+	HasHMAC      bool     `json:"has_hmac,omitempty"`
+	HasToken     bool     `json:"has_token,omitempty"`
+	CORSOrigins  []string `json:"cors_origins,omitempty"`
+}
+
+type PluginAccountView struct {
+	ScopeKey string `json:"scope_key"`
+	Username string `json:"username"`
+	Mode     string `json:"mode"`
+}
+
 type PluginBinding struct {
-	ID         string `json:"id"`
-	PluginID   string `json:"plugin_id"`
-	Mount      string `json:"mount"`
-	SpaceID    string `json:"space_id"`
-	BoxName    string `json:"box_name"`
-	ConfigJSON string `json:"config_json"`
-	Enabled    bool   `json:"enabled"`
-	UpdatedAt  int64  `json:"updated_at"`
+	ID         string                `json:"id"`
+	PluginID   string                `json:"plugin_id"`
+	Mount      string                `json:"mount"`
+	SpaceID    string                `json:"space_id"`
+	BoxName    string                `json:"box_name"`
+	ConfigJSON string                `json:"config_json"`
+	Enabled    bool                  `json:"enabled"`
+	UpdatedAt  int64                 `json:"updated_at"`
+	Summary    *PluginBindingSummary `json:"summary,omitempty"`
+	Accounts   []PluginAccountView   `json:"accounts,omitempty"`
+	// ConfigVersion increments on every change; pass it as IfVersion for
+	// optimistic concurrency. Zero on servers older than the PATCH API.
+	ConfigVersion int64 `json:"config_version,omitempty"`
+	// SecretKeys lists write-only secret keys currently set (values never returned).
+	SecretKeys []string `json:"secret_keys,omitempty"`
+	// Sealed reports that bridged payloads are sealed (crs1) to seal_public_key.
+	Sealed bool `json:"sealed,omitempty"`
+}
+
+// PluginFieldSpec describes one config key a plugin accepts.
+type PluginFieldSpec struct {
+	Key         string `json:"key"`
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+	Secret      bool   `json:"secret,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// PluginInfo is one registered plugin with its config schema.
+type PluginInfo struct {
+	ID            string            `json:"id"`
+	RequiredTrust string            `json:"required_trust"`
+	Schema        []PluginFieldSpec `json:"schema,omitempty"`
+}
+
+// PluginPatch is a partial binding update. Nil fields are unchanged; a Config
+// entry with a nil value deletes that key. Secret keys are write-only: send a
+// plaintext "token" to rotate a Bearer token (it is hashed server-side).
+type PluginPatch struct {
+	SpaceID   *string        `json:"space_id,omitempty"`
+	BoxName   *string        `json:"box_name,omitempty"`
+	Enabled   *bool          `json:"enabled,omitempty"`
+	Config    map[string]any `json:"config,omitempty"`
+	IfVersion int64          `json:"if_version,omitempty"`
 }
 
 type PluginAccount struct {
@@ -115,6 +203,15 @@ type StatusSnapshot struct {
 	OnlinePeers   int              `json:"online_peers"`
 	Plugins       []string         `json:"plugins"`
 	BySpaceBytes  map[string]int64 `json:"by_space_bytes"`
+}
+
+type AccessPasswordInfo struct {
+	Configured      bool     `json:"configured"`
+	Source          string   `json:"source"`
+	HashPrefix      string   `json:"hash_prefix"`
+	UpdatedAt       int64    `json:"updated_at"`
+	SelfServiceAll  bool     `json:"self_service_all"`
+	SelfServiceApps []string `json:"self_service_apps,omitempty"`
 }
 
 type PipeEvent struct {

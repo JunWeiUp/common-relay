@@ -6,11 +6,12 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Protocol: v1](https://img.shields.io/badge/Protocol-v1-2563eb.svg)](protocol/README.md)
+[![v2: experimental](https://img.shields.io/badge/v2-experimental-f59e0b.svg)](docs/V2-ARCHITECTURE.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
 Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java/Kotlin、Dart、Python、TypeScript（Node.js）、Go 和 Rust 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
 
-**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。目前仅支持 v1 协议。
+**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。v1 是稳定且完整支持的协议；v2 聚合层（Space、Box、Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件）为实验性：仅在 `serve` 传入 `--v2-admin-hash-file` 时启用，与 v1 并存，接口仍可能调整，详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
 
 [快速开始](#快速开始) · [客户端 SDK](#客户端-sdk) · [文档](#文档) · [参与贡献](CONTRIBUTING.md#简体中文)
 
@@ -144,6 +145,7 @@ README 和贡献指南提供中英文版本。详细指南目前主要使用中�
 | --- | --- |
 | [示例](examples/README.md) | 可运行示例与接入说明 |
 | [协议 v1](protocol/README.md) | 消息格式、加密和兼容性 |
+| [V2 架构](docs/V2-ARCHITECTURE.md) | 实验性 v2：Space、Box、边缘插件、管理接口与 v1 迁移 |
 | [架构](docs/ARCHITECTURE.md) | 模块、存储与资源限制 |
 | [设备组](docs/DEVICE-GROUPS.md) | 信任、成员与邀请 |
 | [安全](SECURITY.md) | 威胁模型与密钥管理 |

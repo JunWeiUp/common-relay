@@ -28,6 +28,17 @@ type Store struct {
 	DB                    *sql.DB
 	Dir                   string
 	AppQuota, GlobalQuota int64
+	// ExternalUsage reports bytes held by the co-located v2 store so the global
+	// quota bounds the whole data directory. It must not touch this DB (it is
+	// called inside v1 transactions on a single-connection pool).
+	ExternalUsage func() int64
+}
+
+// UsedBytes returns the bytes currently held by v1 files and messages.
+func (s *Store) UsedBytes() (int64, error) {
+	var n int64
+	err := s.DB.QueryRow(`SELECT COALESCE(SUM(n),0) FROM (SELECT size AS n FROM files UNION ALL SELECT length(body) AS n FROM messages)`).Scan(&n)
+	return n, err
 }
 
 func RandomID() string {
@@ -124,6 +135,14 @@ func (s *Store) Revoke(d Device) error {
 	_, err := s.DB.Exec("UPDATE devices SET revoked=1 WHERE app=? AND grp=? AND id=? AND NOT EXISTS(SELECT 1 FROM group_entries WHERE app=? AND grp=?)", d.App, d.Group, d.ID, d.App, d.Group)
 	return err
 }
+func (s *Store) quota(tx *sql.Tx, app string, extra int64) error {
+	var ext int64
+	if s.ExternalUsage != nil {
+		ext = s.ExternalUsage()
+	}
+	return quota(tx, app, extra, s.AppQuota, s.GlobalQuota-ext)
+}
+
 func quota(tx *sql.Tx, app string, extra, appMax, globalMax int64) error {
 	var a, g int64
 	err := tx.QueryRow(`SELECT COALESCE(SUM(n),0),COALESCE(SUM(CASE WHEN app=? THEN n ELSE 0 END),0) FROM (SELECT app,size AS n FROM files UNION ALL SELECT app,length(body) AS n FROM messages)`, app).Scan(&g, &a)
@@ -164,7 +183,7 @@ func (s *Store) PutMessage(d Device, to, id string, body []byte, ttl int64, abso
 	if err != sql.ErrNoRows {
 		return "", err
 	}
-	if err = quota(tx, d.App, int64(len(body)), s.AppQuota, s.GlobalQuota); err != nil {
+	if err = s.quota(tx, d.App, int64(len(body))); err != nil {
 		return "", err
 	}
 	expires := time.Now().Unix() + ttl

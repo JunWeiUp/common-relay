@@ -282,8 +282,9 @@ func NewFiles(base, token string, options Options) (*Files, error) {
 		return nil, errors.New("invalid files endpoint")
 	}
 	local := options.AllowLocalTest && u.Scheme == "http" && u.Hostname() == "127.0.0.1"
-	if (u.Scheme != "https" && !local) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "/relay/v1/files" && u.Path != "/relay/v1/files/") {
-		return nil, errors.New("an HTTPS /relay/v1/files endpoint is required")
+	validPath := u.Path == "/relay/v1/files" || u.Path == "/relay/v1/files/" || u.Path == "/v2/files" || u.Path == "/v2/files/"
+	if (u.Scheme != "https" && !local) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || !validPath {
+		return nil, errors.New("an HTTPS /v2/files or /relay/v1/files endpoint is required")
 	}
 	if !tokenPattern.MatchString(token) {
 		return nil, errors.New("invalid device credential")

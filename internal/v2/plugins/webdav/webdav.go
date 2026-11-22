@@ -39,6 +39,48 @@ func New() *Plugin {
 func (p *Plugin) ID() string                     { return "webdav" }
 func (p *Plugin) RequiredTrust() core.TrustLevel { return core.TrustClientEncrypted }
 
+func (p *Plugin) ConfigSchema() []plugin.FieldSpec {
+	return []plugin.FieldSpec{
+		{Key: "cors_origins", Type: "string_list", Description: "browser Origins allowed to call this mount"},
+		{Key: "strict_queue_methods", Type: "bool", Description: "queue mode: reject DELETE with 403 instead of the compatibility no-op 204"},
+		plugin.BridgeSchema,
+	}
+}
+
+// Browser extensions (e.g. a password-vault mirror) call WebDAV from their own origin.
+var allowedOriginScheme = map[string]bool{
+	"https": true, "http": true, "chrome-extension": true, "moz-extension": true, "safari-web-extension": true,
+}
+
+func (p *Plugin) ValidateConfig(cfg map[string]any) error {
+	for k, v := range cfg {
+		switch k {
+		case "cors_origins":
+			arr, ok := v.([]any)
+			if !ok {
+				return errors.New("cors_origins must be a list of origins")
+			}
+			for _, it := range arr {
+				o, ok := it.(string)
+				if !ok {
+					return errors.New("cors_origins must be a list of origins")
+				}
+				if u, err := url.Parse(o); err != nil || !allowedOriginScheme[u.Scheme] || u.Host == "" || u.Path != "" || u.RawQuery != "" {
+					return fmt.Errorf("invalid origin %q", o)
+				}
+			}
+		case "strict_queue_methods":
+			if _, ok := v.(bool); !ok {
+				return errors.New("strict_queue_methods must be a boolean")
+			}
+		case plugin.SealPublicKeyField:
+		default:
+			return fmt.Errorf("unknown webdav config key %q", k)
+		}
+	}
+	return nil
+}
+
 func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/")
@@ -56,7 +98,8 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		if p.limiter.Blocked(binding.ID) {
+		srcKey := host.SourceKey(binding.ID, r)
+		if p.limiter.Blocked(srcKey) {
 			http.Error(w, "too many attempts", http.StatusTooManyRequests)
 			return
 		}
@@ -84,12 +127,12 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 		}
 		acct, err := host.AuthAccount(binding.ID, user, pass)
 		if err != nil {
-			p.limiter.Fail(binding.ID)
+			p.limiter.Fail(srcKey)
 			w.Header().Set("WWW-Authenticate", `Basic realm="common-relay-webdav"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		p.limiter.Reset(binding.ID)
+		p.limiter.Reset(srcKey)
 
 		mode := core.BoxMode(acct.Mode)
 		if mode != core.ModeObject {
@@ -137,6 +180,8 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 			w.WriteHeader(http.StatusOK)
 
 		case "MKCOL":
+			// Collections are virtual (derived from object keys); creating one is
+			// a successful no-op so clients that MKCOL before PUT keep working.
 			if r.ContentLength > 0 {
 				http.Error(w, "unsupported body", http.StatusUnsupportedMediaType)
 				return
@@ -154,7 +199,7 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 				http.Error(w, "cannot PUT to directory", http.StatusMethodNotAllowed)
 				return
 			}
-			p.handlePut(w, r, host, binding.SpaceID, boxName, mount, mode, folder, rel, innerKey)
+			p.handlePut(w, r, host, binding, boxName, mount, mode, folder, rel, innerKey)
 
 		case http.MethodGet, http.MethodHead:
 			if innerKey == "" {
@@ -172,6 +217,18 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 
 		case http.MethodDelete:
 			if innerKey == "" || mode == core.ModeQueue {
+				// Queue items are owned by the consumer once uploaded. Backup apps
+				// that rotate old files expect DELETE to succeed, so the default is
+				// an explicit, flagged no-op; strict_queue_methods makes it a 403.
+				var cfg struct {
+					Strict bool `json:"strict_queue_methods"`
+				}
+				_ = json.Unmarshal([]byte(binding.ConfigJSON), &cfg)
+				if cfg.Strict && innerKey != "" {
+					http.Error(w, "write-only inbox: DELETE disabled", http.StatusForbidden)
+					return
+				}
+				w.Header().Set("X-Relay-Noop", "queue-mode")
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
@@ -188,7 +245,8 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 	})
 }
 
-func (p *Plugin) handlePut(w http.ResponseWriter, r *http.Request, host *plugin.Host, spaceID, boxName, mount string, mode core.BoxMode, folder, fullRel, innerKey string) {
+func (p *Plugin) handlePut(w http.ResponseWriter, r *http.Request, host *plugin.Host, binding core.PluginBinding, boxName, mount string, mode core.BoxMode, folder, fullRel, innerKey string) {
+	spaceID := binding.SpaceID
 	ct := r.Header.Get("Content-Type")
 	if ct == "" {
 		if ext := mime.TypeByExtension(path.Ext(innerKey)); ext != "" {
@@ -197,7 +255,7 @@ func (p *Plugin) handlePut(w http.ResponseWriter, r *http.Request, host *plugin.
 			ct = "application/octet-stream"
 		}
 	}
-	meta, _ := json.Marshal(map[string]any{
+	metaMap := map[string]any{
 		"plugin":      "webdav",
 		"mount":       mount,
 		"folder":      folder,
@@ -205,10 +263,11 @@ func (p *Plugin) handlePut(w http.ResponseWriter, r *http.Request, host *plugin.
 		"name":        path.Base(innerKey),
 		"mode":        string(mode),
 		"received_at": time.Now().UnixMilli(),
-	})
+	}
+	meta, _ := json.Marshal(metaMap)
 
 	if mode == core.ModeQueue {
-		item, err := host.PutQueueItem(spaceID, boxName, "plugin:webdav:"+mount, ct, string(meta), r.Body)
+		item, err := host.PutBridgedItem(binding, boxName, "plugin:webdav:"+mount, ct, metaMap, r.Body)
 		if err != nil {
 			if errors.Is(err, core.ErrQuota) {
 				http.Error(w, "quota exceeded", http.StatusInsufficientStorage)

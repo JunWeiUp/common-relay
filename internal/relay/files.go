@@ -252,7 +252,7 @@ func (s *Server) createFile(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	defer tx.Rollback()
-	if err = quota(tx, d.App, f.Size, s.Store.AppQuota, s.Store.GlobalQuota); err != nil {
+	if err = s.Store.quota(tx, d.App, f.Size); err != nil {
 		http.Error(w, "quota", 507)
 		return
 	}

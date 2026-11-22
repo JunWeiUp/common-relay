@@ -113,6 +113,20 @@ func (c *Client) Status(ctx context.Context) (StatusSnapshot, error) {
 	return res.Status, err
 }
 
+func (c *Client) GetAccessPasswordInfo(ctx context.Context) (AccessPasswordInfo, error) {
+	var res AccessPasswordInfo
+	err := c.doJSON(ctx, http.MethodGet, "/v2/admin/access-password", nil, &res)
+	return res, err
+}
+
+func (c *Client) SetAccessPasswordHash(ctx context.Context, accessHash string) (AccessPasswordInfo, error) {
+	var res AccessPasswordInfo
+	err := c.doJSON(ctx, http.MethodPut, "/v2/admin/access-password", map[string]any{
+		"access_hash": accessHash,
+	}, &res)
+	return res, err
+}
+
 func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
 	var res struct {
 		Devices []Device `json:"devices"`
@@ -134,6 +148,17 @@ func (c *Client) CreateDevice(ctx context.Context, id, name, pubKey string, isAd
 
 func (c *Client) RevokeDevice(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/v2/admin/devices/"+url.PathEscape(id), nil, nil)
+}
+
+// Me returns the device the client's token belongs to. RootAdmin is true (and
+// Device zero) for the Root Admin secret. Older servers answer IsUnsupported.
+func (c *Client) Me(ctx context.Context) (Device, bool, error) {
+	var res struct {
+		Device    Device `json:"device"`
+		RootAdmin bool   `json:"root_admin"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v2/me", nil, &res)
+	return res.Device, res.RootAdmin, err
 }
 
 func (c *Client) ListSpaces(ctx context.Context) ([]Space, error) {
@@ -210,6 +235,62 @@ func (c *Client) UpsertPlugin(ctx context.Context, pluginID, mount, spaceID, box
 		"box_name": boxName, "config": cfgRaw, "enabled": enabled,
 	}, &res)
 	return res.Binding, err
+}
+
+// PluginOverview is the full GET /v2/admin/plugins answer.
+type PluginOverview struct {
+	Registered []string        `json:"registered"`
+	Plugins    []PluginInfo    `json:"plugins"` // empty on servers that predate schemas
+	Bindings   []PluginBinding `json:"bindings"`
+}
+
+// PluginOverview returns bindings, registered IDs and plugin schemas in one call.
+func (c *Client) PluginOverview(ctx context.Context) (PluginOverview, error) {
+	var res PluginOverview
+	err := c.doJSON(ctx, http.MethodGet, "/v2/admin/plugins", nil, &res)
+	return res, err
+}
+
+// PluginCatalog returns the registered plugins with their config schemas
+// (nil on servers that predate schemas).
+func (c *Client) PluginCatalog(ctx context.Context) ([]PluginInfo, error) {
+	var res struct {
+		Plugins []PluginInfo `json:"plugins"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v2/admin/plugins", nil, &res)
+	return res.Plugins, err
+}
+
+// GetPlugin returns one binding (public view) regardless of its enabled state.
+func (c *Client) GetPlugin(ctx context.Context, pluginID, mount string) (PluginBinding, error) {
+	var res struct {
+		Binding PluginBinding `json:"binding"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v2/admin/plugins/"+url.PathEscape(pluginID)+"/"+url.PathEscape(mount), nil, &res)
+	return res.Binding, err
+}
+
+// PatchPlugin merges a partial update into an existing binding. Servers older
+// than the PATCH API answer 404/405 (see IsUnsupported).
+func (c *Client) PatchPlugin(ctx context.Context, pluginID, mount string, patch PluginPatch) (PluginBinding, error) {
+	var res struct {
+		Binding PluginBinding `json:"binding"`
+	}
+	err := c.doJSON(ctx, http.MethodPatch, "/v2/admin/plugins/"+url.PathEscape(pluginID)+"/"+url.PathEscape(mount), patch, &res)
+	return res.Binding, err
+}
+
+// UpsertPluginAccountPassword stores an account whose password the server hashes
+// with salted scrypt (preferred over UpsertPluginAccount's bare SHA-256).
+func (c *Client) UpsertPluginAccountPassword(ctx context.Context, pluginID, mount, scopeKey, username, password, mode string) (PluginAccount, error) {
+	var res struct {
+		Account PluginAccount `json:"account"`
+	}
+	p := fmt.Sprintf("/v2/admin/plugins/%s/%s/accounts", url.PathEscape(pluginID), url.PathEscape(mount))
+	err := c.doJSON(ctx, http.MethodPut, p, map[string]any{
+		"scope_key": scopeKey, "username": username, "password": password, "mode": mode,
+	}, &res)
+	return res.Account, err
 }
 
 func (c *Client) DeletePlugin(ctx context.Context, pluginID, mount string) error {

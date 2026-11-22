@@ -66,7 +66,11 @@ func invitationMakeLink(inv GroupInvitation, key [32]byte, password string) (str
 	if password != "" {
 		suffix = "." + base64.RawURLEncoding.EncodeToString([]byte(password))
 	}
-	return "common-relay://" + u.Host + "/i/" + base64.RawURLEncoding.EncodeToString(id) + "#" + base64.RawURLEncoding.EncodeToString(key[:]) + suffix, nil
+	prefix := "/i/"
+	if u.Path == "/v2/ws" {
+		prefix = "/v2/i/"
+	}
+	return "common-relay://" + u.Host + prefix + base64.RawURLEncoding.EncodeToString(id) + "#" + base64.RawURLEncoding.EncodeToString(key[:]) + suffix, nil
 }
 
 // invitationParseLink returns relay URL, invitation ID, link key and the optional access password.
@@ -77,11 +81,19 @@ func invitationParseLink(text string, local bool) (string, string, [32]byte, str
 		return "", "", key, "", bad
 	}
 	u, err := url.Parse(text)
-	if err != nil || u.Scheme != "common-relay" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || !strings.HasPrefix(u.Path, "/i/") || u.RawPath != "" || u.RawFragment != "" {
+	if err != nil || u.Scheme != "common-relay" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || u.RawFragment != "" {
 		return "", "", key, "", bad
 	}
-	id, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimPrefix(u.Path, "/i/"))
-	if err != nil || len(id) != 16 || base64.RawURLEncoding.EncodeToString(id) != u.Path[3:] {
+	isV2 := strings.HasPrefix(u.Path, "/v2/i/")
+	if !isV2 && !strings.HasPrefix(u.Path, "/i/") {
+		return "", "", key, "", bad
+	}
+	rawID := strings.TrimPrefix(u.Path, "/i/")
+	if isV2 {
+		rawID = strings.TrimPrefix(u.Path, "/v2/i/")
+	}
+	id, err := base64.RawURLEncoding.Strict().DecodeString(rawID)
+	if err != nil || len(id) != 16 || base64.RawURLEncoding.EncodeToString(id) != rawID {
 		return "", "", key, "", bad
 	}
 	fragment, encoded, dotted := strings.Cut(u.Fragment, ".")
@@ -102,5 +114,9 @@ func invitationParseLink(text string, local bool) (string, string, [32]byte, str
 	if local && u.Hostname() == "127.0.0.1" {
 		scheme = "ws"
 	}
-	return scheme + "://" + u.Host + "/relay/v1/ws", hex.EncodeToString(id), key, password, nil
+	wsPath := "/relay/v1/ws"
+	if isV2 {
+		wsPath = "/v2/ws"
+	}
+	return scheme + "://" + u.Host + wsPath, hex.EncodeToString(id), key, password, nil
 }

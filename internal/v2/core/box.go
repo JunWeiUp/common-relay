@@ -498,5 +498,7 @@ func (s *Store) SweepExpired() (removedItems int, removedMsgs int) {
 		n, _ := res.RowsAffected()
 		removedMsgs = int(n)
 	}
+	s.sweepReceipts()
+	s.SweepOrphanBlobs()
 	return removedItems, removedMsgs
 }

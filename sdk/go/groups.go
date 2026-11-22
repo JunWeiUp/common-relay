@@ -30,7 +30,7 @@ func NewGroups(c *GroupConfig, allowLocalTest bool) (*Groups, error) {
 		return nil, errors.New("missing config")
 	}
 	u, err := url.Parse(c.URL)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Path != "/relay/v1/ws" || u.RawPath != "" || (u.Scheme != "wss" && !(allowLocalTest && u.Scheme == "ws" && u.Hostname() == "127.0.0.1")) {
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "/relay/v1/ws" && u.Path != "/v2/ws") || u.RawPath != "" || (u.Scheme != "wss" && !(allowLocalTest && u.Scheme == "ws" && u.Hostname() == "127.0.0.1")) {
 		return nil, errors.New("WSS URL required")
 	}
 	if err := validAccessPassword(c.Password); err != nil {
@@ -40,7 +40,11 @@ func NewGroups(c *GroupConfig, allowLocalTest bool) (*Groups, error) {
 	if u.Scheme == "ws" {
 		scheme = "http"
 	}
-	return &Groups{ctx: context.Background(), Config: c, base: scheme + "://" + u.Host + "/relay/v1", local: allowLocalTest, client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect forbidden") }}}, nil
+	apiPrefix := "/relay/v1"
+	if u.Path == "/v2/ws" {
+		apiPrefix = "/v2"
+	}
+	return &Groups{ctx: context.Background(), Config: c, base: scheme + "://" + u.Host + apiPrefix, local: allowLocalTest, client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect forbidden") }}}, nil
 }
 
 // WithContext returns a request-scoped view sharing the configuration and pool.

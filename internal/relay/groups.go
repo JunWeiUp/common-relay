@@ -272,6 +272,7 @@ func (s *Server) notifyGroupSynced(g GroupState, removed []Member) {
 					Name:      m.Name,
 					PublicKey: m.PublicKey,
 					TokenHash: tokenHash,
+					Manager:   m.Manager,
 				})
 			}
 		}

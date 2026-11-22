@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"regexp"
+	"strings"
 )
 
 // TrustLevel locks the security boundary of a Space at creation time.
@@ -111,7 +112,16 @@ func ValidBoxName(s string) bool {
 			return false
 		}
 	}
-	return s[len(s)-1] != '/'
+	if s[len(s)-1] == '/' {
+		return false
+	}
+	// "items"/"objects" segments are reserved for /v2/spaces/{s}/boxes/{box}/items|objects routing.
+	for _, seg := range strings.Split(s, "/") {
+		if seg == "items" || seg == "objects" {
+			return false
+		}
+	}
+	return true
 }
 
 func RandomHex(nBytes int) string {
@@ -136,11 +146,33 @@ type Device struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+type SpaceMemberView struct {
+	DeviceID string     `json:"device_id"`
+	Name     string     `json:"name"`
+	Role     MemberRole `json:"role"`
+	Online   bool       `json:"online"`
+}
+
+type SpaceBoxView struct {
+	Name      string  `json:"name"`
+	Mode      BoxMode `json:"mode"`
+	Items     int64   `json:"items"`
+	Objects   int64   `json:"objects"`
+	UsedBytes int64   `json:"used_bytes"`
+}
+
 type Space struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
+	App        string     `json:"app,omitempty"`
 	TrustLevel TrustLevel `json:"trust_level"`
 	CreatedAt  int64      `json:"created_at"`
+	// ManagedBy names the projection that owns this space ("v1:<app>" for
+	// signed device groups); empty for admin-created spaces.
+	ManagedBy string            `json:"managed_by,omitempty"`
+	UsedBytes int64             `json:"used_bytes,omitempty"`
+	Members   []SpaceMemberView `json:"members,omitempty"`
+	Boxes     []SpaceBoxView    `json:"boxes,omitempty"`
 }
 
 type SpaceMember struct {
@@ -198,15 +230,41 @@ type Message struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+type PluginBindingSummary struct {
+	TargetDevice string   `json:"target_device,omitempty"`
+	TargetOnline bool     `json:"target_online,omitempty"`
+	PublicBase   string   `json:"public_base,omitempty"`
+	Tag          string   `json:"tag,omitempty"`
+	HasHMAC      bool     `json:"has_hmac,omitempty"`
+	HasToken     bool     `json:"has_token,omitempty"`
+	CORSOrigins  []string `json:"cors_origins,omitempty"`
+}
+
+type PluginAccountView struct {
+	ScopeKey string `json:"scope_key"`
+	Username string `json:"username"`
+	Mode     string `json:"mode"`
+}
+
 type PluginBinding struct {
 	ID         string `json:"id"`
 	PluginID   string `json:"plugin_id"`
 	Mount      string `json:"mount"`
 	SpaceID    string `json:"space_id"`
 	BoxName    string `json:"box_name"`
-	ConfigJSON string `json:"config_json"`
+	ConfigJSON string `json:"config_json"` // public (non-secret) config only on admin reads
 	Enabled    bool   `json:"enabled"`
 	UpdatedAt  int64  `json:"updated_at"`
+	// ConfigVersion increases on every update; pass it back as if_version for
+	// optimistic concurrency.
+	ConfigVersion int64 `json:"config_version"`
+	// SecretKeys lists which write-only secret fields are set (values never returned).
+	SecretKeys []string              `json:"secret_keys,omitempty"`
+	Sealed     bool                  `json:"sealed"` // bridge payloads sealed to seal_public_key at rest
+	Summary    *PluginBindingSummary `json:"summary,omitempty"`
+	Accounts   []PluginAccountView   `json:"accounts,omitempty"`
+
+	SecretsJSON string `json:"-"` // stored (encrypted) secrets column
 }
 
 type PluginAccount struct {

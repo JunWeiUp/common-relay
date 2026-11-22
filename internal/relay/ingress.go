@@ -103,7 +103,7 @@ func (s *Server) publishIngress(t *ingressTarget, temp, source string, meta map[
 		return fail(err)
 	}
 	defer tx.Rollback()
-	if err = quota(tx, t.app, info.Size, s.Store.AppQuota, s.Store.GlobalQuota); err != nil {
+	if err = s.Store.quota(tx, t.app, info.Size); err != nil {
 		return fail(err)
 	}
 	// Journal the descriptor before publishing ciphertext.

@@ -6,11 +6,12 @@ English · [简体中文](README.zh-CN.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Protocol: v1](https://img.shields.io/badge/Protocol-v1-2563eb.svg)](protocol/README.md)
+[![v2: experimental](https://img.shields.io/badge/v2-experimental-f59e0b.svg)](docs/V2-ARCHITECTURE.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
 Common Relay is a Go relay server with Swift, Android Java/Kotlin, Dart, Python, TypeScript (Node.js), Go, and Rust client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
 
-**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. Only protocol v1 is supported.
+**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. Protocol v1 is the stable, fully supported protocol. The v2 aggregation layer (spaces, boxes, `/edge/*` plugins such as Webhook, Drop, WebDAV and MCP) is experimental: it is off unless `serve` gets `--v2-admin-hash-file`, runs side by side with v1, and may still change. See [V2 architecture](docs/V2-ARCHITECTURE.md).
 
 [Quick start](#quick-start) · [SDKs](#client-sdks) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
 
@@ -144,6 +145,7 @@ The READMEs and contribution guide are bilingual. Detailed guides currently cont
 | --- | --- |
 | [Examples](examples/README.md) | Runnable demos and integration notes |
 | [Protocol v1](protocol/README.md) | Wire format, encryption, and compatibility |
+| [V2 architecture](docs/V2-ARCHITECTURE.md) | Experimental v2 spaces, boxes, edge plugins, admin API and v1 migration (Chinese) |
 | [Architecture](docs/ARCHITECTURE.md) | Components, storage, and resource limits |
 | [Device groups](docs/DEVICE-GROUPS.md) | Trust, membership, and invitations |
 | [Security](SECURITY.md) | Threat model and key management |

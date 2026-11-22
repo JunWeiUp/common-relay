@@ -55,6 +55,16 @@ type pipePeer struct {
 	cancel context.CancelFunc
 }
 
+// pendingRPC binds an in-flight RPC to the only device allowed to answer it.
+type pendingRPC struct {
+	target string
+	ch     chan PipeEvent
+}
+
+// DefaultRPCTimeout bounds CallRPC when the caller's context has no deadline,
+// so an unresponsive target can never pin plugin slots indefinitely.
+const DefaultRPCTimeout = 15 * time.Second
+
 type pipeStream struct {
 	id    string
 	space string
@@ -67,10 +77,14 @@ type pipeStream struct {
 type PipeHub struct {
 	store   *Store
 	mu      sync.Mutex
-	peers   map[string]*pipePeer      // deviceID -> active peer (replaces stale session on reconnect)
-	streams map[string]*pipeStream    // streamID -> active stream
-	rpcs    map[string]chan PipeEvent // rpcID -> awaiting response channel
+	peers   map[string]*pipePeer   // deviceID -> active peer (replaces stale session on reconnect)
+	streams map[string]*pipeStream // streamID -> active stream
+	rpcs    map[string]pendingRPC  // rpcID -> awaiting response (bound to the target device)
 	queued  atomic.Int64
+
+	// OriginPatterns optionally allowlists browser Origins for /v2/ws (host patterns,
+	// e.g. "console.example.com"). Requests without an Origin header are always allowed.
+	OriginPatterns []string
 }
 
 func NewPipeHub(store *Store) *PipeHub {
@@ -78,7 +92,7 @@ func NewPipeHub(store *Store) *PipeHub {
 		store:   store,
 		peers:   map[string]*pipePeer{},
 		streams: map[string]*pipeStream{},
-		rpcs:    map[string]chan PipeEvent{},
+		rpcs:    map[string]pendingRPC{},
 	}
 	store.OnBoxChange = h.NotifyBoxChanged
 	return h
@@ -89,6 +103,11 @@ func NewPipeHub(store *Store) *PipeHub {
 func (h *PipeHub) CallRPC(ctx context.Context, spaceID, targetDeviceID, topic, payload string) (string, error) {
 	if targetDeviceID == "" {
 		return "", ErrInvalidInput
+	}
+	if _, has := ctx.Deadline(); !has {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultRPCTimeout)
+		defer cancel()
 	}
 	h.mu.Lock()
 	target := h.peers[targetDeviceID]
@@ -102,7 +121,7 @@ func (h *PipeHub) CallRPC(ctx context.Context, spaceID, targetDeviceID, topic, p
 	}
 	id := RandomHex(12)
 	ch := make(chan PipeEvent, 1)
-	h.rpcs[id] = ch
+	h.rpcs[id] = pendingRPC{target: targetDeviceID, ch: ch}
 	h.mu.Unlock()
 
 	defer func() {
@@ -143,6 +162,17 @@ func (h *PipeHub) OnlineDevices(spaceID string) []string {
 		if _, ok := p.spaces[spaceID]; ok {
 			out = append(out, p.dev.ID)
 		}
+	}
+	return out
+}
+
+// OnlineDeviceSet returns a snapshot set of all currently connected device IDs.
+func (h *PipeHub) OnlineDeviceSet() map[string]bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]bool, len(h.peers))
+	for id := range h.peers {
+		out[id] = true
 	}
 	return out
 }
@@ -251,7 +281,9 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 		}
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	// Native SDK clients send no Origin header; browsers do. Cross-origin browser
+	// pages are rejected (same-host only) unless explicitly allowlisted.
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.OriginPatterns})
 	if err != nil {
 		return
 	}
@@ -400,11 +432,12 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 			return
 		}
 		h.mu.Lock()
-		ch := h.rpcs[ev.ID]
+		pending, ok := h.rpcs[ev.ID]
 		h.mu.Unlock()
-		if ch != nil {
+		// Only the device the request was sent to may answer it.
+		if ok && pending.target == p.dev.ID {
 			select {
-			case ch <- ev:
+			case pending.ch <- ev:
 			default:
 			}
 		}

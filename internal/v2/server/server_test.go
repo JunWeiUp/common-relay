@@ -528,3 +528,167 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 	}
 	fmt.Printf("admin status snapshot: %v\n", st["status"])
 }
+
+func TestAdminTopologyAndSecretSanitization(t *testing.T) {
+	e := newEnv(t)
+
+	// 1. Project a managed E2E group with app metadata and a manager role.
+	if err := e.srv.Store.SyncManagedGroupWithApp("g-1234567890abcdef", "vaultapp", "VaultApp", []core.ManagedMember{
+		{ID: "mac-pro", Name: "MacBook Pro", PublicKey: fakePubKey(), TokenHash: core.HashSecret("tok-mac"), Manager: true},
+		{ID: "phone-1", Name: "Phone", PublicKey: fakePubKey(), TokenHash: core.HashSecret("tok-phone"), Manager: false},
+	}, nil, false); err != nil {
+		t.Fatalf("SyncManagedGroupWithApp: %v", err)
+	}
+
+	// 2. Create a bridge space + box + webhook plugin containing secrets + webdav plugin with accounts.
+	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "personal", "name": "Personal", "trust_level": "bridge_allowed"})
+	e.adminJSON("POST", "/v2/admin/spaces/personal/boxes", map[string]any{"name": "demo-hook", "mode": "queue"})
+	code, _ := e.adminJSON("PUT", "/v2/admin/plugins", map[string]any{
+		"plugin_id": "webhook",
+		"mount":     "demo-hook-mobile",
+		"space_id":  "personal",
+		"box_name":  "demo-hook",
+		"config": map[string]any{
+			"token_sha256": core.HashSecret("super-secret-token"),
+			"hmac_secret":  "super-secret-hmac-value",
+			"tag":          "device-tag",
+		},
+	})
+	if code != 200 {
+		t.Fatalf("upsert webhook = %d", code)
+	}
+	code, _ = e.adminJSON("PUT", "/v2/admin/plugins", map[string]any{
+		"plugin_id": "webdav",
+		"mount":     "backup",
+		"space_id":  "personal",
+		"box_name":  "webdav",
+	})
+	if code != 200 {
+		t.Fatalf("upsert webdav = %d", code)
+	}
+	code, _ = e.adminJSON("PUT", "/v2/admin/plugins/webdav/backup/accounts", map[string]any{
+		"scope_key":     "bills",
+		"username":      "u_bills",
+		"secret_sha256": core.HashSecret("dav-secret-pass"),
+		"mode":          "queue",
+	})
+	if code != 200 {
+		t.Fatalf("upsert webdav account = %d", code)
+	}
+
+	// 3. Verify GET /v2/admin/spaces returns enriched app, members (with roles), and boxes.
+	code, spRes := e.adminJSON("GET", "/v2/admin/spaces", nil)
+	if code != 200 || spRes["ok"] != true {
+		t.Fatalf("GET spaces = %d %v", code, spRes)
+	}
+	rawSpaces, _ := json.Marshal(spRes["spaces"])
+	var spaces []core.Space
+	if err := json.Unmarshal(rawSpaces, &spaces); err != nil {
+		t.Fatalf("unmarshal spaces: %v", err)
+	}
+	var gotGroup, gotPersonal *core.Space
+	for i := range spaces {
+		switch spaces[i].ID {
+		case "g-1234567890abcdef":
+			gotGroup = &spaces[i]
+		case "personal":
+			gotPersonal = &spaces[i]
+		}
+	}
+	if gotGroup == nil || gotGroup.App != "vaultapp" || len(gotGroup.Members) != 2 {
+		t.Fatalf("expected enriched E2E group, got %+v", gotGroup)
+	}
+	if gotGroup.Members[0].DeviceID != "mac-pro" || gotGroup.Members[0].Role != core.RoleAdmin {
+		t.Fatalf("expected manager promoted to admin role first, got %+v", gotGroup.Members)
+	}
+	if gotPersonal == nil || len(gotPersonal.Boxes) != 1 || gotPersonal.Boxes[0].Name != "demo-hook" {
+		t.Fatalf("expected enriched boxes on personal space, got %+v", gotPersonal)
+	}
+
+	// 4. Verify GET /v2/admin/plugins returns summary + accounts and NEVER leaks secrets.
+	code, plRes := e.adminJSON("GET", "/v2/admin/plugins", nil)
+	if code != 200 || plRes["ok"] != true {
+		t.Fatalf("GET plugins = %d %v", code, plRes)
+	}
+	rawPlugins, _ := json.Marshal(plRes)
+	bodyStr := string(rawPlugins)
+	for _, secret := range []string{"super-secret-hmac-value", core.HashSecret("super-secret-token"), core.HashSecret("dav-secret-pass"), "secret_hash"} {
+		if strings.Contains(bodyStr, secret) {
+			t.Fatalf("GET /v2/admin/plugins leaked secret %q in payload: %s", secret, bodyStr)
+		}
+	}
+	// Secret key *names* may appear in secret_keys/schema, never in config_json.
+	for _, b := range plRes["bindings"].([]any) {
+		cj, _ := b.(map[string]any)["config_json"].(string)
+		if strings.Contains(cj, "hmac_secret") || strings.Contains(cj, "token_sha256") {
+			t.Fatalf("config_json carries secret keys: %s", cj)
+		}
+	}
+	var bindings []core.PluginBinding
+	rawB, _ := json.Marshal(plRes["bindings"])
+	if err := json.Unmarshal(rawB, &bindings); err != nil {
+		t.Fatalf("unmarshal bindings: %v", err)
+	}
+	var gotWH, gotDAV *core.PluginBinding
+	for i := range bindings {
+		switch bindings[i].PluginID {
+		case "webhook":
+			gotWH = &bindings[i]
+		case "webdav":
+			gotDAV = &bindings[i]
+		}
+	}
+	if gotWH == nil || gotWH.Summary == nil || gotWH.Summary.Tag != "device-tag" || !gotWH.Summary.HasHMAC || !gotWH.Summary.HasToken {
+		t.Fatalf("expected webhook summary, got %+v", gotWH)
+	}
+	if gotDAV == nil || len(gotDAV.Accounts) != 1 || gotDAV.Accounts[0].Username != "u_bills" || gotDAV.Accounts[0].ScopeKey != "bills" {
+		t.Fatalf("expected webdav accounts view, got %+v", gotDAV)
+	}
+}
+
+func TestAdminAccessPasswordRotation(t *testing.T) {
+	e := newEnv(t)
+	var syncedHash string
+	e.srv.OnAccessHashChanged = func(h string) { syncedHash = h }
+
+	// 1. Read current access password metadata (must not expose full hash).
+	code, meta := e.adminJSON("GET", "/v2/admin/access-password", nil)
+	if code != 200 || meta["ok"] != true || meta["configured"] != true {
+		t.Fatalf("GET access-password = %d %v", code, meta)
+	}
+
+	// 2. Rotate access password via SHA-256 hash.
+	newPass := "rotated-relay-access-2026!"
+	newHash := core.HashSecret(newPass)
+	code, upd := e.adminJSON("PUT", "/v2/admin/access-password", map[string]any{"access_hash": newHash})
+	if code != 200 || upd["ok"] != true || upd["hash_prefix"] != newHash[:8] {
+		t.Fatalf("PUT access-password = %d %v", code, upd)
+	}
+	if syncedHash != newHash {
+		t.Fatalf("OnAccessHashChanged got %q, want %q", syncedHash, newHash)
+	}
+
+	// 3. Old access password MUST immediately be rejected (401).
+	resp := e.do("GET", "/v2/admin/status", nil, map[string]string{
+		"Relay-Access":  e.access,
+		"Authorization": "Bearer " + e.rootAdmin,
+	})
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("old Relay-Access should fail with 401, got %d", resp.StatusCode)
+	}
+
+	// 4. New access password succeeds and persists in v2_settings.
+	resp = e.do("GET", "/v2/admin/status", nil, map[string]string{
+		"Relay-Access":  newPass,
+		"Authorization": "Bearer " + e.rootAdmin,
+	})
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("new Relay-Access should succeed with 200, got %d", resp.StatusCode)
+	}
+	saved, _, ok, err := e.srv.Store.GetSetting("access_hash")
+	if err != nil || !ok || saved != newHash {
+		t.Fatalf("persisted access_hash = (%q, %v, %v), want %q", saved, ok, err, newHash)
+	}
+}

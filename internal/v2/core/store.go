@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -29,6 +30,16 @@ type Store struct {
 	SpaceQuota  int64
 	GlobalQuota int64
 	OnBoxChange func(spaceID, boxName, event, ref string, seqOrVer int64)
+
+	// ExternalUsage reports bytes held by other stores sharing the same quota
+	// (the v1 relay.db when both protocols run in one process), so the global
+	// quota bounds the whole data directory rather than each store separately.
+	ExternalUsage func() int64
+	// DiskReserve is the minimum free space (bytes) that must remain on the data
+	// volume after any write. Zero disables the check.
+	DiskReserve uint64
+
+	secretKey *[32]byte
 }
 
 func OpenStore(dir string) (*Store, error) {
@@ -59,6 +70,7 @@ CREATE TABLE IF NOT EXISTS v2_devices (
 CREATE TABLE IF NOT EXISTS v2_spaces (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL DEFAULT '',
+	app TEXT NOT NULL DEFAULT '',
 	trust_level TEXT NOT NULL,
 	created_at INTEGER NOT NULL
 );
@@ -149,18 +161,38 @@ CREATE TABLE IF NOT EXISTS v2_plugin_accounts (
 	PRIMARY KEY (binding_id, scope_key),
 	UNIQUE (binding_id, username)
 );
+
+CREATE TABLE IF NOT EXISTS v2_settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+);
 `
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	_ = os.Chmod(dbPath, 0o600)
-	return &Store{
+	st := &Store{
 		DB:          db,
 		Dir:         dir,
 		SpaceQuota:  DefaultSpaceQuota,
 		GlobalQuota: DefaultGlobalQuota,
-	}, nil
+	}
+	if st.secretKey, err = loadOrCreateSecretKey(filepath.Join(dir, "plugin-secrets.key")); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := st.sealPendingSecrets(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	st.SweepOrphanBlobs()
+	return st, nil
 }
 
 func (s *Store) Close() error {
@@ -168,6 +200,34 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.DB.Close()
+}
+
+// GetSetting reads a persisted runtime setting from v2_settings.
+func (s *Store) GetSetting(key string) (string, int64, bool, error) {
+	var val string
+	var updatedAt int64
+	err := s.DB.QueryRow(`SELECT value, updated_at FROM v2_settings WHERE key=?`, key).Scan(&val, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, err
+	}
+	return val, updatedAt, true, nil
+}
+
+// SetSetting atomically upserts a runtime setting into v2_settings.
+func (s *Store) SetSetting(key, value string) (int64, error) {
+	if strings.TrimSpace(key) == "" {
+		return 0, ErrInvalidInput
+	}
+	now := time.Now().Unix()
+	_, err := s.DB.Exec(
+		`INSERT INTO v2_settings(key, value, updated_at) VALUES(?,?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		key, value, now,
+	)
+	return now, err
 }
 
 func (s *Store) blobPath(blobID string) string {
@@ -217,26 +277,33 @@ func (s *Store) writeBlob(r io.Reader, maxBytes int64) (blobID string, size int6
 	return blobID, n, hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// UsedBytes returns the bytes held by all v2 spaces (O(1) via v2_usage).
+func (s *Store) UsedBytes() (int64, error) {
+	var n int64
+	err := s.DB.QueryRow(`SELECT COALESCE(SUM(bytes),0) FROM v2_usage`).Scan(&n)
+	return n, err
+}
+
 func (s *Store) checkQuotaTx(tx *sql.Tx, spaceID string, extra int64) error {
 	if extra < 0 {
 		return ErrInvalidInput
 	}
+	// v2_usage is maintained by triggers (see migrate.go), so this is O(1).
 	var globalUsed, spaceUsed int64
-	q := `SELECT COALESCE(SUM(sz), 0), COALESCE(SUM(CASE WHEN space_id=? THEN sz ELSE 0 END), 0)
-	      FROM (
-	        SELECT space_id, size AS sz FROM v2_box_items
-	        UNION ALL
-	        SELECT space_id, size AS sz FROM v2_box_objects
-	        UNION ALL
-	        SELECT space_id, length(body) AS sz FROM v2_messages
-	      )`
+	q := `SELECT COALESCE(SUM(bytes), 0), COALESCE(SUM(CASE WHEN space_id=? THEN bytes ELSE 0 END), 0) FROM v2_usage`
 	if err := tx.QueryRow(q, spaceID).Scan(&globalUsed, &spaceUsed); err != nil {
 		return err
+	}
+	if s.ExternalUsage != nil {
+		globalUsed += s.ExternalUsage()
 	}
 	if s.SpaceQuota > 0 && spaceUsed+extra > s.SpaceQuota {
 		return ErrQuota
 	}
 	if s.GlobalQuota > 0 && globalUsed+extra > s.GlobalQuota {
+		return ErrQuota
+	}
+	if s.DiskReserve > 0 && !diskHasRoom(s.Dir, s.DiskReserve) {
 		return ErrQuota
 	}
 	return nil
@@ -342,7 +409,7 @@ func (s *Store) CreateSpace(id, name string, trust TrustLevel) (Space, error) {
 func (s *Store) GetSpace(id string) (Space, error) {
 	var sp Space
 	var tl string
-	err := s.DB.QueryRow(`SELECT id,name,trust_level,created_at FROM v2_spaces WHERE id=?`, id).Scan(&sp.ID, &sp.Name, &tl, &sp.CreatedAt)
+	err := s.DB.QueryRow(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces WHERE id=?`, id).Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Space{}, ErrNotFound
 	}
@@ -354,7 +421,7 @@ func (s *Store) GetSpace(id string) (Space, error) {
 }
 
 func (s *Store) ListSpaces() ([]Space, error) {
-	rows, err := s.DB.Query(`SELECT id,name,trust_level,created_at FROM v2_spaces ORDER BY created_at, id`)
+	rows, err := s.DB.Query(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -363,11 +430,96 @@ func (s *Store) ListSpaces() ([]Space, error) {
 	for rows.Next() {
 		var sp Space
 		var tl string
-		if err := rows.Scan(&sp.ID, &sp.Name, &tl, &sp.CreatedAt); err != nil {
+		if err := rows.Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy); err != nil {
 			return nil, err
 		}
 		sp.TrustLevel = TrustLevel(tl)
 		out = append(out, sp)
+	}
+	return out, rows.Err()
+}
+
+// ListAllSpaceMembers returns active (non-revoked) members grouped by space_id.
+func (s *Store) ListAllSpaceMembers() (map[string][]SpaceMemberView, error) {
+	rows, err := s.DB.Query(`
+		SELECT m.space_id, m.device_id, d.name, m.role
+		FROM v2_space_members m
+		JOIN v2_devices d ON d.id = m.device_id
+		WHERE d.revoked = 0
+		ORDER BY m.space_id, CASE WHEN m.role='admin' THEN 0 ELSE 1 END, m.added_at, d.name, m.device_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]SpaceMemberView{}
+	for rows.Next() {
+		var sid, role string
+		var mv SpaceMemberView
+		if err := rows.Scan(&sid, &mv.DeviceID, &mv.Name, &role); err != nil {
+			return nil, err
+		}
+		mv.Role = MemberRole(role)
+		out[sid] = append(out[sid], mv)
+	}
+	return out, rows.Err()
+}
+
+// ListAllBoxesWithStats returns every Box grouped by space_id along with live item/object counts and byte totals.
+func (s *Store) ListAllBoxesWithStats() (map[string][]SpaceBoxView, error) {
+	rows, err := s.DB.Query(`
+		SELECT
+			b.space_id,
+			b.name,
+			b.mode,
+			COALESCE(i.cnt, 0) AS item_cnt,
+			COALESCE(o.cnt, 0) AS obj_cnt,
+			COALESCE(i.sz, 0) + COALESCE(o.sz, 0) AS used_bytes
+		FROM v2_boxes b
+		LEFT JOIN (
+			SELECT space_id, box_name, COUNT(*) AS cnt, COALESCE(SUM(size), 0) AS sz
+			FROM v2_box_items
+			GROUP BY space_id, box_name
+		) i ON i.space_id = b.space_id AND i.box_name = b.name
+		LEFT JOIN (
+			SELECT space_id, box_name, COUNT(DISTINCT obj_key) AS cnt, COALESCE(SUM(size), 0) AS sz
+			FROM v2_box_objects
+			GROUP BY space_id, box_name
+		) o ON o.space_id = b.space_id AND o.box_name = b.name
+		ORDER BY b.space_id, b.name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]SpaceBoxView{}
+	for rows.Next() {
+		var sid, mode string
+		var bv SpaceBoxView
+		if err := rows.Scan(&sid, &bv.Name, &mode, &bv.Items, &bv.Objects, &bv.UsedBytes); err != nil {
+			return nil, err
+		}
+		bv.Mode = BoxMode(mode)
+		out[sid] = append(out[sid], bv)
+	}
+	return out, rows.Err()
+}
+
+// SpaceUsedBytes returns total stored bytes per space across box items, objects, and offline messages.
+func (s *Store) SpaceUsedBytes() (map[string]int64, error) {
+	rows, err := s.DB.Query(`SELECT space_id, bytes FROM v2_usage WHERE bytes <> 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var sid string
+		var n int64
+		if err := rows.Scan(&sid, &n); err != nil {
+			return nil, err
+		}
+		out[sid] = n
 	}
 	return out, rows.Err()
 }
@@ -493,14 +645,7 @@ func (s *Store) Status(onlinePeers int, plugins []string) (StatusSnapshot, error
 	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_box_items`).Scan(&st.PendingItems)
 	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_box_objects`).Scan(&st.StoredObjects)
 
-	rows, err := s.DB.Query(`
-		SELECT space_id, COALESCE(SUM(sz), 0) FROM (
-			SELECT space_id, size AS sz FROM v2_box_items
-			UNION ALL
-			SELECT space_id, size AS sz FROM v2_box_objects
-			UNION ALL
-			SELECT space_id, length(body) AS sz FROM v2_messages
-		) GROUP BY space_id`)
+	rows, err := s.DB.Query(`SELECT space_id, bytes FROM v2_usage WHERE bytes <> 0`)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -515,18 +660,32 @@ func (s *Store) Status(onlinePeers int, plugins []string) (StatusSnapshot, error
 	return st, nil
 }
 
+// ManagedSpaceOwner is the provenance tag for spaces projected from v1 signed
+// groups of app. Devices carry ManagedSpaceOwner(app)+":"+group.
+func ManagedSpaceOwner(app string) string { return "v1:" + strings.TrimSpace(app) }
+
+// SyncConflicts counts projected members skipped because their device ID or
+// token already belonged to another identity (exposed for logs/metrics).
+var SyncConflicts atomic.Int64
+
 // ManagedMember describes one active member projected from a signed group ledger into a v2 Space.
 type ManagedMember struct {
 	ID        string
 	Name      string
 	PublicKey string
 	TokenHash string
+	Manager   bool
 }
 
 // SyncManagedGroup mirrors a cryptographically verified self-service group state into v2_spaces,
 // v2_devices, and v2_space_members so group members authenticate natively on /v2/ws.
 // Admin devices and unrelated spaces are never altered.
 func (s *Store) SyncManagedGroup(spaceID, name string, members []ManagedMember, removed []string, closed bool) error {
+	return s.SyncManagedGroupWithApp(spaceID, "", name, members, removed, closed)
+}
+
+// SyncManagedGroupWithApp mirrors a signed group state including its originating app namespace.
+func (s *Store) SyncManagedGroupWithApp(spaceID, app, name string, members []ManagedMember, removed []string, closed bool) error {
 	if !ValidIdent(spaceID) {
 		return ErrInvalidInput
 	}
@@ -537,12 +696,32 @@ func (s *Store) SyncManagedGroup(spaceID, name string, members []ManagedMember, 
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(
-		`INSERT INTO v2_spaces(id, name, trust_level, created_at) VALUES(?,?,?,?)
-		 ON CONFLICT(id) DO UPDATE SET name=excluded.name`,
-		spaceID, strings.TrimSpace(name), string(TrustStrictE2E), now,
-	); err != nil {
+	appNorm := strings.TrimSpace(app)
+	owner := ManagedSpaceOwner(appNorm)
+	devOwner := owner + ":" + spaceID
+
+	// Provenance guard: only ever touch a space this exact (app, group) projection
+	// created. A same-named admin space or another app's group is never merged.
+	var curOwner string
+	switch err := tx.QueryRow(`SELECT managed_by FROM v2_spaces WHERE id=?`, spaceID).Scan(&curOwner); {
+	case errors.Is(err, sql.ErrNoRows):
+		if closed {
+			return tx.Commit()
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO v2_spaces(id, name, app, trust_level, created_at, managed_by) VALUES(?,?,?,?,?,?)`,
+			spaceID, strings.TrimSpace(name), appNorm, string(TrustStrictE2E), now, owner,
+		); err != nil {
+			return err
+		}
+	case err != nil:
 		return err
+	case curOwner != owner:
+		return fmt.Errorf("%w: space %s is owned by %q, refusing projection from %q", ErrConflict, spaceID, curOwner, owner)
+	default:
+		if _, err := tx.Exec(`UPDATE v2_spaces SET name=? WHERE id=?`, strings.TrimSpace(name), spaceID); err != nil {
+			return err
+		}
 	}
 
 	active := make(map[string]struct{}, len(members))
@@ -556,30 +735,42 @@ func (s *Store) SyncManagedGroup(spaceID, name string, members []ManagedMember, 
 		if _, err := hex.DecodeString(m.TokenHash); err != nil {
 			continue
 		}
-		active[m.ID] = struct{}{}
-		var isAdmin int
-		err := tx.QueryRow(`SELECT is_admin FROM v2_devices WHERE id=?`, m.ID).Scan(&isAdmin)
+		var devManagedBy string
+		err := tx.QueryRow(`SELECT managed_by FROM v2_devices WHERE id=?`, m.ID).Scan(&devManagedBy)
 		if err == sql.ErrNoRows {
 			if _, err := tx.Exec(
-				`INSERT INTO v2_devices(id, name, public_key, token_hash, is_admin, revoked, created_at) VALUES(?,?,?,?,0,0,?)`,
-				m.ID, strings.TrimSpace(m.Name), strings.ToLower(m.PublicKey), strings.ToLower(m.TokenHash), now,
+				`INSERT INTO v2_devices(id, name, public_key, token_hash, is_admin, revoked, created_at, managed_by) VALUES(?,?,?,?,0,0,?,?)`,
+				m.ID, strings.TrimSpace(m.Name), strings.ToLower(m.PublicKey), strings.ToLower(m.TokenHash), now, devOwner,
 			); err != nil {
+				if strings.Contains(err.Error(), "UNIQUE") {
+					// Token hash already belongs to another device: skip, never steal.
+					SyncConflicts.Add(1)
+					continue
+				}
 				return err
 			}
 		} else if err != nil {
 			return err
-		} else if isAdmin == 0 {
-			if _, err := tx.Exec(
-				`UPDATE v2_devices SET name=?, public_key=?, token_hash=?, revoked=0 WHERE id=? AND is_admin=0`,
-				strings.TrimSpace(m.Name), strings.ToLower(m.PublicKey), strings.ToLower(m.TokenHash), m.ID,
-			); err != nil {
-				return err
-			}
+		} else if devManagedBy != devOwner {
+			// Device ID is owned by an admin-created device or by another group's
+			// projection. Overwriting its token would hijack (or break) that identity.
+			SyncConflicts.Add(1)
+			continue
+		} else if _, err := tx.Exec(
+			`UPDATE v2_devices SET name=?, public_key=?, token_hash=?, revoked=0 WHERE id=? AND managed_by=?`,
+			strings.TrimSpace(m.Name), strings.ToLower(m.PublicKey), strings.ToLower(m.TokenHash), m.ID, devOwner,
+		); err != nil {
+			return err
+		}
+		active[m.ID] = struct{}{}
+		role := RoleMember
+		if m.Manager {
+			role = RoleAdmin
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO v2_space_members(space_id, device_id, role, added_at) VALUES(?,?,?,?)
 			 ON CONFLICT(space_id, device_id) DO UPDATE SET role=excluded.role`,
-			spaceID, m.ID, string(RoleMember), now,
+			spaceID, m.ID, string(role), now,
 		); err != nil {
 			return err
 		}
@@ -614,7 +805,8 @@ func (s *Store) SyncManagedGroup(spaceID, name string, members []ManagedMember, 
 		}
 		var remaining int
 		if err := tx.QueryRow(`SELECT count(*) FROM v2_space_members WHERE device_id=?`, devID).Scan(&remaining); err == nil && remaining == 0 {
-			_, _ = tx.Exec(`UPDATE v2_devices SET revoked=1 WHERE id=? AND is_admin=0`, devID)
+			// Only revoke identities this group projection owns.
+			_, _ = tx.Exec(`UPDATE v2_devices SET revoked=1 WHERE id=? AND is_admin=0 AND managed_by=?`, devID, devOwner)
 		}
 	}
 	return tx.Commit()

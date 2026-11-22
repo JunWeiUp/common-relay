@@ -2,19 +2,28 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
+	"strconv"
 	"sync"
 
 	"github.com/coder/websocket"
 )
 
 const (
-	streamWindow     = 8  // Unconsumed records per direction allowed by the relay.
-	streamQueueLimit = 16 // Local receive buffer; a peer exceeding it is cut off.
+	streamWindow     = 8  // Unconsumed records per direction allowed by the relay (v1).
+	streamWindowV2   = 16 // Bounded window over v2 PipeHub (PeerOutQueueSize=64).
+	streamQueueLimit = 32 // Local receive buffer; a peer exceeding it is cut off.
 )
+
+func newStreamIDV2() (string, error) {
+	var data [8]byte
+	_, err := rand.Read(data[:])
+	return hex.EncodeToString(data[:]), err
+}
 
 type streamFrame struct {
 	sequence uint64
@@ -108,11 +117,18 @@ func (s *Stream) Send(ctx context.Context, data []byte, final bool) error {
 			s.terminate(err)
 			return err
 		}
-		frame := make([]byte, 25+len(cipher))
-		frame[0] = 1
-		hex.Decode(frame[1:17], []byte(s.id))
-		binary.BigEndian.PutUint64(frame[17:25], sequence)
-		copy(frame[25:], cipher)
+		var frame []byte
+		if s.client.v2 {
+			frame = make([]byte, 16+len(cipher))
+			copy(frame[:16], s.id)
+			copy(frame[16:], cipher)
+		} else {
+			frame = make([]byte, 25+len(cipher))
+			frame[0] = 1
+			hex.Decode(frame[1:17], []byte(s.id))
+			binary.BigEndian.PutUint64(frame[17:25], sequence)
+			copy(frame[25:], cipher)
+		}
 		if err = s.client.write(websocket.MessageBinary, frame); err != nil {
 			return err
 		}
@@ -134,7 +150,11 @@ func (s *Stream) reserve(ctx context.Context) (uint64, error) {
 			s.mu.Unlock()
 			return 0, err
 		}
-		if s.tx-s.acked < streamWindow {
+		win := uint64(streamWindow)
+		if s.client.v2 {
+			win = streamWindowV2
+		}
+		if s.tx-s.acked < win {
 			sequence := s.tx
 			s.tx++
 			s.mu.Unlock()
@@ -190,7 +210,7 @@ func (s *Stream) Receive(ctx context.Context) ([]byte, error) {
 	case <-s.done:
 		return nil, s.Err()
 	}
-	if frame.sequence != s.rx {
+	if !s.client.v2 && frame.sequence != s.rx {
 		err := errors.New("invalid stream sequence")
 		s.terminate(err)
 		return nil, err
@@ -201,7 +221,17 @@ func (s *Stream) Receive(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	s.rx++
-	if err = s.client.send(ctx, Event{Type: "stream.credit", ID: s.id, Sequence: s.rx}); err != nil {
+	if s.client.v2 {
+		if err = s.client.send(ctx, Event{
+			Type:  "msg",
+			Space: s.client.identity.group,
+			To:    s.peer,
+			Topic: "stream.credit",
+			Body:  s.id + ":" + strconv.FormatUint(s.rx, 10),
+		}); err != nil {
+			return nil, err
+		}
+	} else if err = s.client.send(ctx, Event{Type: "stream.credit", ID: s.id, Sequence: s.rx}); err != nil {
 		return nil, err
 	}
 	return plain, nil
@@ -214,11 +244,19 @@ func (s *Stream) ReceivedFinal() bool {
 	return s.pull != nil && s.pull.finished
 }
 
+func (c *Client) streamCloseEvent(id string) Event {
+	ev := Event{Type: "stream.close", ID: id}
+	if c.v2 {
+		ev.Space = c.identity.group
+	}
+	return ev
+}
+
 // terminate ends the stream locally and tells the relay, which notifies the peer.
 func (s *Stream) terminate(err error) {
 	if s.abort(err) {
 		s.client.removeStream(s.id)
-		s.client.send(s.client.ctx, Event{Type: "stream.close", ID: s.id})
+		s.client.send(s.client.ctx, s.client.streamCloseEvent(s.id))
 	}
 }
 
@@ -231,7 +269,7 @@ func (s *Stream) Close() error {
 	if s.client.Err() != nil {
 		return nil
 	}
-	return s.client.send(s.client.ctx, Event{Type: "stream.close", ID: s.id})
+	return s.client.send(s.client.ctx, s.client.streamCloseEvent(s.id))
 }
 
 func (c *Client) stream(id string) *Stream {
@@ -262,6 +300,20 @@ func (c *Client) removeStream(id string) *Stream {
 }
 
 func (c *Client) dispatchFrame(raw []byte) error {
+	if c.v2 {
+		if len(raw) < 16+secretStreamABytes || len(raw) > 16+streamRecordPlain+secretStreamABytes {
+			return errors.New("invalid binary frame")
+		}
+		id := string(raw[:16])
+		s := c.stream(id)
+		if s == nil {
+			return nil
+		}
+		if !s.enqueue(streamFrame{0, raw[16:]}) {
+			s.terminate(errors.New("stream receive overflow"))
+		}
+		return nil
+	}
 	if len(raw) < 25+secretStreamABytes || len(raw) > 25+streamRecordPlain+secretStreamABytes || raw[0] != 1 {
 		return errors.New("invalid binary frame")
 	}
@@ -278,7 +330,13 @@ func (c *Client) dispatchFrame(raw []byte) error {
 
 // OpenStream asks a pinned peer for a stream and waits for its acceptance.
 func (c *Client) OpenStream(ctx context.Context, to string) (*Stream, error) {
-	id, err := newID()
+	var id string
+	var err error
+	if c.v2 {
+		id, err = newStreamIDV2()
+	} else {
+		id, err = newID()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -297,11 +355,16 @@ func (c *Client) OpenStream(ctx context.Context, to string) (*Stream, error) {
 	fail := func(err error) (*Stream, error) {
 		if s.abort(err) {
 			c.removeStream(id)
-			c.send(c.ctx, Event{Type: "stream.close", ID: id})
+			c.send(c.ctx, c.streamCloseEvent(id))
 		}
 		return nil, err
 	}
-	result, err := c.request(ctx, Event{Type: "stream.open", ID: id, To: to, Body: body}, "stream.accept")
+	openEv := Event{Type: "stream.open", ID: id, To: to, Body: body}
+	if c.v2 {
+		openEv.Space = c.identity.group
+		openEv.Topic = "stream"
+	}
+	result, err := c.request(ctx, openEv, "stream.accept")
 	if err != nil {
 		return fail(err)
 	}
@@ -344,10 +407,20 @@ func (c *Client) AcceptStream(ctx context.Context, event Event) (*Stream, error)
 	if err = c.addStream(s); err != nil {
 		return nil, err
 	}
+	if c.v2 {
+		if err = c.send(ctx, Event{Type: "stream.accept", Space: c.identity.group, ID: event.ID, Body: body}); err != nil {
+			if s.abort(err) {
+				c.removeStream(event.ID)
+				c.send(c.ctx, c.streamCloseEvent(event.ID))
+			}
+			return nil, err
+		}
+		return s, nil
+	}
 	if _, err = c.request(ctx, Event{Type: "stream.accept", ID: event.ID, Body: body}, "stream.ready"); err != nil {
 		if s.abort(err) {
 			c.removeStream(event.ID)
-			c.send(c.ctx, Event{Type: "stream.close", ID: event.ID})
+			c.send(c.ctx, c.streamCloseEvent(event.ID))
 		}
 		return nil, err
 	}
@@ -356,8 +429,12 @@ func (c *Client) AcceptStream(ctx context.Context, event Event) (*Stream, error)
 
 // RejectStream declines a stream.open event instead of letting it time out.
 func (c *Client) RejectStream(ctx context.Context, event Event) error {
-	if event.Type != "stream.open" || !objectID.MatchString(event.ID) {
+	validID := objectID.MatchString(event.ID)
+	if c.v2 {
+		validID = streamIDV2.MatchString(event.ID)
+	}
+	if event.Type != "stream.open" || !validID {
 		return errors.New("not a stream request")
 	}
-	return c.send(ctx, Event{Type: "stream.close", ID: event.ID})
+	return c.send(ctx, c.streamCloseEvent(event.ID))
 }

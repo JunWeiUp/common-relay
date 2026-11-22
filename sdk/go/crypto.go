@@ -18,8 +18,16 @@ import (
 )
 
 var objectID = regexp.MustCompile(`^[a-f0-9]{32}$`)
+var streamIDV2 = regexp.MustCompile(`^[a-f0-9]{16}$`)
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
+
+func validEnvelopeID(kind, id string) bool {
+	if objectID.MatchString(id) {
+		return true
+	}
+	return (kind == "stream.open" || kind == "stream.accept") && streamIDV2.MatchString(id)
+}
 
 // Identity holds a local key and a copy of the out-of-band pinned trust map.
 type Identity struct {
@@ -93,7 +101,7 @@ func (i *Identity) streamAAD(from, to, kind, id string, sequence uint64) []byte 
 
 // sealEnvelope encrypts {"context":[...],"value":value} for a pinned peer.
 func (i *Identity) sealEnvelope(to, kind, id string, value any) (string, error) {
-	if !objectID.MatchString(id) {
+	if !validEnvelopeID(kind, id) {
 		return "", errors.New("invalid object ID")
 	}
 	peer, ok := i.trusted[to]
@@ -117,7 +125,7 @@ func (i *Identity) sealEnvelope(to, kind, id string, value any) (string, error) 
 
 // openEnvelope authenticates a pinned sender and the exact routing context.
 func (i *Identity) openEnvelope(from, kind, id, body string, value any) error {
-	if !objectID.MatchString(id) {
+	if !validEnvelopeID(kind, id) {
 		return errors.New("invalid object ID")
 	}
 	peer, ok := i.trusted[from]

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### v2（实验性，需 `--v2-admin-hash-file`）
+
+- **安全**：v1 签名组投影到 v2 时记录来源（`managed_by`），不再合并到同 ID 的管理员空间、其他应用的组或管理员创建的设备；冲突拒绝并计数，投影只吊销自己创建的设备。
+- **安全**：吊销设备或修改空间角色会立即断开其 `/v2/ws` 会话；RPC 响应只接受目标设备回复，默认 15 秒超时（MCP 10 秒），等待槽位先于鉴权 RPC 占用。
+- **安全**：插件失败限流改为按「绑定 + 客户端 IP」计数（仅信任回环/指定代理的转发头），攻击者不能把合法客户端锁在外面。
+- **安全**：插件密钥（令牌哈希、HMAC 密钥）只写不读，与公开配置分列存储并用 `plugin-secrets.key` 加密；账户密码改为加盐 scrypt（旧 SHA-256 记录仍可验证）。
+- 可选封存：桥接插件配置 `seal_public_key` 后，Webhook/Drop/WebDAV 收到的明文在落盘前按 `crs1` 格式封存给消费端公钥；Go SDK 提供 `OpenSealed`。
+- 新增 `GET /v2/me`：设备令牌返回自身设备信息（Root Admin 返回 `root_admin:true`），管理端创建 Space 后可把自己加为成员；Go / Dart / Java / Rust / Swift SDK 均提供 `Me()`（`me()`）。
+- 新增 `PATCH /v2/admin/plugins/{id}/{mount}`（合并更新、`null` 删除、`if_version` 乐观锁）与 `GET` 单个绑定；`PUT` 省略的密钥保持不变，停用/启用无需轮换令牌；`GET /v2/admin/plugins` 返回插件配置 Schema，未知配置键直接 400。
+- Webhook：签名重放 409、`Idempotency-Key` 7 天回执去重、请求体上限可配（最大 64 MiB）；Drop/MCP 补齐配置校验。
+- 配额：v1/v2 共用全局配额并检查磁盘余量（`--disk-reserve`），v2 用量改由触发器维护的计数表 O(1) 读取；启动和定期清理孤立 blob。
+- 访问密码单一来源：管理接口轮换后以数据库为准；运维修改 `--access-password-file` 后下次启动以文件为准并记录日志。
+- 路由按完整路径段解析，Box 名保留 `items`/`objects` 段；边缘插件请求体总上限与崩溃兜底；schema 版本由 `PRAGMA user_version` 管理并拒绝更新版本的数据库。
+- 新增 `common-relay import-v1`：把 v1 `--webhook-config`/`--webdav-config` 路由幂等导入为 v2 插件绑定（可加 `--seal-public-key`、`--dry-run`），v1 路由继续可用。
+- Go SDK `v2client`：`PatchPlugin`、`GetPlugin`、`PluginCatalog`、`UpsertPluginAccountPassword`、`IsUnsupported`（识别不支持 PATCH 的旧服务端以回退 PUT）。
+
+### 其他
+
 - SDK 改为按 Git 标签依赖分发：根目录 `Package.swift`（Swift）、JitPack（Java/Kotlin）、Git 子目录依赖（Dart/Python/Go/Rust）及 Release tgz（TypeScript）；新增 `release.yml` 发布工作流，各 SDK 版本统一为 0.1.0，源码快照降为可选。
 - 保持各语言独立 SDK，不依赖共享 Rust 核心或自有多平台原生库。
 - 新增 Kotlin Android 协程接口，复用 Java 的完整协议实现。
@@ -57,7 +75,7 @@
 - Java 修复 Android journal 路径对斜杠的 JSON 编码差异、流关闭后重复读取阻塞和关闭期间的原生状态释放竞态；JNA size_t 使用平台 NativeLong，可信公钥集合兼容 API 26。
 
 
-## 未发布
+## 早期条目（0.1.0 之前，未标注版本）
 
 - 增加可独立运行的 Python 消息、双向流与设备组示例。
 - 整理公开文档、测试命名空间及共享向量，部署脚本改用项目专属插入标记。

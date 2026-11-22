@@ -57,6 +57,7 @@ type SyncedGroupMember struct {
 	Name      string
 	PublicKey string
 	TokenHash string
+	Manager   bool
 }
 
 type Server struct {
@@ -66,6 +67,7 @@ type Server struct {
 	davSlots                       chan struct{}
 	SelfServiceApps                map[string]bool
 	AccessHash                     []byte // SHA-256 of the required Relay-Access password; nil disables the check
+	accessMu                       sync.RWMutex
 	Store                          *Store
 	OnGroupSynced                  func(app, group, groupName string, members []SyncedGroupMember, removed []string, closed bool, revision int)
 	ExtraOnlinePeers               func(app, group string) []string
