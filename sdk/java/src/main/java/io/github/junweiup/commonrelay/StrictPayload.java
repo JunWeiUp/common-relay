@@ -12,7 +12,7 @@ import java.util.Set;
 /** Strict signed-payload scan shared byte for byte with the relay and other SDKs.
  * JSON parsers disagree on duplicate keys, key case, unknown fields, null, number
  * forms and lone surrogates; a signed group record must have exactly one reading
- * everywhere (protocol/README.md, "严格载荷"). Avoids Map.of to stay API 26. */
+ * everywhere (protocol/v2/README.md §7.2 "Strict payload"). Avoids Map.of to stay API 26. */
 final class StrictPayload {
     private StrictPayload(){}
     static final Map<String,String> MEMBER=schema("device s","name s","public_key s","signing_key s","manager b");

@@ -3,7 +3,7 @@ part of '../common_relay.dart';
 // Strict signed-payload scan shared byte for byte with the relay and other
 // SDKs. JSON parsers disagree on duplicate keys, key case, unknown fields,
 // null, number forms and lone surrogates; a signed group record must have
-// exactly one reading everywhere (protocol/README.md, "严格载荷").
+// exactly one reading everywhere (protocol/v2/README.md §7.2 "Strict payload").
 const _member = {'device': ('s', true), 'name': ('s', true), 'public_key': ('s', true), 'signing_key': ('s', true), 'manager': ('b', true)};
 const _state = {'closed': ('b', false), 'name': ('s', false), 'version': ('i', true), 'app': ('s', true), 'group': ('s', true), 'revision': ('i', true), 'previous': ('s', true), 'members': ('M', true), 'invitation': ('s', true), 'request_hash': ('s', true)};
 const _request = {'version': ('i', true), 'app': ('s', true), 'group': ('s', true), 'invitation': ('s', true), 'member': ('m', true), 'token_hash': ('s', true)};

@@ -11,7 +11,7 @@ import (
 // duplicate keys, key case, unknown fields, null, number forms and lone
 // surrogates. Accept one unambiguous shape only, so the relay never stores a
 // record that a client reads differently or cannot read at all. The SDKs run
-// the same byte-level scan (protocol/README.md, "严格载荷").
+// the same byte-level scan (protocol/v2/README.md §7.2 "Strict payload").
 type field struct {
 	kind     byte // s string, i safe integer, b bool, m member, M member list
 	required bool

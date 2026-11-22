@@ -2,7 +2,7 @@
 
 JSON parsers disagree on duplicate keys, key case, unknown fields, null,
 number forms and lone surrogates; a signed group record must have exactly one
-reading everywhere (protocol/README.md, "严格载荷").
+reading everywhere (protocol/v2/README.md §7.2 "Strict payload").
 """
 MEMBER = {'device': ('s', True), 'name': ('s', True), 'public_key': ('s', True), 'signing_key': ('s', True), 'manager': ('b', True)}
 STATE = {'closed': ('b', False), 'name': ('s', False), 'version': ('i', True), 'app': ('s', True), 'group': ('s', True), 'revision': ('i', True), 'previous': ('s', True), 'members': ('M', True), 'invitation': ('s', True), 'request_hash': ('s', True)}

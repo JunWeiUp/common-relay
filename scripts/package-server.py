@@ -40,7 +40,7 @@ def main():
             for doc in ('DEPLOYMENT.md', 'DEVICE-GROUPS.md', 'WEBHOOKS.md'):
                 shutil.copy2(ROOT / 'docs' / doc, stage / 'docs' / doc)
             (stage / 'protocol').mkdir()
-            shutil.copy2(ROOT / 'protocol/README.md', stage / 'protocol/README.md')
+            shutil.copy2(ROOT / 'protocol/v2/README.md', stage / 'protocol/README.md')
             shutil.copy2(ROOT / 'LICENSE', stage / 'LICENSE')
             (stage / 'README.txt').write_text(
                 f'Common Relay server {args.version} / linux-{arch}\n'
