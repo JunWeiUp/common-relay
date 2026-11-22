@@ -1,4 +1,4 @@
-from .client import Client, Stream, RelayError
+from .client import Client, RelayError
 from .crypto import Identity
 
-__all__ = ['Client', 'Stream', 'RelayError', 'Identity']
+__all__ = ['Client', 'RelayError', 'Identity']

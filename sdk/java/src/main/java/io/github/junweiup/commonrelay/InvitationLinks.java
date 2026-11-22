@@ -38,8 +38,8 @@ public final class InvitationLinks {
     /** @param password optional server access password, appended to the fragment (never sent over HTTP) as ".base64url(ASCII)". */
     public static String make(JSONObject invitation,byte[] key,String password)throws Exception{
         URI u=new URI(invitation.getString("url"));String suffix=password==null?"":"."+base64url(RelayAccess.validate(password).getBytes(StandardCharsets.US_ASCII));
-        String prefix="/v2/ws".equals(u.getPath())?"/v2/i/":"/i/";
-        return "common-relay://"+u.getRawAuthority()+prefix+base64url(Crypto.unhex(invitation.getString("id")))+"#"+base64url(key)+suffix;
+        if(!"/v2/ws".equals(u.getPath()))throw new IOException("Invitation URL must be a /v2/ws relay");
+        return "common-relay://"+u.getRawAuthority()+"/v2/i/"+base64url(Crypto.unhex(invitation.getString("id")))+"#"+base64url(key)+suffix;
     }
     public static final class Parsed {
         public final String url,id;public final byte[] key;
@@ -58,13 +58,12 @@ public final class InvitationLinks {
         if(text.length()>2048)throw new IOException("Invitation too long");URI u=new URI(text);
         if(!"common-relay".equals(u.getScheme())||u.getHost()==null||u.getRawUserInfo()!=null||u.getRawQuery()!=null)throw new IOException("Invalid compact invitation");
         String rawPath=u.getRawPath();
-        boolean isV2=rawPath!=null&&rawPath.matches("/v2/i/[A-Za-z0-9_-]{22}");
-        if(!isV2&&(rawPath==null||!rawPath.matches("/i/[A-Za-z0-9_-]{22}")))throw new IOException("Invalid compact invitation");
+        if(rawPath==null||!rawPath.matches("/v2/i/[A-Za-z0-9_-]{22}"))throw new IOException("Invalid compact invitation");
         String scheme=allowLocalTest&&u.getHost().equals("127.0.0.1")?"ws":"wss";
         String fragment=u.getRawFragment();if(fragment==null)throw new IOException("Invalid compact invitation");
         int dot=fragment.indexOf('.');String key=dot<0?fragment:fragment.substring(0,dot);
         String password=dot<0?null:fragmentPassword(fragment.substring(dot+1));
-        String idPart=rawPath.substring(isV2?6:3);
-        return new Parsed(scheme+"://"+u.getRawAuthority()+(isV2?"/v2/ws":"/relay/v1/ws"),Crypto.hex(decode(idPart,16)),decode(key,32),password);
+        String idPart=rawPath.substring(6);
+        return new Parsed(scheme+"://"+u.getRawAuthority()+"/v2/ws",Crypto.hex(decode(idPart,16)),decode(key,32),password);
     }
 }

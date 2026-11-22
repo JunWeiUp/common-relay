@@ -3,7 +3,7 @@ import Clibsodium
 
 public enum RelayError: Error { case invalid(String), closed, backpressure }
 
-/// Server-wide access password sent as `Relay-Access` on every `/relay/v1` request.
+/// Server-wide access password sent as `Relay-Access` on every `/v2` request (`/v2/ws`, `/v2/group`, `/v2/enroll`, `/v2/files`).
 public enum RelayAccess {
     public static let header = "Relay-Access"
     /// 8-128 printable ASCII characters (0x21-0x7E). The password itself is never included in errors.

@@ -49,7 +49,10 @@ final class SocketTests: XCTestCase {
     }
 
     private func request(_ port: UInt16) throws -> URLRequest {
-        try RelayClient.upgradeRequest(url: URL(string: "ws://127.0.0.1:\(port)/relay/v1/ws")!, token: "tok", password: "access-pass")
+        var request = URLRequest(url: URL(string: "ws://127.0.0.1:\(port)/v2/ws")!)
+        request.setValue("Bearer tok", forHTTPHeaderField: "Authorization")
+        request.setValue("access-pass", forHTTPHeaderField: RelayAccess.header)
+        return request
     }
 
     func testUpgradeHeadersAndEcho() async throws {
@@ -58,7 +61,7 @@ final class SocketTests: XCTestCase {
         try await socket.open(timeout: 5)
         XCTAssertEqual(server.queue.sync { server.headers["authorization"] }, "Bearer tok")
         XCTAssertEqual(server.queue.sync { server.headers["relay-access"] }, "access-pass")
-        XCTAssertEqual(server.queue.sync { server.headers["subprotocols"] }, "common-relay.v1")
+        XCTAssertEqual(server.queue.sync { server.headers["subprotocols"] }, "", "/v2/ws negotiates no subprotocol")
         try await socket.send(.string("hello"))
         guard case .string(let text) = try await socket.receive() else { return XCTFail("expected text") }
         XCTAssertEqual(text, "hello")

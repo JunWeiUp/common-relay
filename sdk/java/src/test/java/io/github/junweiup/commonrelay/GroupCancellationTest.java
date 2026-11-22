@@ -16,7 +16,7 @@ public class GroupCancellationTest {
         Thread t=new Thread(()->{try{while(true){Socket s=server.accept();held.add(s);hits.incrementAndGet();started.countDown();}}catch(Exception ignored){}});
         t.setDaemon(true);t.start();return server;
     }
-    private static String url(ServerSocket s){return "ws://127.0.0.1:"+s.getLocalPort()+"/relay/v1/ws";}
+    private static String url(ServerSocket s){return "ws://127.0.0.1:"+s.getLocalPort()+"/v2/ws";}
 
     @Test public void interruptCancelsInFlightRequest()throws Exception{
         AtomicInteger hits=new AtomicInteger();CountDownLatch started=new CountDownLatch(1);java.util.List<Socket> held=new CopyOnWriteArrayList<>();

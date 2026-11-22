@@ -22,13 +22,8 @@ final class RelaySocket: @unchecked Sendable {
         let options = NWProtocolWebSocket.Options()
         options.autoReplyPing = true
         options.maximumMessageSize = maximumMessageSize
-        var headers: [(name: String, value: String)] = []
-        for (name, value) in (request.allHTTPHeaderFields ?? [:]).sorted(by: { $0.key < $1.key }) {
-            if name.caseInsensitiveCompare("Sec-WebSocket-Protocol") == .orderedSame {
-                options.setSubprotocols(value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
-            } else { headers.append((name, value)) }
-        }
-        options.setAdditionalHeaders(headers)
+        // `/v2/ws` negotiates no subprotocol; every request header is forwarded as-is.
+        options.setAdditionalHeaders((request.allHTTPHeaderFields ?? [:]).sorted(by: { $0.key < $1.key }).map { (name: $0.key, value: $0.value) })
         let parameters: NWParameters = scheme == "wss" ? .tls : .tcp
         parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)
         connection = NWConnection(to: .url(url), using: parameters)
@@ -121,7 +116,7 @@ final class RelaySocket: @unchecked Sendable {
         components.scheme = components.scheme?.lowercased() == "ws" ? "http" : "https"
         guard let url = components.url else { return error }
         var probe = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
-        for (name, value) in request.allHTTPHeaderFields ?? [:] where name.caseInsensitiveCompare("Sec-WebSocket-Protocol") != .orderedSame { probe.setValue(value, forHTTPHeaderField: name) }
+        for (name, value) in request.allHTTPHeaderFields ?? [:] { probe.setValue(value, forHTTPHeaderField: name) }
         guard let (_, response) = try? await RelayHTTP.session.data(for: probe), let status = (response as? HTTPURLResponse)?.statusCode else { return error }
         if status == 401 || status == 403 { return NSError(domain: NSURLErrorDomain, code: NSURLErrorUserAuthenticationRequired, userInfo: [NSLocalizedDescriptionKey: "relay upgrade rejected (\(status))"]) }
         return error

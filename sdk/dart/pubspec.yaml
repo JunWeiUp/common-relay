@@ -1,5 +1,5 @@
 name: common_relay
-description: Common Relay v1 client with pinned peer encryption and bounded streams.
+description: Common Relay v2 client (pipe, signed groups, encrypted files) with pinned peer encryption and bounded streams.
 version: 0.1.7
 publish_to: none
 environment:

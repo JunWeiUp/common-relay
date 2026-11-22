@@ -12,7 +12,7 @@ python3 -m venv .venv
 .venv/bin/python examples/python/device_groups.py
 ```
 
-> 注意：服务端已移除 v1 传输，Python SDK 仍使用 `/relay/v1/*`，该示例需随 Python SDK 迁到 `/v2` 后才能对新服务端运行（原 `messages.py` 依赖已删除的 v1 消息与 `device-add`，已移除）。
+示例连接 `/v2/ws` 并通过 `/v2/group`、`/v2/enroll` 管理设备组；临时服务使用随机访问密码与 v2 管理员密钥。
 
 - `device_groups.py`：创建签名设备组，演示手动审批和自动加入，以及加密短邀请解析和配置保存。
 - `local_server.py`：共用的临时服务生命周期辅助模块，不是独立示例。
@@ -21,11 +21,10 @@ python3 -m venv .venv
 
 示例显式开启 `allow_local_test`，仅用于回环地址。实际部署使用 WSS；公钥和邀请应经可信渠道交付。实际应用应在发出接入请求前持久化身份和待重试申请，成功后保存 SDK 更新后的配置；本示例不实现崩溃恢复界面。令牌、密钥及完整邀请不应写入日志。
 
-Swift、Dart 和 Java 的完整传输/设备组调用还可参考 `sdk/swift/Examples/RelayProbe`、`sdk/dart/bin/probe.dart` 与 `sdk/java/src/test/java/io/github/junweiup/commonrelay/`。运行这些探针的隔离测试入口见[开发指南](../docs/DEVELOPMENT.md)。
+Swift、Dart 和 Java 的设备组调用还可参考 `sdk/swift/Examples/RelayProbe`、`sdk/dart/bin/probe.dart` 与 `sdk/java/src/test/java/io/github/junweiup/commonrelay/`。运行这些探针的隔离测试入口见[开发指南](../docs/DEVELOPMENT.md)。
 
 ## 其他语言
 
-- [Kotlin](../sdk/kotlin/README.md)：Java 完整能力的协程接口。
-- [TypeScript / Node.js](../sdk/typescript/README.md)、[Go 客户端](../sdk/go/README.md)、[Rust 客户端](../sdk/rust/README.md)：完整能力。先按各 SDK 文档准备工具链，TypeScript 需 `npm ci && npm run build`。
+- [Go 客户端](../sdk/go/README.md)、[Rust 客户端](../sdk/rust/README.md)：先按各 SDK 文档准备工具链。
 
-这些测试探针只允许回环测试配置；正式应用从私有存储载入身份并使用 WSS。离线、流与设备组互通见 [开发指南](../docs/DEVELOPMENT.md#新增语言-sdk)。
+这些测试探针只允许回环测试配置；正式应用从私有存储载入身份并使用 WSS。设备组互通见 [开发指南](../docs/DEVELOPMENT.md#新增语言-sdk)。

@@ -67,6 +67,8 @@ class Files:
         parsed=httpx.URL(url)
         if parsed.scheme!='https' and not (allow_local_test and parsed.scheme=='http' and parsed.host in ('127.0.0.1','localhost')):
             raise ValueError('HTTPS required')
+        if parsed.path.rstrip('/')!='/v2/files':
+            raise ValueError('Common Relay v2 files endpoint (/v2/files) required')
         self.http=httpx.AsyncClient(base_url=url.rstrip('/')+'/',headers={'Authorization':'Bearer '+token,**access_headers(password)},timeout=60,follow_redirects=False,trust_env=False)
 
     async def close(self):

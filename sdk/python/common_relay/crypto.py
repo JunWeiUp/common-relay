@@ -1,7 +1,6 @@
-"""Shared v1 encrypted envelopes. Peer keys MUST be pinned out of band."""
+"""Shared encrypted envelopes (envelope format 1). Peer keys MUST be pinned out of band."""
 import base64
 import json
-import struct
 from nacl.public import PrivateKey, PublicKey, Box
 from nacl import bindings as sodium
 
@@ -70,8 +69,3 @@ class DecryptStream:
 
 def stream_aad(identity, sender, recipient, object_id, sequence, kind='stream'):
     return encode(context(identity.app, identity.group, sender, recipient, kind, object_id) + [sequence])
-
-def frame(object_id, sequence, ciphertext):
-    if len(ciphertext) > 65536:
-        raise ValueError('Record too large')
-    return b'\x01' + bytes.fromhex(object_id) + struct.pack('>Q', sequence) + ciphertext

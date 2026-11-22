@@ -1,4 +1,4 @@
-//! Encrypted staged files and the `/relay/v1/files` HTTP API.
+//! Encrypted staged files and the `/v2/files` HTTP API.
 //! Ciphertext is `length[4, big-endian] | secretstream record` repeated, ending with FINAL.
 
 use std::fs::{self, File, OpenOptions};
@@ -13,7 +13,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::client::{checked_access_password, valid_token, validate_endpoint, ACCESS_HEADER};
+use crate::access::{checked_access_password, valid_token, validate_endpoint, ACCESS_HEADER};
 use crate::crypto::{random, valid_id, valid_name};
 use crate::secretstream::{aad, DecryptStream, EncryptStream, ABYTES, MAX_RECORD_PLAIN};
 use crate::{Error, Identity, Options, Result};
@@ -23,7 +23,7 @@ const MAX_JSON: usize = 4 << 20;
 const MAX_FILE: u64 = 1 << 30;
 const REQUEST_LIMIT: Duration = Duration::from_secs(60);
 
-/// What the sender submits to `POST /relay/v1/files`; size and digest cover the ciphertext.
+/// What the sender submits to `POST /v2/files`; size and digest cover the ciphertext.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDescriptor {
     pub id: String,
@@ -272,7 +272,7 @@ pub fn safe_file_name(name: &str) -> Option<String> {
     valid.then(|| base.to_owned())
 }
 
-/// HTTP client for `/relay/v1/files`. Redirects are refused so the credential never moves.
+/// HTTP client for `/v2/files`. Redirects are refused so the credential never moves.
 pub struct RelayFiles {
     base: Url,
     http: reqwest::Client,
@@ -295,7 +295,7 @@ fn http_error(err: reqwest::Error) -> Error {
 }
 
 impl RelayFiles {
-    /// `files_url` is `https://host/relay/v1/files`; plain http only for 127.0.0.1 local tests.
+    /// `files_url` is `https://host/v2/files`; plain http only for 127.0.0.1 local tests.
     pub fn new(files_url: &str, token: &str, options: Options) -> Result<Self> {
         let base = Url::parse(files_url).map_err(|_| Error::Invalid("invalid files URL"))?;
         let local = options.allow_local_test
@@ -307,7 +307,7 @@ impl RelayFiles {
             && base.password().is_none()
             && base.query().is_none()
             && base.fragment().is_none()
-            && base.path() == "/relay/v1/files";
+            && base.path() == "/v2/files";
         if !valid {
             return Err(Error::Invalid("an HTTPS relay files URL is required"));
         }
@@ -338,7 +338,7 @@ impl RelayFiles {
         Ok(Self { base, http })
     }
 
-    /// Derives the files URL from the WebSocket relay endpoint used by [`crate::Client`].
+    /// Derives the files URL (`/v2/files`) from a `/v2/ws` relay endpoint.
     pub fn for_relay_endpoint(endpoint: &str, token: &str, options: Options) -> Result<Self> {
         let mut url = validate_endpoint(endpoint, &options)
             .ok_or(Error::Invalid("a WSS relay endpoint is required"))?;
@@ -349,7 +349,7 @@ impl RelayFiles {
         };
         url.set_scheme(scheme)
             .map_err(|_| Error::Invalid("invalid relay endpoint"))?;
-        url.set_path("/relay/v1/files");
+        url.set_path("/v2/files");
         Self::new(url.as_str(), token, options)
     }
 

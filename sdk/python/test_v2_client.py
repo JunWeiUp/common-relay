@@ -1,131 +1,26 @@
 import asyncio
-import hashlib
-import json
-import os
-import socket
-import sqlite3
-import subprocess
-import tempfile
-import time
 import unittest
-from pathlib import Path
-from nacl.public import PrivateKey
-from common_relay import Client, Identity
+from common_relay import Client
 from common_relay.files import Files, prepare, decrypt
+from relay_fixture import LoopbackRelay, binary
 
-ROOT = Path(__file__).resolve().parents[2]
 ACCESS = 'interop-v2-access-1'
 
 
-
-def _server_speaks_v1(binary):
-    """common-relay removed v1 (and device-add) on 2026-11-22; v1-only SDK APIs cannot be exercised."""
-    try:
-        r = subprocess.run([binary, 'device-add'], capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return 'unknown command' not in (r.stdout + r.stderr)
-
 class V2ClientIntegration(unittest.IsolatedAsyncioTestCase):
+    """The worker-demo shape: a gateway and a worker enrolled in one signed group."""
+
     async def asyncSetUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.dir = Path(self.tmp.name)
-        binary = os.environ.get('COMMON_RELAY_BINARY', str(ROOT / 'build/common-relay'))
-        if not Path(binary).exists():
-            binary = str(self.dir / 'common-relay')
-            subprocess.run(['go', 'build', '-o', binary, './cmd/common-relay'], cwd=str(ROOT), check=True)
-        self.binary = binary
-        if not _server_speaks_v1(binary):
-            self.skipTest('needs device-add provisioning, removed with v1')
-        keys = {name: PrivateKey.generate() for name in ('gateway', 'worker')}
-        self.ids = {
-            name: Identity(
-                'worker-demo',
-                'production',
-                name,
-                bytes(keys[name]).hex(),
-                {other: bytes(keys[other].public_key).hex() for other in keys if other != name},
-            )
-            for name in keys
-        }
-        self.tokens = {}
-        srv_data = self.dir / 'server'
-        for name in keys:
-            cred = self.dir / f'{name}.json'
-            subprocess.run(
-                [
-                    binary, 'device-add',
-                    '--data', str(srv_data),
-                    '--app', 'worker-demo',
-                    '--group', 'production',
-                    '--device', name,
-                    '--public-key', self.ids[name].public_key,
-                    '--credential-out', str(cred),
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-            )
-            self.tokens[name] = json.loads(cred.read_text())['token']
-
-        with socket.socket() as sock:
-            sock.bind(('127.0.0.1', 0))
-            port = sock.getsockname()[1]
-        self.ws_url = f'ws://127.0.0.1:{port}/v2/ws'
-        self.files_url = f'http://127.0.0.1:{port}/v2/files'
-        (self.dir / 'access').write_text(hashlib.sha256(ACCESS.encode()).hexdigest())
-        (self.dir / 'admin').write_text(hashlib.sha256(b'test-v2-admin-secret').hexdigest())
-        self.server = subprocess.Popen(
-            [
-                binary, 'serve',
-                '--data', str(srv_data),
-                '--listen', f'127.0.0.1:{port}',
-                '--disk-reserve', '0',
-                '--access-password-file', str(self.dir / 'access'),
-                '--v2-admin-hash-file', str(self.dir / 'admin'),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        for _ in range(100):
-            try:
-                r, w = await asyncio.open_connection('127.0.0.1', port)
-                w.close()
-                await w.wait_closed()
-                break
-            except OSError:
-                await asyncio.sleep(0.02)
-        else:
-            self.fail('server did not start')
-
-        # Wait for relay_v2.db schema initialization and register worker-demo space + devices
-        v2db = srv_data / 'relay_v2.db'
-        for _ in range(50):
-            if v2db.exists():
-                break
-            await asyncio.sleep(0.02)
-        con = sqlite3.connect(str(v2db))
-        now = int(time.time())
-        with con:
-            con.execute(
-                "INSERT OR IGNORE INTO v2_spaces(id, name, trust_level, created_at, app) VALUES(?,?,?,?,?)",
-                ('production', 'Speech Service', 'strict_e2e', now, 'worker-demo'),
-            )
-            for name in ('gateway', 'worker'):
-                th = hashlib.sha256(self.tokens[name].encode()).hexdigest()
-                con.execute(
-                    "INSERT OR REPLACE INTO v2_devices(id, name, public_key, token_hash, is_admin, revoked, created_at) VALUES(?,?,?,?,0,0,?)",
-                    (name, name, self.ids[name].public_key, th, now),
-                )
-                con.execute(
-                    "INSERT OR REPLACE INTO v2_space_members(space_id, device_id, role, added_at) VALUES(?,?,?,?)",
-                    ('production', name, 'member', now),
-                )
-        con.close()
-
-    async def asyncTearDown(self):
-        self.server.terminate()
-        self.server.wait(timeout=10)
-        self.tmp.cleanup()
+        server = binary()
+        if server is None:
+            self.skipTest('build/common-relay missing; run go build -o build/common-relay ./cmd/common-relay')
+        self.relay = LoopbackRelay('worker-demo', ACCESS)
+        self.addCleanup(self.relay.close)
+        await self.relay.start(server)
+        enrolled = await self.relay.enroll('gateway', 'worker')
+        self.ids = {name: identity for name, (identity, _) in enrolled.items()}
+        self.tokens = {name: token for name, (_, token) in enrolled.items()}
+        self.dir, self.ws_url, self.files_url = self.relay.dir, self.relay.ws_url, self.relay.files_url
 
     def client(self, name):
         return Client(

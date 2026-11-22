@@ -1,28 +1,16 @@
 import asyncio
-import contextlib
-import hashlib
 import json
 import os
 from pathlib import Path
-import socket
-import subprocess
-import tempfile
 import unittest
 from nacl.public import PrivateKey
-from common_relay import Client, Identity, RelayError
+from common_relay import Client, Identity
 from common_relay.crypto import EncryptStream, DecryptStream
 from common_relay.files import Files, prepare, decrypt
+from relay_fixture import LoopbackRelay, binary
 
 ROOT=Path(__file__).resolve().parents[2]
 
-
-def _server_speaks_v1(binary):
-    """common-relay removed v1 (and device-add) on 2026-11-22; v1-only SDK APIs cannot be exercised."""
-    try:
-        r = subprocess.run([binary, 'device-add'], capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return 'unknown command' not in (r.stdout + r.stderr)
 
 class CryptoTests(unittest.TestCase):
     def test_shared_offline_vector(self):
@@ -47,31 +35,15 @@ ACCESS='interop-access-1'
 
 class Integration(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.dir=Path(self.tmp.name)
-        binary=os.environ.get('COMMON_RELAY_BINARY',str(ROOT/'build/common-relay'))
-        if not Path(binary).exists() or not _server_speaks_v1(binary):
-            self.skipTest('server binary missing or v1 removed (v1-only SDK API)')
-        keys={name:PrivateKey.generate() for name in ('a','b')}
-        self.ids={name:Identity('example','group',name,bytes(keys[name]).hex(),{other:bytes(keys[other].public_key).hex() for other in keys if other!=name}) for name in keys}
-        self.tokens={}
-        for name in keys:
-            file=self.dir/(name+'.json')
-            subprocess.run([binary,'device-add','--data',str(self.dir/'server'),'--app','example','--group','group','--device',name,'--public-key',self.ids[name].public_key,'--credential-out',str(file)],check=True)
-            self.tokens[name]=json.loads(file.read_text())['token']
-        with socket.socket() as sock:
-            sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
-        self.url=f'ws://127.0.0.1:{port}/relay/v1/ws'
-        self.files_url=f'http://127.0.0.1:{port}/relay/v1/files'
-        (self.dir/'access').write_text(hashlib.sha256(ACCESS.encode()).hexdigest())
-        self.server=subprocess.Popen([binary,'serve','--data',str(self.dir/'server'),'--listen',f'127.0.0.1:{port}','--disk-reserve','0','--access-password-file',str(self.dir/'access')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            try:
-                r,w=await asyncio.open_connection('127.0.0.1',port);w.close();await w.wait_closed();break
-            except OSError: await asyncio.sleep(.02)
-        else: self.fail('server did not start')
-
-    async def asyncTearDown(self):
-        self.server.terminate();self.server.wait(timeout=10);self.tmp.cleanup()
+        server=binary()
+        if server is None:
+            self.skipTest('build/common-relay missing; run go build -o build/common-relay ./cmd/common-relay')
+        self.relay=LoopbackRelay('example',ACCESS);self.addCleanup(self.relay.close)
+        await self.relay.start(server)
+        enrolled=await self.relay.enroll('a','b')
+        self.ids={name:identity for name,(identity,_) in enrolled.items()}
+        self.tokens={name:token for name,(_,token) in enrolled.items()}
+        self.dir,self.url,self.files_url=self.relay.dir,self.relay.ws_url,self.relay.files_url
 
     def client(self,name):
         return Client(self.url,self.tokens[name],self.ids[name],self.dir/(name+'.db'),allow_local_test=True,password=ACCESS)
@@ -82,7 +54,12 @@ class Integration(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(Exception): await client.__aenter__()
         with self.assertRaises(ValueError): Client(self.url,self.tokens['a'],self.ids['a'],allow_local_test=True,password='short')
 
-    async def test_encrypted_stream_and_offline_message(self):
+    async def test_endpoints_must_be_v2(self):
+        for url in ('ws://127.0.0.1:1/relay/v1/ws','ws://127.0.0.1:1/'):
+            with self.assertRaises(ValueError): Client(url,self.tokens['a'],self.ids['a'],allow_local_test=True,password=ACCESS)
+        with self.assertRaises(ValueError): Files('http://127.0.0.1:1/relay/v1/files',self.tokens['a'],allow_local_test=True,password=ACCESS)
+
+    async def test_offline_and_online_message(self):
         async with self.client('a') as a:
             result=await a.message('b',b'offline secret',offline=True)
             self.assertEqual(result['type'],'stored')
@@ -92,20 +69,6 @@ class Integration(unittest.IsolatedAsyncioTestCase):
                 await b.acknowledge(event)
                 await a.send_online('b', b'online without transport receipt')
                 self.assertEqual((await asyncio.wait_for(b.events.get(),3))['data'], b'online without transport receipt')
-                opening=asyncio.create_task(a.open_stream('b'))
-                request=await asyncio.wait_for(b.events.get(),3)
-                bs=await b.accept_stream(request);as_=await opening
-                payload=os.urandom(8<<20)
-                async def receive(stream):
-                    result=bytearray()
-                    while not stream.decryptor.finished:
-                        result.extend(await stream.receive())
-                    return bytes(result)
-                sending=asyncio.create_task(as_.send(payload,final=True))
-                self.assertEqual(await receive(bs),payload);await sending
-                sending=asyncio.create_task(bs.send(payload,final=True))
-                self.assertEqual(await receive(as_),payload);await sending
-                await as_.close()
 
     async def test_lost_reply_restart_and_lost_ack(self):
         object_id = 'ab'*16
@@ -125,7 +88,7 @@ class Integration(unittest.IsolatedAsyncioTestCase):
                 event = await asyncio.wait_for(b.events.get(),3)
                 async def lose_ack(event):
                     raise TimeoutError('simulated lost ack')
-                b.request = lose_ack
+                b.send_event = lose_ack
                 with self.assertRaises(TimeoutError):
                     await b.acknowledge(event)
             # Durable receiver journal automatically ACKs redelivery without exposing it again.

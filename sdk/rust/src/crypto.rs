@@ -190,25 +190,6 @@ impl Identity {
         self.seal_value(to, "message", id, json!({"data": STANDARD.encode(data)}))
     }
 
-    /// Offline envelopes also authenticate the absolute expiry sent to the relay.
-    pub(crate) fn seal_offline_message(
-        &self,
-        to: &str,
-        id: &str,
-        data: &[u8],
-        expires: i64,
-    ) -> Result<String> {
-        if !valid_id(id) || data.len() > MAX_MESSAGE {
-            return Err(Error::Invalid("invalid ID or message too large"));
-        }
-        self.seal_value(
-            to,
-            "message",
-            id,
-            json!({"data": STANDARD.encode(data), "expires": expires}),
-        )
-    }
-
     /// Opens and authenticates an envelope; the value is an object or null.
     pub(crate) fn open_value(&self, from: &str, kind: &str, id: &str, body: &str) -> Result<Value> {
         if !valid_id(id) {

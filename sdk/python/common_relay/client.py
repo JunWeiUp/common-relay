@@ -1,107 +1,41 @@
+"""Device messaging over the Common Relay v2 pipe (/v2/ws). Peer keys MUST be pinned out of band."""
 import asyncio
 import base64
 from .access import access_headers
-import contextlib
 import json
-import struct
 import uuid
 import hashlib
 import time
 from .journal import Journal
 from urllib.parse import urlsplit
 from websockets.asyncio.client import connect
-from .crypto import EncryptStream, DecryptStream, stream_aad, frame
 
 class RelayError(Exception):
     pass
-
-class Stream:
-    def __init__(self, client, peer, object_id, encryptor, decryptor=None):
-        self.client, self.peer, self.id = client, peer, object_id
-        self.encryptor, self.decryptor = encryptor, decryptor
-        self.tx, self.rx = 0, 0
-        self.incoming = asyncio.Queue(16)
-        self.closed = False
-        self.send_lock = asyncio.Lock()
-        self.credit = asyncio.Semaphore(8)
-        self.acknowledged = 0
-
-    async def send(self, data, final=False):
-        async with self.send_lock:
-            if self.closed:
-                raise RelayError('Closed stream')
-            for offset in range(0, max(1, len(data)), 65519):
-                await asyncio.wait_for(self.credit.acquire(),30)
-                if self.closed:
-                    raise RelayError('Closed stream')
-                part = data[offset:offset+65519]
-                last = final and offset+65519 >= len(data)
-                aad = stream_aad(self.client.identity, self.client.identity.device, self.peer, self.id, self.tx)
-                payload = self.encryptor.push(part, aad, last)
-                await self.client.ws.send(frame(self.id, self.tx, payload))
-                self.tx += 1
-
-    async def receive(self):
-        item = await self.incoming.get()
-        if isinstance(item, Exception):
-            raise item
-        seq, cipher = item
-        if seq != self.rx or self.decryptor is None:
-            raise RelayError('Invalid stream sequence or state')
-        aad = stream_aad(self.client.identity, self.peer, self.client.identity.device, self.id, self.rx)
-        plain = self.decryptor.pull(cipher, aad)
-        self.rx += 1
-        await self.client.send_event({'type':'stream.credit','id':self.id,'sequence':self.rx})
-        return plain
-
-    async def close(self):
-        was_closed = self.closed
-        self.abort()
-        self.client.streams.pop(self.id, None)
-        if not was_closed:
-            await self.client.send_event({'type': 'stream.close', 'id': self.id})
-
-    def abort(self):
-        if self.closed: return
-        self.closed = True
-        for _ in range(8):
-            self.credit.release()
-        while not self.incoming.empty():
-            self.incoming.get_nowait()
-        self.incoming.put_nowait(RelayError('Stream interrupted; do not replay operations'))
 
 class Client:
     def __init__(self, url, token, identity, state_path=None, *, allow_local_test=False, clock=time.time, password=None):
         u = urlsplit(url)
         if u.scheme != 'wss' and not (allow_local_test and u.scheme == 'ws' and u.hostname in ('127.0.0.1', 'localhost')):
             raise ValueError('WSS required')
+        if u.path != '/v2/ws':
+            raise ValueError('Common Relay v2 endpoint (/v2/ws) required')
         self.url, self.token, self.identity = url, token, identity
-        self._is_v2 = u.path == '/v2/ws' or u.path.startswith('/v2/ws/')
         self._access = access_headers(password)
         self.clock = clock
         self.scope = json.dumps([identity.app, identity.group, identity.device])
         self.journal = Journal(state_path, self.scope, clock) if state_path else None
         self.cleaner = None
-        self.pending, self.streams = {}, {}
+        self.pending = {}
         self.events = asyncio.Queue(64)
         self.ws, self.reader = None, None
 
     async def __aenter__(self):
-        kwargs = dict(additional_headers={'Authorization': 'Bearer '+self.token, **self._access}, compression=None, max_size=270336, max_queue=16, ping_interval=20, ping_timeout=20)
-        if not self._is_v2:
-            kwargs['subprotocols'] = ['common-relay.v1']
-        self.ws = await connect(self.url, **kwargs)
+        self.ws = await connect(self.url, additional_headers={'Authorization': 'Bearer '+self.token, **self._access}, compression=None, max_size=270336, max_queue=16, ping_interval=20, ping_timeout=20)
         welcome = json.loads(await asyncio.wait_for(self.ws.recv(), 10))
-        expected = self.identity
-        if self._is_v2:
-            if welcome.get('type') != 'hello' or welcome.get('from') != expected.device:
-                await self.ws.close()
-                raise RelayError('Server identity does not match local credentials')
-        else:
-            own = welcome.get('identity', {})
-            if welcome.get('version') != 1 or (own.get('app'),own.get('group'),own.get('device'),own.get('public_key')) != (expected.app,expected.group,expected.device,expected.public_key):
-                await self.ws.close()
-                raise RelayError('Server identity does not match local credentials')
+        if welcome.get('type') != 'hello' or welcome.get('from') != self.identity.device:
+            await self.ws.close()
+            raise RelayError('Server identity does not match local credentials')
         self.reader = asyncio.create_task(self._read())
         if self.journal:
             self.cleaner = asyncio.create_task(self._cleanup_loop())
@@ -152,18 +86,13 @@ class Client:
             self.pending.pop(object_id, None)
 
     async def peers(self):
-        if self._is_v2:
-            return (await self.request({'type': 'presence', 'space': self.identity.group})).get('peers') or []
-        return (await self.request({'type': 'peers'}))['devices']
+        return (await self.request({'type': 'presence', 'space': self.identity.group})).get('peers') or []
 
     async def send_online(self, recipient, data):
         """Queue an online frame; completion is not a server/device/business receipt."""
         object_id = uuid.uuid4().hex
         body = self.identity.seal(recipient, 'message', object_id, {'data': base64.b64encode(data).decode()})
-        if self._is_v2:
-            await self.send_event({'type': 'msg', 'space': self.identity.group, 'id': object_id, 'to': recipient, 'topic': 'msg', 'body': body, 'offline': False})
-        else:
-            await self.send_event({'type': 'message', 'id': object_id, 'to': recipient, 'body': body, 'offline': False})
+        await self.send_event({'type': 'msg', 'space': self.identity.group, 'id': object_id, 'to': recipient, 'topic': 'msg', 'body': body, 'offline': False})
 
     async def message(self, recipient, data, *, offline=False, object_id=None, ttl=86400):
         object_id = object_id or uuid.uuid4().hex
@@ -178,19 +107,16 @@ class Client:
             ttl = max(1, expires-int(self.clock()))
         else:
             body = self.identity.seal(recipient, 'message', object_id, {'data': base64.b64encode(data).decode()})
-        if self._is_v2:
-            req = {'type': 'msg', 'space': self.identity.group, 'id': object_id, 'to': recipient, 'topic': 'msg', 'body': body, 'offline': offline}
-            if offline:
-                req['ttl'] = ttl
-            result = await self.request(req)
-            if result.get('type') == 'ack':
-                ev = result.get('event')
-                if ev == 'stored':
-                    result = {'type': 'stored', 'id': object_id}
-                elif ev == 'forwarded':
-                    result = {'type': 'delivered', 'id': object_id}
-        else:
-            result = await self.request({'type': 'message', 'id': object_id, 'to': recipient, 'body': body, 'offline': offline, 'ttl': ttl, 'expires': expires})
+        req = {'type': 'msg', 'space': self.identity.group, 'id': object_id, 'to': recipient, 'topic': 'msg', 'body': body, 'offline': offline}
+        if offline:
+            req['ttl'] = ttl
+        result = await self.request(req)
+        if result.get('type') == 'ack':
+            ev = result.get('event')
+            if ev == 'stored':
+                result = {'type': 'stored', 'id': object_id}
+            elif ev == 'forwarded':
+                result = {'type': 'delivered', 'id': object_id}
         if offline and result.get('type') == 'received':
             self.journal.complete(object_id)
         return result
@@ -202,74 +128,15 @@ class Client:
         if self.journal:
             self.journal.acknowledge(event['from'], event['id'])
         if event.get('offline'):
-            if self._is_v2:
-                await self.send_event({'type': 'ack', 'space': self.identity.group, 'id': event['id'], 'from': event['from']})
-            else:
-                await self.request({'type': 'ack', 'id': event['id'], 'from': event['from']})
-
-    async def open_stream(self, recipient):
-        object_id = uuid.uuid4().hex
-        encryptor = EncryptStream()
-        stream = Stream(self, recipient, object_id, encryptor)
-        self.streams[object_id] = stream
-        try:
-            response = await self.request({'type': 'stream.open', 'id': object_id, 'to': recipient, 'body': self.identity.seal(recipient, 'stream.open', object_id, encryptor.descriptor())})
-            stream.decryptor = DecryptStream(self.identity.open(recipient, 'stream.accept', object_id, response['body']))
-            return stream
-        except BaseException:
-            self.streams.pop(object_id, None)
-            with contextlib.suppress(Exception):
-                await self.send_event({'type':'stream.close','id':object_id})
-            raise
-
-    async def accept_stream(self, event):
-        peer, object_id = event['from'], event['id']
-        decryptor = DecryptStream(self.identity.open(peer, 'stream.open', object_id, event['body']))
-        encryptor = EncryptStream()
-        stream = Stream(self, peer, object_id, encryptor, decryptor)
-        self.streams[object_id] = stream
-        try:
-            await self.request({'type': 'stream.accept', 'id': object_id, 'body': self.identity.seal(peer, 'stream.accept', object_id, encryptor.descriptor())})
-            return stream
-        except BaseException:
-            self.streams.pop(object_id, None)
-            raise
+            await self.send_event({'type': 'ack', 'space': self.identity.group, 'id': event['id'], 'from': event['from']})
 
     async def _read(self):
         try:
             async for raw in self.ws:
                 if isinstance(raw, bytes):
-                    if not 42<=len(raw)<=65561 or raw[0]!=1:
-                        raise RelayError('Invalid binary frame')
-                    object_id, seq = raw[1:17].hex(), struct.unpack('>Q',raw[17:25])[0]
-                    stream = self.streams.get(object_id)
-                    if stream:
-                        try:
-                            stream.incoming.put_nowait((seq,raw[25:]))
-                        except asyncio.QueueFull:
-                            stream.abort()
-                            await self.send_event({'type':'stream.close','id':object_id})
-                    continue
+                    continue  # binary stream frames are not used by this client
                 e = json.loads(raw)
                 object_id = e.get('id')
-                if e['type']=='stream.credit':
-                    stream=self.streams.get(object_id)
-                    if stream:
-                        seq=e['sequence']
-                        if not stream.acknowledged<=seq<=stream.tx:
-                            raise RelayError('Invalid credit')
-                        for _ in range(seq-stream.acknowledged):
-                            stream.credit.release()
-                        stream.acknowledged=seq
-                    continue
-                if e['type']=='stream.close':
-                    stream = self.streams.pop(object_id,None)
-                    if stream:
-                        stream.abort()
-                    pending=self.pending.get(object_id)
-                    if pending and not pending.done():
-                        pending.set_exception(RelayError('Stream closed'))
-                    continue
                 if e['type'] == 'received':
                     if self.journal and object_id:
                         self.journal.complete(object_id)
@@ -278,7 +145,7 @@ class Client:
                         if not pending.done():
                             pending.set_result(e)
                     continue
-                if e['type'] not in ('message','msg','stream.open') and object_id in self.pending:
+                if e['type'] != 'msg' and object_id in self.pending:
                     pending = self.pending[object_id]
                     if not pending.done():
                         if e['type']=='error':
@@ -286,27 +153,21 @@ class Client:
                         else:
                             pending.set_result(e)
                     continue
-                if e['type']==('msg' if self._is_v2 else 'message'):
+                if e['type']=='msg':
                     if e.get('offline') and self.journal is None:
                         raise RelayError('Persistent state required for offline reception')
                     value=self.identity.open(e['from'],'message',object_id,e['body'])
                     if ('expires' in value and value['expires'] <= int(self.clock())) or (self.journal and self.journal.contains(e['from'], object_id)):
                         if e.get('offline'):
-                            if self._is_v2:
-                                await self.send_event({'type':'ack','space':self.identity.group,'id':object_id,'from':e['from']})
-                            else:
-                                await self.send_event({'type':'ack','id':object_id,'from':e['from']})
+                            await self.send_event({'type':'ack','space':self.identity.group,'id':object_id,'from':e['from']})
                         continue
                     e['data']=base64.b64decode(value['data'],validate=True)
-                    if self._is_v2:
-                        e['type']='message'
-                if e['type'] in ('message','stream.open','peer.up','peer.down','group.changed'):
+                    e['type']='message'
+                if e['type'] in ('message','peer.up','peer.down','group.changed'):
                     self.events.put_nowait(e)
         finally:
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(RelayError('Connection closed'))
-            for stream in self.streams.values():
-                stream.abort()
             if self.ws:
                 await self.ws.close()

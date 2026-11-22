@@ -57,6 +57,7 @@ class RelayFileCrypto {
 }
 
 class RelayFiles {
+  /// File plane root, e.g. `https://relay.example.com/v2/files`.
   final Uri base;
   final String token;
   /// Optional server access password, sent as `Relay-Access` on every request.

@@ -38,9 +38,6 @@ jobs:
       - uses: actions/setup-go@v5.5.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4.4.0
-        with:
-          node-version: '22'
       - uses: actions/setup-python@v5.6.0
         with:
           python-version: '3.11'
@@ -52,29 +49,19 @@ jobs:
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: sdk/go
-      - run: cargo test
-        working-directory: sdk/rust
-      - run: npm ci && npm test && npm run build
-        working-directory: sdk/typescript
-      - run: dart pub get && dart analyze && dart test
-        working-directory: sdk/dart
-      - name: Python tests and interoperability
+      # SDK group/file tests below run against this loopback server binary.
+      - name: Build server for SDK integration tests
         run: |
-          python -m pip install ./sdk/python
           mkdir -p build
           go build -o build/common-relay ./cmd/common-relay
-          python -m unittest discover -s sdk/python -p 'test*.py'
-      - name: Package TypeScript
+      - run: cargo test --all-features
+        working-directory: sdk/rust
+      - run: dart pub get && dart analyze && dart test
+        working-directory: sdk/dart
+      - name: Python tests
         run: |
-          npm pack --pack-destination "$GITHUB_WORKSPACE"
-          version="${RELEASE_TAG#v}"
-          mv "$GITHUB_WORKSPACE/common-relay-client-$version.tgz" "$GITHUB_WORKSPACE/common-relay-typescript-$version.tgz"
-        working-directory: sdk/typescript
-      - uses: actions/upload-artifact@v4.6.2
-        with:
-          name: typescript
-          path: '*.tgz'
-          if-no-files-found: error
+          python -m pip install ./sdk/python
+          python -m unittest discover -s sdk/python -p 'test*.py'
 
   server:
     runs-on: ubuntu-latest
@@ -138,18 +125,15 @@ jobs:
           "$sdkmanager" 'platforms;android-36' 'build-tools;36.0.0'
       - run: gradle testDebugUnitTest lintDebug assembleRelease
         working-directory: sdk/java
-      - run: gradle testDebugUnitTest :java:testDebugUnitTest lintDebug assembleRelease
-        working-directory: sdk/kotlin
       - name: Verify Maven publication metadata
         run: |
-          gradle -p sdk/kotlin :java:publishToMavenLocal publishToMavenLocal
+          gradle -p sdk/java publishToMavenLocal
           python3 scripts/check-android-publication.py --version "${RELEASE_TAG#v}"
       - name: Collect AARs
         run: |
           version="${RELEASE_TAG#v}"
           mkdir -p dist
           cp sdk/java/build/outputs/aar/java-release.aar "dist/common-relay-java-$version.aar"
-          cp sdk/kotlin/build/outputs/aar/common-relay-kotlin-release.aar "dist/common-relay-kotlin-$version.aar"
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: android
@@ -168,12 +152,11 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         working-directory: artifacts
-        run: sha256sum ./*.tgz ./*.aar ./*.tar.gz > SHA256SUMS
+        run: sha256sum ./*.aar ./*.tar.gz > SHA256SUMS
       - uses: softprops/action-gh-release@v2.3.2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
-            artifacts/*.tgz
             artifacts/*.aar
             artifacts/*.tar.gz
             artifacts/SHA256SUMS

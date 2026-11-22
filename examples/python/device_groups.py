@@ -20,11 +20,11 @@ def save_config(directory, group):
 
 
 async def main():
-    async with local_server() as (directory, url):
+    async with local_server() as (directory, url, access):
         def device(name):
             key = PrivateKey.generate()
             return Groups({
-                'url': url, 'app': 'example', 'device': name,
+                'url': url, 'password': access, 'app': 'example', 'device': name,
                 'secret_key': bytes(key).hex(),
                 'public_key': bytes(key.public_key).hex(), 'trusted_peers': {},
             }, allow_local_test=True)

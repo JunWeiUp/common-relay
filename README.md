@@ -8,9 +8,9 @@ English · [简体中文](README.zh-CN.md)
 [![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](docs/V2-ARCHITECTURE.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
-Common Relay is a Go relay server with Swift, Android Java/Kotlin, Dart, Python, TypeScript (Node.js), Go, and Rust client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
+Common Relay is a Go relay server with Swift, Android Java, Dart, Python, Go, and Rust client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
 
-**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. **The server speaks protocol v2 only** (`serve` requires `--v2-admin-hash-file`): the `/v2/ws` device pipe, signed device groups on `/v2/group` and `/v2/enroll`, resumable encrypted files on `/v2/files`, spaces and boxes, and `/edge/*` plugins (Webhook, Drop, WebDAV, MCP). The v1 transport and every `/relay/v1/*` route were removed (see the [changelog](CHANGELOG.md)); the group ledger and file wire formats in the [protocol notes](protocol/README.md) are unchanged under `/v2`. SDK features that relied on `/relay/v1/ws` (offline messages, streams) and the Python demos below still target v1 and are pending migration. See [V2 architecture](docs/V2-ARCHITECTURE.md).
+**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. **The server speaks protocol v2 only** (`serve` requires `--v2-admin-hash-file`): the `/v2/ws` device pipe, signed device groups on `/v2/group` and `/v2/enroll`, resumable encrypted files on `/v2/files`, spaces and boxes, and `/edge/*` plugins (Webhook, Drop, WebDAV, MCP). The v1 transport and every `/relay/v1/*` route were removed (see the [changelog](CHANGELOG.md)); the group ledger and file wire formats in the [protocol notes](protocol/README.md) are unchanged under `/v2`. The SDKs are v2-only too: the TypeScript and Kotlin SDKs and every v1-only client API were removed. See [V2 architecture](docs/V2-ARCHITECTURE.md).
 
 [Quick start](#quick-start) · [SDKs](#client-sdks) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
 
@@ -95,24 +95,21 @@ SDKs install directly from this repository's Git tags (for example `v0.1.7`); th
 | Android Java | [sdk/java](sdk/java) | Android API 26+; build with JDK 17, Gradle 8.13, Android SDK 36 |
 | Dart | [sdk/dart](sdk/dart) | Dart 3.11+ and <4.0 |
 | Python | [sdk/python](sdk/python) | Python 3.11+ |
-| Kotlin | [sdk/kotlin](sdk/kotlin) | Android API 26+; same Java SDK, Kotlin coroutine extensions |
-| TypeScript (Node.js) | [sdk/typescript](sdk/typescript) | Node.js 22+ |
 | Go client | [sdk/go](sdk/go) | Go 1.25+ (standalone module) |
-| Rust client | [sdk/rust](sdk/rust) | Rust 1.89+ (tokio, pure Rust) |
+| Rust client | [sdk/rust](sdk/rust) | Rust 1.89+ (pure Rust) |
 
 ```text
 Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.7")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.7'    // or :kotlin:, via JitPack
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.7'    // via JitPack
 Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.7, path: sdk/dart }
 Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.7#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.7/common-relay-typescript-0.1.7.tgz
 Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.7
 Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.7" }
 ```
 
 The [SDK distribution guide](docs/REGISTRY.md) covers repository setup, the release process, and optional source snapshots for auditing or local patches.
 
-All SDKs test their supported encryption against shared vectors. All SDKs provide the full feature set: online and offline messages, streams, files, signed device groups and compact invitations. Implementations use their own language runtimes; the Rust SDK is a standalone pure-Rust client, not a shared core, and no platform artifact build is required. Applications must securely persist identities, trusted keys, and retry state. Enable automatic invitations only after all members' SDKs support the authorization chain.
+All SDKs test their supported encryption against shared vectors and speak protocol v2 only. Swift, Java, Dart, Python and Rust provide signed device groups and compact invitations (`/v2/group`, `/v2/enroll`, `common-relay://host/v2/i/…` links) and resumable encrypted files (`/v2/files`); device messaging uses each SDK's `/v2/ws` client (Swift `RelayV2Client`/`RelayV2Pipe`, Java `V2Client`, Dart `RelayV2Client`/`RelayV2Pipe`, Python `Client`, Rust `V2Client`, Go `v2client`). Implementations use their own language runtimes; the Rust SDK is a standalone pure-Rust client, not a shared core, and no platform artifact build is required. Applications must securely persist identities, trusted keys, and retry state. Enable automatic invitations only after all members' SDKs support the authorization chain.
 
 ## Development
 
@@ -124,15 +121,13 @@ go test -race ./...
 swift test --package-path sdk/swift
 (cd sdk/dart && dart pub get && dart analyze && dart test)
 (cd sdk/java && gradle testDebugUnitTest lintDebug)
-(cd sdk/kotlin && gradle testDebugUnitTest lintDebug)
-(cd sdk/typescript && npm ci && npm test)
 (cd sdk/go && go test -race ./...)
-(cd sdk/rust && cargo clippy --all-targets -- -D warnings && cargo test)
+(cd sdk/rust && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features)
 ```
 
 Swift, Dart, and Android checks require their own toolchains. Java unit tests also require a local libsodium library. See the [development guide](docs/DEVELOPMENT.md) for environment variables and cross-language tests.
 
-Local interoperability tests cover offline messages, bidirectional 8 MiB streams, signed groups, and invitations. Public WSS, long-running load, and recovery testing are separate deployment checks; see the [validation guide](docs/VALIDATION.md).
+Each SDK's tests run its group and file clients against a real loopback server, and `scripts/group-interop.py` drives the signed-group flow across SDKs. Public WSS, long-running load, and recovery testing are separate deployment checks; see the [validation guide](docs/VALIDATION.md).
 
 ## Documentation
 

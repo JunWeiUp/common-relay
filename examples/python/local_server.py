@@ -1,5 +1,7 @@
 """Shared local-only lifecycle for the runnable examples."""
 import asyncio
+import hashlib
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 import socket
@@ -18,9 +20,15 @@ async def local_server():
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
+        # The server requires an access password and a v2 admin secret; both are random per run.
+        access = 'example-' + secrets.token_hex(8)
+        (Path(directory) / 'access.sha256').write_text(hashlib.sha256(access.encode()).hexdigest())
+        admin = Path(directory) / 'admin.sha256'
+        admin.write_text(hashlib.sha256(secrets.token_hex(32).encode()).hexdigest())
         process = subprocess.Popen([
             str(binary), 'serve', '--data', directory + '/server',
             '--listen', f'127.0.0.1:{port}', '--self-service-apps', 'example',
+            '--access-password-file', directory + '/access.sha256', '--v2-admin-hash-file', str(admin),
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             for _ in range(100):
@@ -35,7 +43,7 @@ async def local_server():
                     await asyncio.sleep(0.05)
             else:
                 raise TimeoutError('Example relay startup timed out')
-            yield Path(directory), f'ws://127.0.0.1:{port}/relay/v1/ws'
+            yield Path(directory), f'ws://127.0.0.1:{port}/v2/ws', access
         finally:
             process.terminate()
             try:

@@ -16,12 +16,3 @@ public struct RelayEvent: Sendable {
     }
     public subscript(_ key: String) -> Any? { key == "data" ? payload : object[key] }
 }
-
-public struct RelayDevice: Sendable {
-    public let app: String, group: String, device: String, publicKey: String
-    init?(_ object: [String: Any]) {
-        guard let app = object["app"] as? String, let group = object["group"] as? String,
-            let device = object["device"] as? String, let key = object["public_key"] as? String else { return nil }
-        self.app = app; self.group = group; self.device = device; publicKey = key
-    }
-}

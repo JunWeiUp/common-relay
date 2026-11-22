@@ -58,9 +58,10 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate {
 public actor RelayFiles {
     private let base: URL, token: String, password: String?
     private let session = URLSession(configuration: .ephemeral, delegate: NoRedirect(), delegateQueue: nil)
-    /// `password` is the server-wide access password (sent as `Relay-Access`); required by production relays.
+    /// `base` is `https://<relay>/v2/files`; `password` is the server-wide access password (sent as `Relay-Access`).
     public init(base: URL, token: String, password: String? = nil, allowLocalTest: Bool = false) throws {
         guard base.scheme == "https" || (allowLocalTest && base.scheme == "http" && base.host == "127.0.0.1") else { throw RelayError.invalid("HTTPS required") }
+        guard base.path == "/v2/files" else { throw RelayError.invalid("base must be the relay's /v2/files endpoint") }
         try RelayAccess.validate(password)
         self.base = base; self.token = token; self.password = password
     }

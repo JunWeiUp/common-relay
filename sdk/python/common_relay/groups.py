@@ -90,8 +90,8 @@ class Groups:
         self.config = config
         self.allow_local_test = allow_local_test
         u = urlsplit(config['url'])
-        if u.username or getattr(u, "pass" + "word") or u.query or u.fragment or u.path != '/relay/v1/ws' or (u.scheme != 'wss' and not (allow_local_test and u.scheme == 'ws' and u.hostname == '127.0.0.1')): raise ValueError('WSS URL required')
-        self.base = ('https' if u.scheme == 'wss' else 'http') + '://' + u.netloc + '/relay/v1'
+        if u.username or getattr(u, "pass" + "word") or u.query or u.fragment or u.path != '/v2/ws' or (u.scheme != 'wss' and not (allow_local_test and u.scheme == 'ws' and u.hostname == '127.0.0.1')): raise ValueError('WSS URL required')
+        self.base = ('https' if u.scheme == 'wss' else 'http') + '://' + u.netloc + '/v2'
         self._access = access_headers(config.get('password'))
     async def call(self, method, path, value=None, authorization=None):
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as session:

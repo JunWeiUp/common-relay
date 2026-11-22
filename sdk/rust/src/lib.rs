@@ -1,25 +1,24 @@
-//! Common Relay v1 client: encrypted online/offline messages, streams, files,
-//! presence and signed device groups.
+//! Common Relay v2 SDK: signed device groups (`/v2/group`, `/v2/enroll`), end-to-end
+//! encrypted resumable files (`/v2/files`), compact invitation links and v2 helpers
+//! (Box/Pipe types, plugin bindings, `crs1` sealed bridge payloads).
+//!
+//! Every endpoint is derived from the device's `wss://host/v2/ws` relay URL.
 
-mod client;
+mod access;
 mod crypto;
 mod files;
 mod groups;
 pub mod invitation_links;
-mod journal;
 mod payload;
 mod secretstream;
-mod stream;
 pub mod v2;
 
-pub use client::{Client, Event, Options, Peer};
+pub use access::{Options, ACCESS_HEADER};
 pub use crypto::new_message_id;
 pub use crypto::{generate_key_pair, Identity};
 pub use files::{decrypt_file, prepare_file, safe_file_name, FileDescriptor, FileInfo, RelayFiles};
 pub use groups::{advance_group, group_signing_key, unpack_group_entry, Groups};
-pub use journal::{RelayJournal, CLEANUP_BATCH, DEFAULT_TTL, RETENTION};
 pub use payload::{validate_payload, PayloadKind};
-pub use stream::RelayStream;
 
 /// Failures are cloneable so a closed connection reports the same cause to every caller.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

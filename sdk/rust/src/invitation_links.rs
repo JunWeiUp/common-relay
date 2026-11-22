@@ -1,4 +1,4 @@
-//! Encrypted compact invitation links.
+//! Encrypted compact invitation links (`common-relay://host/v2/i/<id>#<key>`).
 use crate::{Error, Result};
 use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -50,7 +50,7 @@ pub fn open_packet(packet: &str, key: &[u8; 32]) -> Result<Value> {
 /// `password` (optional server access password) is appended to the fragment as
 /// `.<base64url>`; the fragment never reaches HTTP.
 pub fn make_link(inv: &Value, key: &[u8; 32], password: Option<&str>) -> Result<String> {
-    let suffix = match crate::client::checked_access_password(password)? {
+    let suffix = match crate::access::checked_access_password(password)? {
         Some(p) => format!(".{}", URL_SAFE_NO_PAD.encode(p)),
         None => String::new(),
     };
@@ -61,7 +61,7 @@ pub fn make_link(inv: &Value, key: &[u8; 32], password: Option<&str>) -> Result<
     }
     let authority = &u[url::Position::BeforeHost..url::Position::AfterPort];
     Ok(format!(
-        "common-relay://{authority}/i/{}#{}{suffix}",
+        "common-relay://{authority}/v2/i/{}#{}{suffix}",
         URL_SAFE_NO_PAD.encode(id),
         URL_SAFE_NO_PAD.encode(key)
     ))
@@ -80,7 +80,7 @@ pub fn parse_link(text: &str, local: bool) -> Result<(String, String, [u8; 32], 
     {
         return Err(invalid());
     }
-    let id = u.path().strip_prefix("/i/").ok_or_else(invalid)?;
+    let id = u.path().strip_prefix("/v2/i/").ok_or_else(invalid)?;
     let fragment = u.fragment().ok_or_else(invalid)?;
     let (key, password) = match fragment.split_once('.') {
         Some((k, p)) => (k, Some(p)),
@@ -116,7 +116,7 @@ pub fn parse_link(text: &str, local: bool) -> Result<(String, String, [u8; 32], 
                 return Err(invalid());
             }
             let text = String::from_utf8(raw).map_err(|_| invalid())?;
-            if !crate::client::valid_access_password(&text) {
+            if !crate::access::valid_access_password(&text) {
                 return Err(invalid());
             }
             Some(text)
@@ -128,23 +128,35 @@ pub fn parse_link(text: &str, local: bool) -> Result<(String, String, [u8; 32], 
         "wss"
     };
     let authority = &u[url::Position::BeforeHost..url::Position::AfterPort];
-    Ok((
-        format!("{scheme}://{authority}/relay/v1/ws"),
-        id,
-        key,
-        password,
-    ))
+    Ok((format!("{scheme}://{authority}/v2/ws"), id, key, password))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn vectors() {
-        let v: Value = serde_json::from_str(include_str!(
+    /// The shared vectors describe the retired `/relay/v1` link shape; the packet crypto is
+    /// unchanged, so v2 links are the same vectors with `/v2/ws` and the `/v2/i/` prefix.
+    fn v2_vectors() -> Value {
+        let mut v: Value = serde_json::from_str(include_str!(
             "../../../protocol/invitation-link-vectors.json"
         ))
         .unwrap();
+        v["invitation"]["url"] = json!(v["invitation"]["url"]
+            .as_str()
+            .unwrap()
+            .replace("/relay/v1/ws", "/v2/ws"));
+        for k in ["link", "link_with_password"] {
+            v[k] = json!(v[k].as_str().unwrap().replacen("/i/", "/v2/i/", 1));
+        }
+        v
+    }
+    #[test]
+    fn vectors() {
+        let raw: Value = serde_json::from_str(include_str!(
+            "../../../protocol/invitation-link-vectors.json"
+        ))
+        .unwrap();
+        let v = v2_vectors();
         let key: [u8; 32] = hex::decode(v["key"].as_str().unwrap())
             .unwrap()
             .try_into()
@@ -154,11 +166,16 @@ mod tests {
             .try_into()
             .unwrap();
         assert_eq!(read_token(&key), v["read_token"]);
-        assert_eq!(seal(&v["invitation"], &key, &nonce).unwrap(), v["packet"]);
         assert_eq!(
-            open_packet(v["packet"].as_str().unwrap(), &key).unwrap(),
-            v["invitation"]
+            seal(&raw["invitation"], &key, &nonce).unwrap(),
+            raw["packet"]
         );
+        assert_eq!(
+            open_packet(raw["packet"].as_str().unwrap(), &key).unwrap(),
+            raw["invitation"]
+        );
+        // Retired v1 links are rejected.
+        assert!(parse_link(raw["link"].as_str().unwrap(), false).is_err());
         assert_eq!(make_link(&v["invitation"], &key, None).unwrap(), v["link"]);
         let (url, id, k, p) = parse_link(v["link"].as_str().unwrap(), false).unwrap();
         assert_eq!(url, v["invitation"]["url"]);
@@ -179,10 +196,7 @@ mod tests {
     }
     #[test]
     fn rejects_bad_links_and_packets() {
-        let v: Value = serde_json::from_str(include_str!(
-            "../../../protocol/invitation-link-vectors.json"
-        ))
-        .unwrap();
+        let v = v2_vectors();
         let key: [u8; 32] = hex::decode(v["key"].as_str().unwrap())
             .unwrap()
             .try_into()
@@ -191,7 +205,8 @@ mod tests {
         for bad in [
             link.replace("common-relay://", "https://"),
             format!("{link}="),
-            link.replace("/i/", "/j/"),
+            link.replace("/v2/i/", "/v2/j/"),
+            link.replace("/v2/i/", "/i/"),
             link.replace("#", "?x=1#"),
         ] {
             assert!(parse_link(&bad, false).is_err());

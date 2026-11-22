@@ -1,6 +1,6 @@
 package io.github.junweiup.commonrelay;
 
-/** Server-wide access password sent as {@value #HEADER} on every /relay/v1 request. It is not an end-to-end key. */
+/** Server-wide access password sent as {@value #HEADER} on every /v2 ledger and file request. It is not an end-to-end key. */
 public final class RelayAccess {
     public static final String HEADER="Relay-Access";
     private RelayAccess(){}

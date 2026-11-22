@@ -7,7 +7,7 @@ import java.nio.file.Path;
 public class GroupTest {
  @Test public void sharedMembershipVectors() throws Exception {
   JSONObject v=new JSONObject(new String(Files.readAllBytes(java.nio.file.Paths.get("../../protocol/group-vectors.json")),java.nio.charset.StandardCharsets.UTF_8));
-  RelayGroups g=new RelayGroups(v.getJSONObject("config"),false);
+  RelayGroups g=new RelayGroups(new JSONObject(v.getJSONObject("config").toString()).put("url","wss://example.invalid/v2/ws"),false);
   assertEquals(v.getJSONObject("manager").getString("signing_key"),g.member("Mac").getString("signing_key"));
   JSONObject a=v.getJSONObject("initial"),b=v.getJSONObject("approved"),c=v.getJSONObject("removed");
   RelayGroups.verify(v.getJSONObject("self_service"),v.getJSONObject("manager").getString("signing_key"));

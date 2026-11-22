@@ -1,5 +1,5 @@
 //! Authenticated device group management.
-use crate::client::{checked_access_password, ACCESS_HEADER};
+use crate::access::{checked_access_password, ACCESS_HEADER};
 use crate::{validate_payload, Error, PayloadKind, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -264,7 +264,7 @@ impl Groups {
             || u.password().is_some()
             || u.query().is_some()
             || u.fragment().is_some()
-            || u.path() != "/relay/v1/ws"
+            || u.path() != "/v2/ws"
             || !(u.scheme() == "wss"
                 || (allow_local_test && u.scheme() == "ws" && u.host_str() == Some("127.0.0.1")))
         {
@@ -273,7 +273,7 @@ impl Groups {
         let mut base = u.clone();
         base.set_scheme(if u.scheme() == "wss" { "https" } else { "http" })
             .map_err(|_| invalid())?;
-        base.set_path("/relay/v1");
+        base.set_path("/v2");
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
@@ -1050,7 +1050,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
-        let g = Groups::new(json!({"url":format!("wss://{address}/relay/v1/ws")}), false).unwrap();
+        let g = Groups::new(json!({"url":format!("wss://{address}/v2/ws")}), false).unwrap();
         assert!(matches!(
             g.call(reqwest::Method::GET, "/group", None, None).await,
             Err(Error::Relay(_))
@@ -1073,24 +1073,14 @@ mod tests {
             eprintln!("skipped: prebuilt relay unavailable");
             return;
         }
-        // common-relay removed v1 on 2026-11-22; Rust device groups are v1-only.
-        if let Ok(out) = std::process::Command::new(&binary)
-            .arg("device-add")
-            .output()
-        {
-            let text = String::from_utf8_lossy(&out.stderr).to_string()
-                + &String::from_utf8_lossy(&out.stdout);
-            if text.contains("unknown command") {
-                eprintln!("skipped: server no longer speaks v1");
-                return;
-            }
-        }
         let data = std::env::temp_dir().join(format!("relay-rust-group-{}", random(16).unwrap()));
         std::fs::create_dir(&data).unwrap();
         let credential = data.join("bootstrap.json");
         let password = "{{SECRET_ovfdztxk}}";
         let access = data.join("access.sha256");
         std::fs::write(&access, hex::encode(Sha256::digest(password.as_bytes()))).unwrap();
+        let admin = data.join("admin.sha256");
+        std::fs::write(&admin, hex::encode(Sha256::digest(b"test-v2-admin-secret"))).unwrap();
         assert!(std::process::Command::new(&binary)
             .args([
                 "group-bootstrap",
@@ -1124,6 +1114,8 @@ mod tests {
                 "example",
                 "--access-password-file",
                 access.to_str().unwrap(),
+                "--v2-admin-hash-file",
+                admin.to_str().unwrap(),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1139,7 +1131,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
         assert!(ready);
-        let url = format!("ws://{addr}/relay/v1/ws");
+        let url = format!("ws://{addr}/v2/ws");
         let config = |device: &str| json!({"url":url,"password":password,"app":"example","device":device,"secret_key":random(32).unwrap(),"trusted_peers":{}});
         let mut initial = config("bootstrap-manager");
         initial["group"] = json!("bootstrap-test");
@@ -1166,6 +1158,83 @@ mod tests {
         assert_eq!(b.config["password"], password);
         assert!(b.finish_join().await.unwrap());
         a.refresh().await.unwrap();
+        // Manual admission: the manager approves the signed join request.
+        let manual = a.invite("manual", true).await.unwrap();
+        let mut c = config("tablet");
+        c["group"] = a.config["group"].clone();
+        let mut t = Groups::new(c, true).unwrap();
+        let resolved = t
+            .resolve_invitation(manual["short_link"].as_str().unwrap())
+            .await
+            .unwrap();
+        t.join(&resolved, "Tablet").await.unwrap();
+        assert!(!t.finish_join().await.unwrap());
+        let request = a.pending(&manual).await.unwrap();
+        a.approve(&manual, &request, false).await.unwrap();
+        assert!(t.finish_join().await.unwrap());
+        // Group members exchange an end-to-end encrypted file over /v2/files.
+        let options = crate::Options {
+            allow_local_test: true,
+            password: Some(password.into()),
+        };
+        let identity = |g: &Groups| {
+            crate::Identity::new(
+                "example",
+                g.config["group"].as_str().unwrap(),
+                g.config["device"].as_str().unwrap(),
+                g.config["secret_key"].as_str().unwrap(),
+                serde_json::from_value::<HashMap<String, String>>(
+                    g.config["trusted_peers"].clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        a.refresh().await.unwrap();
+        let (ia, it) = (identity(&a), identity(&t));
+        let files_a = crate::RelayFiles::for_relay_endpoint(
+            &url,
+            a.config["token"].as_str().unwrap(),
+            options.clone(),
+        )
+        .unwrap();
+        let files_t = crate::RelayFiles::for_relay_endpoint(
+            &url,
+            t.config["token"].as_str().unwrap(),
+            options,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("relay-rust-files-{}", random(16).unwrap()));
+        std::fs::create_dir(&dir).unwrap();
+        let source = dir.join("source.bin");
+        std::fs::write(&source, b"v2 file payload ".repeat(4096)).unwrap();
+        let staged = dir.join("staged.enc");
+        let descriptor = crate::prepare_file(
+            &ia,
+            "tablet",
+            &source,
+            &staged,
+            json!({"name":"source.bin"}),
+        )
+        .unwrap();
+        files_a.upload(&descriptor, &staged).await.unwrap();
+        let inbox = files_t.inbox().await.unwrap();
+        assert_eq!(inbox.len(), 1);
+        let downloaded = dir.join("download.enc");
+        files_t.download(&inbox[0], &downloaded).await.unwrap();
+        let output = dir.join("out.bin");
+        let meta = crate::decrypt_file(&it, "creator", &inbox[0], &downloaded, &output).unwrap();
+        assert_eq!(meta["name"], "source.bin");
+        assert_eq!(
+            std::fs::read(&output).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
+        files_t.delete(&inbox[0].id).await.unwrap();
+        assert!(files_t.inbox().await.unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        t.prepare_exit(false).await.unwrap();
+        t.exit().await.unwrap();
+        a.refresh().await.unwrap();
         b.rename("phone", "Renamed").await.unwrap();
         a.refresh().await.unwrap();
         b.prepare_exit(false).await.unwrap();
@@ -1188,7 +1257,7 @@ mod tests {
             socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{destination}/stolen\r\nContent-Length: 0\r\n\r\n").as_bytes()).await.unwrap();
         });
         let g = Groups::new(
-            json!({"url":format!("ws://{addr}/relay/v1/ws"),"token":"test-only"}),
+            json!({"url":format!("ws://{addr}/v2/ws"),"token":"test-only"}),
             true,
         )
         .unwrap();

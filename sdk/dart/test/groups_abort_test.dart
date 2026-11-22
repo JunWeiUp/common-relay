@@ -25,7 +25,7 @@ void main() {
     });
   });
   tearDown(() => server.close(force: true));
-  String ws() => 'ws://127.0.0.1:${server.port}/relay/v1/ws';
+  String ws() => 'ws://127.0.0.1:${server.port}/v2/ws';
 
   test('abort trigger stops an in-flight group request', () async {
     final groups = RelayGroups(sodium, {'url': ws(), 'app': 'test', 'device': 'test'}, allowLocalTest: true);

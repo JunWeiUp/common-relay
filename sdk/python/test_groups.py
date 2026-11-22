@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -15,24 +16,27 @@ from common_relay.groups import Groups, sign, unpack, payload, digest, member, v
 ROOT=Path(__file__).resolve().parents[2]
 ACCESS='interop-access-1'
 
-def _server_speaks_v1(binary):
-    """common-relay removed v1 (and device-add) on 2026-11-22; v1-only SDK APIs cannot be exercised."""
-    try:
-        r = subprocess.run([binary, 'device-add'], capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return 'unknown command' not in (r.stdout + r.stderr)
+class Ledger:
+ """Direct access to the server's ledger tables for tamper/expiry tests: relay_v2.db (v2_ledger_*) or a legacy relay.db."""
+ TABLES=re.compile(r'\b(group_invite_links|group_invite_grants|group_invites|devices)\b')
+ def __init__(self,data):
+  self.db=sqlite3.connect(data/'relay_v2.db');self.v2=self.db.execute("select 1 from sqlite_master where name='v2_ledger_invites'").fetchone() is not None
+  if not self.v2:self.db.close();self.db=sqlite3.connect(data/'relay.db')
+ def execute(self,sql,args=()):
+  if self.v2:sql=self.TABLES.sub(lambda m:'v2_ledger_'+m[1].removeprefix('group_'),sql.replace('select token from','select token_hash from').replace('(app,grp,id,token,','(app,grp,id,token_hash,'))
+  return self.db.execute(sql,args)
+ def commit(self):self.db.commit()
+ def close(self):self.db.close()
 
 class GroupTests(unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)
   with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
-  self.url=f'ws://127.0.0.1:{port}/relay/v1/ws';self.server=ROOT/'build/common-relay'
-  if not self.server.exists() or not _server_speaks_v1(str(self.server)):
-   self.skipTest('Python device groups are v1-only; v1 was removed from the server')
+  self.url=f'ws://127.0.0.1:{port}/v2/ws';self.server=ROOT/'build/common-relay'
+  if not self.server.exists():self.skipTest('build/common-relay missing; run go build -o build/common-relay ./cmd/common-relay')
   subprocess.run([str(self.server),'group-bootstrap','--data',str(self.path/'db'),'--app','example','--group','test','--credential-out',str(self.path/'bootstrap')],check=True)
-  (self.path/'access').write_text(hashlib.sha256(ACCESS.encode()).hexdigest())
-  self.proc=subprocess.Popen([str(self.server),'serve','--self-service-apps','example','--data',str(self.path/'db'),'--listen',f'127.0.0.1:{port}','--access-password-file',str(self.path/'access')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  (self.path/'access').write_text(hashlib.sha256(ACCESS.encode()).hexdigest());(self.path/'admin').write_text(hashlib.sha256(b'test-v2-admin-secret').hexdigest())
+  self.proc=subprocess.Popen([str(self.server),'serve','--self-service-apps','example','--data',str(self.path/'db'),'--listen',f'127.0.0.1:{port}','--access-password-file',str(self.path/'access'),'--v2-admin-hash-file',str(self.path/'admin')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   for _ in range(100):
    try:_,w=await asyncio.open_connection('127.0.0.1',port);w.close();await w.wait_closed();break
    except OSError:await asyncio.sleep(.03)
@@ -64,7 +68,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
  async def test_compact_packet_confidentiality_tamper_and_revocation(self):
   from common_relay import invitation_links as links
   inv=await self.a.invite('auto',compact=True);url,identifier,key,_=links.parse_link(inv['short_link'],True);b=self.device('reader')
-  db=sqlite3.connect(self.path/'db/relay.db');row=db.execute('select read_hash,packet from group_invite_links where id=?',(identifier,)).fetchone()
+  db=Ledger(self.path/'db');row=db.execute('select read_hash,packet from group_invite_links where id=?',(identifier,)).fetchone()
   self.assertEqual(row[0],digest(links.read_token(key).encode()))
   for secret in (key.hex(),inv['secret'],inv['delegate_secret']):self.assertNotIn(secret,' '.join(row))
   with self.assertRaises(RuntimeError):await b.call('GET','/enroll/'+identifier+'/link',authorization='InvitationLink '+'00'*32)
@@ -77,11 +81,11 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
   with self.assertRaises(Exception):await b.resolve_invitation(inv['short_link'])
   await self.a.cancel(inv)
   with self.assertRaises(RuntimeError):await b.resolve_invitation(inv['short_link'])
-  db=sqlite3.connect(self.path/'db/relay.db');self.assertEqual(db.execute('select count(*) from group_invite_links').fetchone(),(0,));db.close()
+  db=Ledger(self.path/'db');self.assertEqual(db.execute('select count(*) from group_invite_links').fetchone(),(0,));db.close()
  async def test_compact_cross_app_and_expiry(self):
   inv=await self.a.invite(compact=True);other=self.device('other-app');other.config['app']='other-app'
   with self.assertRaises(ValueError):await other.resolve_invitation(inv['short_link'])
-  db=sqlite3.connect(self.path/'db/relay.db');db.execute('update group_invites set expires=0 where id=?',(inv['id'],));db.commit();db.close()
+  db=Ledger(self.path/'db');db.execute('update group_invites set expires=0 where id=?',(inv['id'],));db.commit();db.close()
   with self.assertRaises(RuntimeError):await self.device('expired-link').resolve_invitation(inv['short_link'])
  async def test_auto_offline_inviter_concurrent_edits_and_restart(self):
   inv=await self.a.invite('auto');b=self.device('auto-phone');await b.join(inv,'Phone')
@@ -110,7 +114,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
   await b.join(inv,'Bad');await self.a.cancel(inv)
   with self.assertRaises(RuntimeError):await b.finish_join()
   inv=await self.a.invite('auto');b=self.device('expired');await b.join(inv,'Expired')
-  db=sqlite3.connect(self.path/'db/relay.db');db.execute('update group_invites set expires=0 where id=?',(inv['id'],));db.commit();db.close()
+  db=Ledger(self.path/'db');db.execute('update group_invites set expires=0 where id=?',(inv['id'],));db.commit();db.close()
   with self.assertRaises(RuntimeError):await b.finish_join()
  async def test_auto_conflict_rebases_and_lost_post_response_recovers(self):
   inv=await self.a.invite('auto');b=self.device('rebase');await b.join(inv,'Rebase');call=b.call;changed=False
@@ -160,7 +164,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
   inv=await admin.invite('auto');b=self.device('removed-after-admission');await b.join(inv,'New');pending=copy.deepcopy(b.config)
   await b.finish_join();await admin.remove(b.config['device'])
   with self.assertRaises(RuntimeError):await Groups(pending,allow_local_test=True).finish_join()
-  db=sqlite3.connect(self.path/'db/relay.db');raw=' '.join(row[0] for row in db.execute('select grant_entry from group_invite_grants'));db.close()
+  db=Ledger(self.path/'db');raw=' '.join(row[0] for row in db.execute('select grant_entry from group_invite_grants'));db.close()
   self.assertNotIn(inv['delegate_secret'],raw);self.assertNotIn(inv['secret'],raw)
  async def test_auto_paged_chain(self):
   inv=await self.a.invite('auto');b=self.device('paged');await b.join(inv,'Paged')
@@ -223,17 +227,17 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
   await b.refresh();self.assertNotIn('phone-c',b.config['trusted_peers'])
   with self.assertRaises(RuntimeError):await self.a.call('PUT','/group',old)
   with self.assertRaises(ValueError):await self.a.remove('mac')
-  db=sqlite3.connect(self.path/'db/relay.db');tokens=[r[0] for r in db.execute('select token from devices')];db.close()
+  db=Ledger(self.path/'db');tokens=[r[0] for r in db.execute('select token from devices')];db.close()
   self.assertNotIn(b.config['token'],tokens);self.assertIn(digest(b.config['token'].encode()),tokens)
   # A reconstructed client pins its persisted chain tip and fetches later events.
   restored=Groups(json.loads(json.dumps(b.config)),allow_local_test=True);self.assertEqual(len((await restored.refresh())['state']['members']),2)
  async def test_legacy_identity_upgrade_preserves_keys_and_token(self):
-  a=self.device('legacy-manager');b=self.device('legacy-phone')
+  # Devices provisioned before signed groups (the removed device-add) still live in existing databases.
+  a=self.device('legacy-manager');b=self.device('legacy-phone');db=Ledger(self.path/'db')
   for client in (a,b):
-   client.config['group']='legacy'
-   path=self.path/(client.config['device']+'-credential')
-   subprocess.run([str(self.server),'device-add','--data',str(self.path/'db'),'--app','example','--group','legacy','--device',client.config['device'],'--public-key',client.config['public_key'],'--credential-out',str(path)],check=True)
-   client.config['token']=json.loads(path.read_text())['token']
+   client.config['group']='legacy';client.config['token']=os.urandom(32).hex()
+   db.execute('insert into devices(app,grp,id,token,public_key) values(?,?,?,?,?)',('example','legacy',client.config['device'],digest(client.config['token'].encode()),client.config['public_key']))
+  db.commit();db.close()
   a.config['trusted_peers']={b.config['device']:b.config['public_key']}
   b.config['trusted_peers']={a.config['device']:a.config['public_key']}
   boot=self.path/'legacy-bootstrap'
@@ -257,7 +261,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
   with self.assertRaises(Exception):verify(wrong,member(self.a.config,'A')['signing_key'])
   cancel=await self.a.invite();await self.a.cancel(cancel)
   with self.assertRaises(RuntimeError):await c.join(cancel,'C')
-  expired=await self.a.invite();db=sqlite3.connect(self.path/'db/relay.db');db.execute('update group_invites set expires=0 where id=?',(expired['id'],));db.commit();db.close()
+  expired=await self.a.invite();db=Ledger(self.path/'db');db.execute('update group_invites set expires=0 where id=?',(expired['id'],));db.commit();db.close()
   with self.assertRaises(RuntimeError):await c.join(expired,'C')
 
 class GroupVectors(unittest.TestCase):

@@ -8,9 +8,9 @@
 [![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](docs/V2-ARCHITECTURE.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
-Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java/Kotlin、Dart、Python、TypeScript（Node.js）、Go 和 Rust 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
+Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java、Dart、Python、Go 和 Rust 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
 
-**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。**服务端只提供协议 v2**（`serve` 必须传入 `--v2-admin-hash-file`）：`/v2/ws` 设备管道、`/v2/group` 与 `/v2/enroll` 签名设备组、`/v2/files` 可续传加密文件、Space/Box，以及 Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件。v1 传输与全部 `/relay/v1/*` 路由已移除（见[变更记录](CHANGELOG.md)）；[协议说明](protocol/README.md)中的签名组与文件报文格式在 `/v2` 下保持不变。依赖 `/relay/v1/ws` 的 SDK 功能（离线消息、双向流）和下方 Python 示例仍面向 v1，待迁移。详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
+**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。**服务端只提供协议 v2**（`serve` 必须传入 `--v2-admin-hash-file`）：`/v2/ws` 设备管道、`/v2/group` 与 `/v2/enroll` 签名设备组、`/v2/files` 可续传加密文件、Space/Box，以及 Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件。v1 传输与全部 `/relay/v1/*` 路由已移除（见[变更记录](CHANGELOG.md)）；[协议说明](protocol/README.md)中的签名组与文件报文格式在 `/v2` 下保持不变。SDK 同样只支持 v2：TypeScript、Kotlin SDK 及所有仅限 v1 的客户端接口已删除。详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
 
 [快速开始](#快速开始) · [客户端 SDK](#客户端-sdk) · [文档](#文档) · [参与贡献](CONTRIBUTING.md#简体中文)
 
@@ -95,24 +95,21 @@ SDK 直接按本仓库 Git 标签（如 `v0.1.7`）安装，不发布到 npm、P
 | Android Java | [sdk/java](sdk/java) | Android API 26+；构建使用 JDK 17、Gradle 8.13、Android SDK 36 |
 | Dart | [sdk/dart](sdk/dart) | Dart 3.11+ 且 <4.0 |
 | Python | [sdk/python](sdk/python) | Python 3.11+ |
-| Kotlin | [sdk/kotlin](sdk/kotlin) | Android API 26+；复用 Java SDK，提供协程接口 |
-| TypeScript（Node.js） | [sdk/typescript](sdk/typescript) | Node.js 22+ |
 | Go 客户端 | [sdk/go](sdk/go) | Go 1.25+（独立 module） |
-| Rust 客户端 | [sdk/rust](sdk/rust) | Rust 1.89+（tokio，纯 Rust） |
+| Rust 客户端 | [sdk/rust](sdk/rust) | Rust 1.89+（纯 Rust） |
 
 ```text
 Swift   .package(url: "https://github.com/JunWeiUp/common-relay", exact: "0.1.7")
-Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.7'    // 或 :kotlin:，经 JitPack
+Android implementation 'com.github.JunWeiUp.common-relay:java:v0.1.7'    // 经 JitPack
 Dart    git: { url: https://github.com/JunWeiUp/common-relay, ref: v0.1.7, path: sdk/dart }
 Python  pip install "git+https://github.com/JunWeiUp/common-relay@v0.1.7#subdirectory=sdk/python"
-Node.js npm install https://github.com/JunWeiUp/common-relay/releases/download/v0.1.7/common-relay-typescript-0.1.7.tgz
 Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.7
 Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.7" }
 ```
 
 [SDK 分发指南](docs/REGISTRY.md)介绍仓库配置、发布流程，以及用于审计或本地补丁的可选源码快照。
 
-各 SDK 按已支持能力验证共享密码向量。所有 SDK 均为完整能力：在线与离线消息、流、文件、签名设备组及短邀请。各语言独立实现，Kotlin 复用 Java，Rust SDK 是独立纯 Rust 客户端而非共享核心，不需要多平台产物构建。应用应安全持久化身份、可信公钥和重试状态；启用自动邀请前，组内全部成员的 SDK 都应支持相应授权链。
+各 SDK 按已支持能力验证共享密码向量，且只支持协议 v2。Swift、Java、Dart、Python、Rust 提供签名设备组与短邀请（`/v2/group`、`/v2/enroll`、`common-relay://host/v2/i/…` 链接）及可续传加密文件（`/v2/files`）；设备消息使用各 SDK 的 `/v2/ws` 客户端（Swift `RelayV2Client`/`RelayV2Pipe`、Java `V2Client`、Dart `RelayV2Client`/`RelayV2Pipe`、Python `Client`、Rust `V2Client`、Go `v2client`）。各语言独立实现，Rust SDK 是独立纯 Rust 客户端而非共享核心，不需要多平台产物构建。应用应安全持久化身份、可信公钥和重试状态；启用自动邀请前，组内全部成员的 SDK 都应支持相应授权链。
 
 ## 开发与测试
 
@@ -124,15 +121,13 @@ go test -race ./...
 swift test --package-path sdk/swift
 (cd sdk/dart && dart pub get && dart analyze && dart test)
 (cd sdk/java && gradle testDebugUnitTest lintDebug)
-(cd sdk/kotlin && gradle testDebugUnitTest lintDebug)
-(cd sdk/typescript && npm ci && npm test)
 (cd sdk/go && go test -race ./...)
-(cd sdk/rust && cargo clippy --all-targets -- -D warnings && cargo test)
+(cd sdk/rust && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features)
 ```
 
 Swift、Dart 和 Android 检查需要各自工具链；Java 单测还需要本机 libsodium。环境变量及跨语言测试命令见[开发指南](docs/DEVELOPMENT.md)。
 
-本地互通覆盖离线消息、双向 8 MiB 加密流、签名设备组及邀请。公网 WSS、长时负载和恢复演练属于单独的部署检查，详见[验证指南](docs/VALIDATION.md)。
+各 SDK 的测试针对真实回环服务端验证设备组与文件客户端，`scripts/group-interop.py` 覆盖跨 SDK 的签名设备组全流程。公网 WSS、长时负载和恢复演练属于单独的部署检查，详见[验证指南](docs/VALIDATION.md)。
 
 ## 文档
 
