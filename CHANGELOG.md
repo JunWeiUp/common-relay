@@ -9,6 +9,7 @@
 - **安全**：插件失败限流改为按「绑定 + 客户端 IP」计数（仅信任回环/指定代理的转发头），攻击者不能把合法客户端锁在外面。
 - **安全**：插件密钥（令牌哈希、HMAC 密钥）只写不读，与公开配置分列存储并用 `plugin-secrets.key` 加密；账户密码改为加盐 scrypt（旧 SHA-256 记录仍可验证）。
 - 可选封存：桥接插件配置 `seal_public_key` 后，Webhook/Drop/WebDAV 收到的明文在落盘前按 `crs1` 格式封存给消费端公钥；Go SDK 提供 `OpenSealed`。
+- **运维**：新增 `GET /v2/admin/metrics`（边缘插件请求结果计数、设备连接/断线次数与原因、近 24 小时断线、最近连接事件；内存有界、重启清零），Go SDK `Client.Metrics()`。
 - **可靠性**：`/v2/ws` 服务端每 30 秒主动 ping（`PipeHub.Keepalive`），Go SDK `Hub` 也每 30 秒 ping 并在无响应时立即重连（`Hub.Keepalive`）；修复空闲连接被反向代理（nginx `proxy_read_timeout`）每约 2 分钟断开一次的问题。
 - 新增 `GET /v2/me`：设备令牌返回自身设备信息（Root Admin 返回 `root_admin:true`），管理端创建 Space 后可把自己加为成员；Go / Dart / Java / Rust / Swift SDK 均提供 `Me()`（`me()`）。
 - 新增 `PATCH /v2/admin/plugins/{id}/{mount}`（合并更新、`null` 删除、`if_version` 乐观锁）与 `GET` 单个绑定；`PUT` 省略的密钥保持不变，停用/启用无需轮换令牌；`GET /v2/admin/plugins` 返回插件配置 Schema，未知配置键直接 400。

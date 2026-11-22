@@ -53,6 +53,12 @@ type pipePeer struct {
 	closed bool
 	ctx    context.Context
 	cancel context.CancelFunc
+	reason atomic.Value // string: why the server ended this session (first writer wins)
+}
+
+func (p *pipePeer) endWith(reason string) {
+	p.reason.CompareAndSwap(nil, reason)
+	p.cancel()
 }
 
 // pendingRPC binds an in-flight RPC to the only device allowed to answer it.
@@ -90,6 +96,9 @@ type PipeHub struct {
 	// Reverse proxies drop idle WebSockets (nginx proxy_read_timeout); a ping/pong
 	// round trip keeps both directions busy and reaps dead peers.
 	Keepalive time.Duration
+
+	// Metrics, when set, records connects/disconnects for /v2/admin/metrics.
+	Metrics *Metrics
 }
 
 // DefaultPipeKeepalive stays well under common proxy idle timeouts (60–120s).
@@ -313,12 +322,26 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 	h.peers[dev.ID] = p
 	h.mu.Unlock()
 	if prev != nil {
-		prev.cancel()
+		prev.endWith("replaced")
 		_ = prev.conn.Close(websocket.StatusGoingAway, "replaced")
 	}
+	connectedAt := time.Now()
+	h.Metrics.Connect(dev.ID)
 
+	var readErr error
 	defer func() {
 		cancel()
+		reason, _ := p.reason.Load().(string)
+		if reason == "" {
+			switch {
+			case readErr == nil:
+				reason = "server_closed"
+			case websocket.CloseStatus(readErr) != -1:
+				reason = "client_closed"
+			default:
+				reason = "connection_lost"
+			}
+		}
 		p.outMu.Lock()
 		p.closed = true
 		p.outMu.Unlock()
@@ -326,6 +349,8 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 		if h.peers[dev.ID] == p {
 			delete(h.peers, dev.ID)
 		}
+		_, stillOnline := h.peers[dev.ID]
+		h.Metrics.Disconnect(dev.ID, reason, connectedAt, stillOnline)
 		for sid, st := range h.streams {
 			if st.a == p || st.b == p {
 				other := st.a
@@ -355,7 +380,7 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 				err := conn.Write(wctx, pkt.kind, pkt.data)
 				wcancel()
 				if err != nil {
-					cancel()
+					p.endWith("write_failed")
 					return
 				}
 			}
@@ -376,11 +401,13 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				pctx, pcancel := context.WithTimeout(ctx, every/2+5*time.Second)
+				pctx, pcancel := context.WithTimeout(ctx, min(every, 10*time.Second))
 				err := conn.Ping(pctx)
 				pcancel()
 				if err != nil {
-					cancel()
+					if ctx.Err() == nil {
+						p.endWith("keepalive_timeout")
+					}
 					return
 				}
 			}
@@ -405,6 +432,7 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 	for {
 		kind, data, err := conn.Read(ctx)
 		if err != nil {
+			readErr = err
 			return
 		}
 		if kind == websocket.MessageBinary {

@@ -175,7 +175,7 @@ func (h *Hub) runOnce(ctx context.Context) error {
 			case <-connCtx.Done():
 				return
 			case <-t.C:
-				pctx, pcancel := context.WithTimeout(connCtx, every/2+5*time.Second)
+				pctx, pcancel := context.WithTimeout(connCtx, min(every, 10*time.Second))
 				err := conn.Ping(pctx)
 				pcancel()
 				if err != nil && connCtx.Err() == nil {

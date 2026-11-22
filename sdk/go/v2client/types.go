@@ -231,3 +231,46 @@ type PipeEvent struct {
 	Peers   []string `json:"peers,omitempty"`
 	Code    string   `json:"code,omitempty"`
 }
+
+// EdgeCounter counts /edge/{plugin}/{mount} requests by outcome.
+type EdgeCounter struct {
+	Requests   int64 `json:"requests"`
+	OK         int64 `json:"ok"`
+	Rejected   int64 `json:"rejected"` // 401/403/429
+	ClientErr  int64 `json:"client_err"`
+	ServerErr  int64 `json:"server_err"`
+	LastAt     int64 `json:"last_at"`
+	LastErrAt  int64 `json:"last_err_at"`
+	LastStatus int   `json:"last_status"`
+}
+
+// DeviceConn summarises one device's /v2/ws sessions since the relay started.
+type DeviceConn struct {
+	Online         bool   `json:"online"`
+	Connects       int64  `json:"connects"`
+	Disconnects    int64  `json:"disconnects"`
+	Disconnects24h int64  `json:"disconnects_24h"` // excludes "replaced"
+	LastConnect    int64  `json:"last_connect,omitempty"`
+	LastDisconnect int64  `json:"last_disconnect,omitempty"`
+	LastReason     string `json:"last_reason,omitempty"` // keepalive_timeout | replaced | client_closed | connection_lost | write_failed | server_closed
+}
+
+// ConnEvent is one /v2/ws connect or disconnect.
+type ConnEvent struct {
+	Device   string `json:"device"`
+	At       int64  `json:"at"`
+	Kind     string `json:"kind"`
+	Reason   string `json:"reason,omitempty"`
+	Duration int64  `json:"duration,omitempty"`
+}
+
+// Metrics is the relay's in-memory operational record (reset on restart).
+type Metrics struct {
+	StartedAt         int64                  `json:"started_at"`
+	UptimeSeconds     int64                  `json:"uptime_seconds"`
+	Edge              map[string]EdgeCounter `json:"edge"` // "plugin/mount"
+	Devices           map[string]DeviceConn  `json:"devices"`
+	KeepaliveTimeouts int64                  `json:"keepalive_timeouts"`
+	Replaced          int64                  `json:"replaced"`
+	Recent            []ConnEvent            `json:"recent"`
+}

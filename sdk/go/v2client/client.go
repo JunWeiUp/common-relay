@@ -161,6 +161,15 @@ func (c *Client) Me(ctx context.Context) (Device, bool, error) {
 	return res.Device, res.RootAdmin, err
 }
 
+// Metrics returns the relay's operational counters. Older servers answer IsUnsupported.
+func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
+	var res struct {
+		Metrics Metrics `json:"metrics"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v2/admin/metrics", nil, &res)
+	return res.Metrics, err
+}
+
 func (c *Client) ListSpaces(ctx context.Context) ([]Space, error) {
 	var res struct {
 		Spaces []Space `json:"spaces"`

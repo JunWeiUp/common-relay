@@ -44,6 +44,7 @@ type Server struct {
 
 func New(store *core.Store, cfg Config) *Server {
 	pipe := core.NewPipeHub(store)
+	pipe.Metrics = core.NewMetrics()
 	src := cfg.AccessSource
 	if src == "" && cfg.AccessHash != "" {
 		src = "file"
@@ -165,6 +166,11 @@ func (s *Server) handleEdge(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Metrics run last (deferred first) so a recovered panic is counted as a 500.
+	mount, _, _ := strings.Cut(subPath, "/")
+	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	w = sw
+	defer func() { s.Pipe.Metrics.Edge(pluginID+"/"+mount, sw.status) }()
 	// A panicking plugin must not take its stack trace to the client or leave the
 	// response half-written without a log line naming the plugin.
 	defer func() {
@@ -184,6 +190,34 @@ func (s *Server) handleEdge(w http.ResponseWriter, r *http.Request) {
 	}
 	h.ServeHTTP(w, r2)
 }
+
+// statusWriter records the response status for edge metrics while keeping
+// streaming (Flush) and http.ResponseController (Unwrap) working.
+type statusWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.status, w.wroteHeader = code, true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 /* ───────── Device Kernel Plane (/v2/ws & /v2/spaces/...) ───────── */
 
@@ -405,6 +439,9 @@ func (s *Server) handleBoxObjects(w http.ResponseWriter, r *http.Request, role c
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	p := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v2/admin/"), "/")
 	switch {
+	case p == "metrics" && r.Method == http.MethodGet:
+		replyJSON(w, http.StatusOK, map[string]any{"ok": true, "metrics": s.Pipe.Metrics.Snapshot()})
+
 	case p == "status" && r.Method == http.MethodGet:
 		st, err := s.Store.Status(s.Pipe.OnlineCount(), s.Plugins.IDs())
 		if err != nil {
