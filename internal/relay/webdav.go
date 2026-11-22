@@ -282,6 +282,7 @@ func davPathAllowed(allowedFolder, p, method string) bool {
 }
 
 func (s *Server) webdav(w http.ResponseWriter, r *http.Request) {
+	s.Usage.record("(webdav)", r)
 	rest := strings.TrimPrefix(r.URL.Path, davPrefix)
 	route, sub, _ := strings.Cut(rest, "/")
 	d := s.davRoutes[route]

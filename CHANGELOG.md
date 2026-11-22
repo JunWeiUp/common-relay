@@ -9,6 +9,7 @@
 - **安全**：插件失败限流改为按「绑定 + 客户端 IP」计数（仅信任回环/指定代理的转发头），攻击者不能把合法客户端锁在外面。
 - **安全**：插件密钥（令牌哈希、HMAC 密钥）只写不读，与公开配置分列存储并用 `plugin-secrets.key` 加密；账户密码改为加盐 scrypt（旧 SHA-256 记录仍可验证）。
 - 可选封存：桥接插件配置 `seal_public_key` 后，Webhook/Drop/WebDAV 收到的明文在落盘前按 `crs1` 格式封存给消费端公钥；Go SDK 提供 `OpenSealed`。
+- **迁移**：`/v2/admin/metrics` 增加 `v1` 段：按 应用 × 类型（ws / files / group / enroll / dav / webhook）× 入口（`/relay/v1` 地址，或经 v1 代码处理的 `/v2` 地址）统计调用次数与最近时间，以及当前在线的 v1 WebSocket 数，用于判断何时可以退役 v1；Go SDK `Metrics.V1`。
 - **运维**：新增 `common-relay backup`（运行中一致性快照：`VACUUM INTO` + 密钥 + 硬链接不可变载荷，保留 N 份）与 `common-relay schema`；`scripts/deploy-remote.sh` + `deploy/upgrade.sh` 一键升级（快照演练、按 schema 变化生成回滚脚本、失败自动回滚）；`deploy/common-relay-backup.{service,timer}` 每日快照。
 - **运维**：新增 `GET /v2/admin/metrics`（边缘插件请求结果计数、设备连接/断线次数与原因、近 24 小时断线、最近连接事件；内存有界、重启清零），Go SDK `Client.Metrics()`。
 - **可靠性**：`/v2/ws` 服务端每 30 秒主动 ping（`PipeHub.Keepalive`），Go SDK `Hub` 也每 30 秒 ping 并在无响应时立即重连（`Hub.Keepalive`）；修复空闲连接被反向代理（nginx `proxy_read_timeout`）每约 2 分钟断开一次的问题。

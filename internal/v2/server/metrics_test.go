@@ -93,6 +93,9 @@ func TestAdminMetricsCountEdgeOutcomesAndDisconnectReasons(t *testing.T) {
 	_ = c2.CloseNow()
 
 	got := m()
+	if got.V1 != nil {
+		t.Fatalf("a bare v2 server reports no v1 usage: %+v", got.V1)
+	}
 	drop := got.Edge["drop/inbox"]
 	if drop.Requests != 2 || drop.OK != 1 || drop.Rejected != 1 || drop.LastErrAt == 0 {
 		t.Fatalf("edge counters = %+v", drop)

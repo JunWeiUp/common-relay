@@ -223,7 +223,7 @@ func (s *Server) V2GroupHandler() http.HandlerFunc {
 			return
 		}
 		r2.URL = &u
-		s.groups(w, r2)
+		s.groups(w, markV2(r2))
 	})
 }
 
@@ -287,6 +287,9 @@ func (s *Server) notifyGroupSynced(g GroupState, removed []Member) {
 
 func (s *Server) groups(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if strings.Contains(r.URL.Path, "/enroll/") {
+		s.Usage.record("", r) // enrollment is unauthenticated; the app is unknown here
+	}
 	if r.URL.Path == "/relay/v1/group/exit" {
 		s.exitGroup(w, r)
 		return

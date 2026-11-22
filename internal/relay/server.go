@@ -61,6 +61,7 @@ type SyncedGroupMember struct {
 }
 
 type Server struct {
+	Usage                          *Usage // who still calls v1 code (exposed via /v2/admin/metrics)
 	webhooks                       map[string]*WebhookRoute
 	webhookSlots                   chan struct{}
 	davRoutes                      map[string]*WebDAVRoute
@@ -82,7 +83,7 @@ type Server struct {
 }
 
 func New(s *Store) *Server {
-	return &Server{webhookSlots: make(chan struct{}, 2), davSlots: make(chan struct{}, 2), Store: s, peers: map[string]*peer{}, streams: map[string]*stream{}, fileLocks: map[string]*fileLock{}, MaxConnections: 128, AppConnections: 64, DiskReserve: 2 << 30}
+	return &Server{Usage: &Usage{}, webhookSlots: make(chan struct{}, 2), davSlots: make(chan struct{}, 2), Store: s, peers: map[string]*peer{}, streams: map[string]*stream{}, fileLocks: map[string]*fileLock{}, MaxConnections: 128, AppConnections: 64, DiskReserve: 2 << 30}
 }
 func key(d Device) string { return d.App + "/" + d.Group + "/" + d.ID }
 func (s *Server) presence(d Device, kind string) {
@@ -119,7 +120,11 @@ func (s *Server) auth(r *http.Request) (Device, error) {
 	if !strings.HasPrefix(v, "Bearer ") {
 		return Device{}, ErrDenied
 	}
-	return s.Store.Authenticate(strings.TrimPrefix(v, "Bearer "))
+	d, err := s.Store.Authenticate(strings.TrimPrefix(v, "Bearer "))
+	if err == nil {
+		s.Usage.record(d.App, r)
+	}
+	return d, err
 }
 func (s *Server) send(p *peer, kind websocket.MessageType, b []byte) bool {
 	if p == nil {
@@ -190,6 +195,8 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	p := &peer{d: d, ws: ws, out: make(chan packet, 32), ctx: ctx, cancel: cancel}
 	s.peers[key(d)] = p
 	s.mu.Unlock()
+	s.Usage.wsOpen(d.App, 1)
+	defer s.Usage.wsOpen(d.App, -1)
 	ws.SetReadLimit(MaxMessage + 4096)
 	writerDone := make(chan struct{})
 	go func() {

@@ -95,6 +95,7 @@ func (s *Server) LoadWebhooks(path string) error {
 }
 
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
+	s.Usage.record("(webhook)", r)
 	h := s.webhooks[strings.TrimPrefix(r.URL.Path, "/relay/v1/webhooks/")]
 	if h == nil {
 		http.NotFound(w, r)

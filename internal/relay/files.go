@@ -47,7 +47,7 @@ func (s *Server) V2FilesHandler() http.HandlerFunc {
 			return
 		}
 		r2.URL = &u
-		s.files(w, r2)
+		s.files(w, markV2(r2))
 	})
 }
 

@@ -164,9 +164,11 @@ func (c *Client) Me(ctx context.Context) (Device, bool, error) {
 // Metrics returns the relay's operational counters. Older servers answer IsUnsupported.
 func (c *Client) Metrics(ctx context.Context) (Metrics, error) {
 	var res struct {
-		Metrics Metrics `json:"metrics"`
+		Metrics Metrics  `json:"metrics"`
+		V1      *V1Usage `json:"v1"`
 	}
 	err := c.doJSON(ctx, http.MethodGet, "/v2/admin/metrics", nil, &res)
+	res.Metrics.V1 = res.V1
 	return res.Metrics, err
 }
 

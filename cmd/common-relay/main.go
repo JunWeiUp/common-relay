@@ -238,6 +238,7 @@ func run() error {
 				SelfServiceAll:  server.SelfServiceApps["*"],
 				SelfServiceApps: selfServiceList,
 			})
+			v2Srv.V1Usage = func() any { return server.Usage.Snapshot() }
 			v2Srv.OnAccessHashChanged = func(hexHash string) {
 				if raw, decErr := hex.DecodeString(hexHash); decErr == nil && len(raw) == 32 {
 					server.SetAccessHash(raw)

@@ -35,11 +35,13 @@ type Server struct {
 	Pipe                *core.PipeHub
 	Plugins             *plugin.Host
 	OnAccessHashChanged func(hexHash string)
-	cfg                 Config
-	accessMu            sync.RWMutex
-	accessHash          string
-	accessSource        string
-	accessUpdatedAt     int64
+	// V1Usage, when set, adds the legacy v1 server's usage counters to /v2/admin/metrics.
+	V1Usage         func() any
+	cfg             Config
+	accessMu        sync.RWMutex
+	accessHash      string
+	accessSource    string
+	accessUpdatedAt int64
 }
 
 func New(store *core.Store, cfg Config) *Server {
@@ -440,7 +442,11 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	p := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v2/admin/"), "/")
 	switch {
 	case p == "metrics" && r.Method == http.MethodGet:
-		replyJSON(w, http.StatusOK, map[string]any{"ok": true, "metrics": s.Pipe.Metrics.Snapshot()})
+		res := map[string]any{"ok": true, "metrics": s.Pipe.Metrics.Snapshot()}
+		if s.V1Usage != nil {
+			res["v1"] = s.V1Usage()
+		}
+		replyJSON(w, http.StatusOK, res)
 
 	case p == "status" && r.Method == http.MethodGet:
 		st, err := s.Store.Status(s.Pipe.OnlineCount(), s.Plugins.IDs())
