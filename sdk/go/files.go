@@ -294,8 +294,14 @@ func NewFiles(base, token string, options Options) (*Files, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	// Keep the family the caller asked for: a /v2/files URL must not silently
+	// fall back to the legacy /relay/v1 path.
+	prefix := "/relay/v1/files"
+	if strings.HasPrefix(u.Path, "/v2/") {
+		prefix = "/v2/files"
+	}
 	return &Files{
-		base:     u.Scheme + "://" + u.Host + "/relay/v1/files",
+		base:     u.Scheme + "://" + u.Host + prefix,
 		token:    token,
 		password: options.Password,
 		http: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {

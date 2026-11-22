@@ -364,3 +364,19 @@ func TestFilesNeverFollowRedirects(t *testing.T) {
 		t.Fatal("redirect followed")
 	}
 }
+
+func TestFilesKeepsRequestedURLFamily(t *testing.T) {
+	token := strings.Repeat("a", 64)
+	for in, want := range map[string]string{
+		"http://127.0.0.1:1/v2/files":        "http://127.0.0.1:1/v2/files",
+		"http://127.0.0.1:1/relay/v1/files/": "http://127.0.0.1:1/relay/v1/files",
+	} {
+		f, err := NewFiles(in, token, Options{AllowLocalTest: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.base != want {
+			t.Fatalf("NewFiles(%s).base = %s, want %s", in, f.base, want)
+		}
+	}
+}
