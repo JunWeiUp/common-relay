@@ -14,6 +14,7 @@ import (
 	"time"
 
 	v2core "github.com/JunWeiUp/common-relay/internal/v2/core"
+	"github.com/JunWeiUp/common-relay/internal/v2/ledger"
 	_ "modernc.org/sqlite"
 )
 
@@ -22,14 +23,19 @@ const backupPrefix = "common-relay-"
 
 // backupDatabases are copied with VACUUM INTO: a transactionally consistent
 // snapshot taken while the service keeps running (WAL readers do not block it).
-var backupDatabases = []string{"relay.db", "relay_v2.db"}
+// relay_v2.db is the single store; relay.db is the pre-merge database, kept
+// only while it still exists on disk (it is read once, then never written).
+var backupDatabases = []string{"relay_v2.db", "relay.db"}
 
-// backupFiles and backupDirs are copied as-is. Blob and file payloads are
-// immutable once written, so hard links are used when the target shares a
-// filesystem and the snapshot then costs almost no space.
+// backupFiles and backupDirs are copied as-is: blobs/ (v2 blobs and, under
+// blobs/files/, ledger file payloads) and the legacy files/ directory if present.
+// Finished blobs are immutable, so hard links are used when the target shares a
+// filesystem and the snapshot then costs almost no space. Ledger payloads grow
+// in place while uploading, so mutableDirs are always copied, never linked.
 var (
 	backupFiles = []string{"plugin-secrets.key"}
-	backupDirs  = []string{"files", "blobs"}
+	backupDirs  = []string{"blobs", "files"}
+	mutableDirs = map[string]bool{filepath.Join("blobs", "files"): true}
 )
 
 // runBackup writes <out>/common-relay-<UTC timestamp>/ and keeps the newest keep
@@ -68,7 +74,7 @@ func runBackup(dataDir, outDir string, keep int, now time.Time) (string, error) 
 		}
 	}
 	for _, d := range backupDirs {
-		if err := copyTree(filepath.Join(dataDir, d), filepath.Join(tmp, d)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := copyTree(filepath.Join(dataDir, d), filepath.Join(tmp, d), d); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fail(err)
 		}
 	}
@@ -119,7 +125,8 @@ func vacuumInto(src, dst string) error {
 	return nil
 }
 
-func copyTree(src, dst string) error {
+// copyTree copies src (the data-dir relative path name) into dst.
+func copyTree(src, dst, name string) error {
 	if _, err := os.Stat(src); err != nil {
 		return err
 	}
@@ -135,7 +142,7 @@ func copyTree(src, dst string) error {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		return copyFile(p, target, true)
+		return copyFile(p, target, !mutableDirs[filepath.Dir(filepath.Join(name, rel))])
 	})
 }
 
@@ -188,8 +195,9 @@ func pruneBackups(outDir string, keep int) error {
 
 // schemaReport tells deploy tooling whether a new binary will migrate the data
 // (and therefore whether a rollback must restore the pre-deploy snapshot).
+// ledger_imported is 1 once a legacy relay.db has been merged into relay_v2.db.
 func schemaReport(dataDir string) (map[string]int, error) {
-	out := map[string]int{"binary_v2": v2core.SchemaVersion, "data_v2": 0}
+	out := map[string]int{"binary_v2": v2core.SchemaVersion, "data_v2": 0, "ledger_imported": 0}
 	p := filepath.Join(dataDir, "relay_v2.db")
 	if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
 		return out, nil
@@ -204,6 +212,10 @@ func schemaReport(dataDir string) (map[string]int, error) {
 		return nil, err
 	}
 	out["data_v2"] = v
+	var n int
+	if db.QueryRow(`SELECT count(*) FROM v2_settings WHERE key=?`, ledger.LegacyImportSetting).Scan(&n) == nil && n > 0 {
+		out["ledger_imported"] = 1
+	}
 	return out, nil
 }
 

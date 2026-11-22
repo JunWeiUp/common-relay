@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 // Group membership is a client-signed, append-only chain. The relay authorizes
 // operations but cannot manufacture a trusted device key on behalf of a client.
@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -107,69 +106,10 @@ func (g GroupState) member(id string) (Member, bool) {
 	}
 	return Member{}, false
 }
-func (s *Store) initGroups() error {
-	_, e := s.DB.Exec(`CREATE TABLE IF NOT EXISTS group_creations(app TEXT NOT NULL,grp TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(app,grp));
- CREATE TABLE IF NOT EXISTS group_entries(app TEXT NOT NULL,grp TEXT NOT NULL,revision INTEGER NOT NULL,entry TEXT NOT NULL,PRIMARY KEY(app,grp,revision));
- CREATE TABLE IF NOT EXISTS group_bootstrap(token_hash TEXT PRIMARY KEY,app TEXT NOT NULL,grp TEXT NOT NULL,expires INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS group_invites(id TEXT PRIMARY KEY,app TEXT NOT NULL,grp TEXT NOT NULL,owner TEXT NOT NULL,secret_hash TEXT NOT NULL,expires INTEGER NOT NULL,request TEXT NOT NULL DEFAULT '',token_hash TEXT NOT NULL DEFAULT '',approved TEXT NOT NULL DEFAULT '');
- CREATE TABLE IF NOT EXISTS group_invite_grants(id TEXT PRIMARY KEY REFERENCES group_invites(id) ON DELETE CASCADE,grant_entry TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS group_invite_links(id TEXT PRIMARY KEY REFERENCES group_invites(id) ON DELETE CASCADE,read_hash TEXT NOT NULL,packet TEXT NOT NULL);`)
-	return e
-}
-
-// Bootstrap is an explicit administrator capability, never an ordinary device token.
-func (s *Store) GroupBootstrap(app, group, secret string) error {
-	if !identifier.MatchString(app) || !identifier.MatchString(group) || len(secret) < 32 {
-		return ErrDenied
-	}
-	var n int
-	if err := s.DB.QueryRow("SELECT count(*) FROM group_entries WHERE app=? AND grp=?", app, group).Scan(&n); err != nil {
-		return err
-	}
-	if n != 0 {
-		return errors.New("group already initialized")
-	}
-	_, err := s.DB.Exec("INSERT INTO group_bootstrap VALUES(?,?,?,?)", hashToken(secret), app, group, time.Now().Add(10*time.Minute).Unix())
-	return err
-}
-
-// CheckGroups reports stored records that the strict payload rules would
-// reject, so an upgrade can be verified against existing data first.
-func (s *Store) CheckGroups() ([]string, error) {
-	rows, err := s.DB.Query("SELECT app,grp,revision,entry FROM group_entries ORDER BY app,grp,revision")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var bad []string
-	for rows.Next() {
-		var app, group, raw string
-		var revision int
-		var e SignedEntry
-		var grant AdmissionGrant
-		if err = rows.Scan(&app, &group, &revision, &raw); err != nil {
-			return nil, err
-		}
-		err = json.Unmarshal([]byte(raw), &e)
-		if err == nil {
-			_, err = e.state()
-		}
-		if err == nil && e.Authorization != nil {
-			var b []byte
-			if b, err = e.Authorization.bytes(); err == nil {
-				err = decodeStrict(b, grantSchema, &grant)
-			}
-		}
-		if err != nil {
-			bad = append(bad, fmt.Sprintf("%s/%s@%d", app, group, revision))
-		}
-	}
-	return bad, rows.Err()
-}
 func latest(tx *sql.Tx, app, group string) (SignedEntry, GroupState, error) {
 	var e SignedEntry
 	var raw string
-	err := tx.QueryRow("SELECT entry FROM group_entries WHERE app=? AND grp=? ORDER BY revision DESC LIMIT 1", app, group).Scan(&raw)
+	err := tx.QueryRow("SELECT entry FROM v2_ledger_entries WHERE app=? AND grp=? ORDER BY revision DESC LIMIT 1", app, group).Scan(&raw)
 	if err != nil {
 		return e, GroupState{}, err
 	}
@@ -184,7 +124,7 @@ func insertEntry(tx *sql.Tx, e SignedEntry, g GroupState) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec("INSERT INTO group_entries VALUES(?,?,?,?)", g.App, g.Group, g.Revision, string(raw))
+	_, err = tx.Exec("INSERT INTO v2_ledger_entries VALUES(?,?,?,?)", g.App, g.Group, g.Revision, string(raw))
 	return err
 }
 func readGroupJSON(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -205,64 +145,6 @@ func groupFailure(w http.ResponseWriter, err error) {
 	} else {
 		http.Error(w, "membership conflict; refresh and retry", 409)
 	}
-}
-
-// SyncExistingGroups replays every active signed group's latest state into OnGroupSynced
-// at startup so every managed group is present in its v2 space.
-func (s *Server) SyncExistingGroups() {
-	if s.OnGroupSynced == nil {
-		return
-	}
-	rows, err := s.Store.DB.Query(`SELECT app, grp, entry FROM group_entries ge WHERE revision = (SELECT MAX(revision) FROM group_entries WHERE app = ge.app AND grp = ge.grp)`)
-	if err != nil {
-		return
-	}
-	type item struct {
-		entry SignedEntry
-	}
-	var list []item
-	for rows.Next() {
-		var app, grp, raw string
-		var e SignedEntry
-		if rows.Scan(&app, &grp, &raw) == nil && json.Unmarshal([]byte(raw), &e) == nil {
-			list = append(list, item{entry: e})
-		}
-	}
-	rows.Close()
-	for _, it := range list {
-		if g, err := it.entry.state(); err == nil && !g.Closed {
-			s.notifyGroupSynced(g, nil)
-		}
-	}
-}
-
-func (s *Server) notifyGroupSynced(g GroupState, removed []Member) {
-	if s.OnGroupSynced == nil {
-		return
-	}
-	var members []SyncedGroupMember
-	if !g.Closed {
-		for _, m := range g.Members {
-			var tokenHash string
-			if err := s.Store.DB.QueryRow(
-				"SELECT token FROM devices WHERE app=? AND grp=? AND id=? AND revoked=0",
-				g.App, g.Group, m.Device,
-			).Scan(&tokenHash); err == nil {
-				members = append(members, SyncedGroupMember{
-					ID:        m.Device,
-					Name:      m.Name,
-					PublicKey: m.PublicKey,
-					TokenHash: tokenHash,
-					Manager:   m.Manager,
-				})
-			}
-		}
-	}
-	removedIDs := make([]string, 0, len(removed))
-	for _, m := range removed {
-		removedIDs = append(removedIDs, m.Device)
-	}
-	s.OnGroupSynced(g.App, g.Group, g.Name, members, removedIDs, g.Closed, g.Revision)
 }
 
 func (s *Server) groups(w http.ResponseWriter, r *http.Request) {
@@ -343,14 +225,14 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var app, group string
-	err = tx.QueryRow("SELECT app,grp FROM group_bootstrap WHERE token_hash=? AND expires>?", hashToken(secret), time.Now().Unix()).Scan(&app, &group)
+	err = tx.QueryRow("SELECT app,grp FROM v2_ledger_bootstrap WHERE token_hash=? AND expires>?", hashToken(secret), time.Now().Unix()).Scan(&app, &group)
 	if err != nil || app != g.App || group != g.Group {
 		groupFailure(w, ErrDenied)
 		return
 	}
 	if previous, _, lookupErr := latest(tx, g.App, g.Group); lookupErr == nil {
 		var token string
-		tokenErr := tx.QueryRow("SELECT token FROM devices WHERE app=? AND grp=? AND id=? AND revoked=0", g.App, g.Group, m.Device).Scan(&token)
+		tokenErr := tx.QueryRow("SELECT token_hash FROM v2_ledger_devices WHERE app=? AND grp=? AND id=? AND revoked=0", g.App, g.Group, m.Device).Scan(&token)
 		if previous == in.Entry && tokenErr == nil && token == in.TokenHash {
 			reply(w, in.Entry)
 			return
@@ -362,7 +244,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Existing devices must retain their keys; bootstrap cannot silently remove them.
-	rows, err := tx.Query("SELECT id,public_key FROM devices WHERE app=? AND grp=? AND revoked=0", g.App, g.Group)
+	rows, err := tx.Query("SELECT id,public_key FROM v2_ledger_devices WHERE app=? AND grp=? AND revoked=0", g.App, g.Group)
 	if err != nil {
 		groupFailure(w, err)
 		return
@@ -396,10 +278,10 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, ok = existing[m.Device]; !ok {
-		_, err = tx.Exec("INSERT INTO devices(app,grp,id,token,public_key) VALUES(?,?,?,?,?)", g.App, g.Group, m.Device, in.TokenHash, m.PublicKey)
+		_, err = tx.Exec("INSERT INTO v2_ledger_devices(app,grp,id,token_hash,public_key) VALUES(?,?,?,?,?)", g.App, g.Group, m.Device, in.TokenHash, m.PublicKey)
 	} else {
 		var token string
-		err = tx.QueryRow("SELECT token FROM devices WHERE app=? AND grp=? AND id=?", g.App, g.Group, m.Device).Scan(&token)
+		err = tx.QueryRow("SELECT token_hash FROM v2_ledger_devices WHERE app=? AND grp=? AND id=?", g.App, g.Group, m.Device).Scan(&token)
 		if token != in.TokenHash {
 			err = ErrDenied
 		}
@@ -407,14 +289,16 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = insertEntry(tx, in.Entry, g)
 	}
+	projected := false
 	if err == nil {
+		projected = mirrorTx(tx, g, nil)
 		err = tx.Commit()
 	}
 	if err != nil {
 		groupFailure(w, err)
 		return
 	}
-	s.notifyGroupSynced(g, nil)
+	s.committed(g, nil, projected)
 	reply(w, in.Entry)
 }
 func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
@@ -427,7 +311,7 @@ func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
 		w.WriteHeader(400)
 		return
 	}
-	rows, err := s.Store.DB.Query("SELECT entry FROM group_entries WHERE app=? AND grp=? AND revision>? ORDER BY revision LIMIT 64", d.App, d.Group, after)
+	rows, err := s.Store.DB.Query("SELECT entry FROM v2_ledger_entries WHERE app=? AND grp=? AND revision>? ORDER BY revision LIMIT 64", d.App, d.Group, after)
 	if err != nil {
 		groupFailure(w, err)
 		return
@@ -450,15 +334,15 @@ func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	var count int
-	s.Store.DB.QueryRow("SELECT count(*) FROM group_entries WHERE app=? AND grp=?", d.App, d.Group).Scan(&count)
+	s.Store.DB.QueryRow("SELECT count(*) FROM v2_ledger_entries WHERE app=? AND grp=?", d.App, d.Group).Scan(&count)
 	if count == 0 {
 		http.Error(w, "group management not initialized", 404)
 		return
 	}
 	online := []string{}
-	if s.OnlinePeers != nil {
+	if s.Hub != nil {
 		seen := map[string]struct{}{}
-		for _, id := range s.OnlinePeers(d.App, d.Group) {
+		for _, id := range s.Hub.OnlineDevices(d.Group) {
 			if _, ok := seen[id]; !ok {
 				seen[id] = struct{}{}
 				online = append(online, id)
@@ -494,13 +378,13 @@ func (s *Server) invitation(w http.ResponseWriter, r *http.Request, d Device) {
 			w.WriteHeader(400)
 			return
 		}
-		_, err = tx.Exec("DELETE FROM group_invites WHERE expires<=?", time.Now().Unix())
+		_, err = tx.Exec("DELETE FROM v2_ledger_invites WHERE expires<=?", time.Now().Unix())
 		if err != nil {
 			groupFailure(w, err)
 			return
 		}
 		var n int
-		err = tx.QueryRow("SELECT count(*) FROM group_invites WHERE app=? AND grp=?", d.App, d.Group).Scan(&n)
+		err = tx.QueryRow("SELECT count(*) FROM v2_ledger_invites WHERE app=? AND grp=?", d.App, d.Group).Scan(&n)
 		if err != nil || n >= 16 {
 			http.Error(w, "invitation capacity", 429)
 			return
@@ -523,10 +407,10 @@ func (s *Server) invitation(w http.ResponseWriter, r *http.Request, d Device) {
 			}
 			id, expires = grant.Invitation, grant.Expires
 		}
-		_, err = tx.Exec("INSERT INTO group_invites(id,app,grp,owner,secret_hash,expires) VALUES(?,?,?,?,?,?)", id, d.App, d.Group, d.ID, input.SecretHash, expires)
+		_, err = tx.Exec("INSERT INTO v2_ledger_invites(id,app,grp,owner,secret_hash,expires) VALUES(?,?,?,?,?,?)", id, d.App, d.Group, d.ID, input.SecretHash, expires)
 		if err == nil && input.Grant != nil {
 			raw, _ := json.Marshal(input.Grant)
-			_, err = tx.Exec("INSERT INTO group_invite_grants VALUES(?,?)", id, string(raw))
+			_, err = tx.Exec("INSERT INTO v2_ledger_invite_grants VALUES(?,?)", id, string(raw))
 		}
 		if err == nil {
 			err = tx.Commit()
@@ -544,13 +428,13 @@ func (s *Server) invitation(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	var raw, approved string
-	err = tx.QueryRow("SELECT request,approved FROM group_invites WHERE id=? AND app=? AND grp=? AND owner=? AND expires>?", id, d.App, d.Group, d.ID, time.Now().Unix()).Scan(&raw, &approved)
+	err = tx.QueryRow("SELECT request,approved FROM v2_ledger_invites WHERE id=? AND app=? AND grp=? AND owner=? AND expires>?", id, d.App, d.Group, d.ID, time.Now().Unix()).Scan(&raw, &approved)
 	if err != nil {
 		groupFailure(w, err)
 		return
 	}
 	if r.Method == "DELETE" {
-		_, err = tx.Exec("DELETE FROM group_invites WHERE id=?", id)
+		_, err = tx.Exec("DELETE FROM v2_ledger_invites WHERE id=?", id)
 		if err == nil {
 			err = tx.Commit()
 		}
@@ -591,7 +475,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var app, group, owner, secret, request, token, approved string
-	err = tx.QueryRow("SELECT app,grp,owner,secret_hash,request,token_hash,approved FROM group_invites WHERE id=? AND expires>?", id, time.Now().Unix()).Scan(&app, &group, &owner, &secret, &request, &token, &approved)
+	err = tx.QueryRow("SELECT app,grp,owner,secret_hash,request,token_hash,approved FROM v2_ledger_invites WHERE id=? AND expires>?", id, time.Now().Unix()).Scan(&app, &group, &owner, &secret, &request, &token, &approved)
 	if err != nil {
 		groupFailure(w, err)
 		return
@@ -629,12 +513,12 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var used int
-		err = tx.QueryRow("SELECT count(*) FROM devices WHERE app=? AND grp=? AND id=?", app, group, j.Member.Device).Scan(&used)
+		err = tx.QueryRow("SELECT count(*) FROM v2_ledger_devices WHERE app=? AND grp=? AND id=?", app, group, j.Member.Device).Scan(&used)
 		if err != nil || (used != 0 && !exists) {
 			http.Error(w, "device ID cannot be reused", 409)
 			return
 		}
-		_, err = tx.Exec("UPDATE group_invites SET request=?,token_hash=? WHERE id=?", string(raw), j.TokenHash, id)
+		_, err = tx.Exec("UPDATE v2_ledger_invites SET request=?,token_hash=? WHERE id=?", string(raw), j.TokenHash, id)
 		if err == nil {
 			err = tx.Commit()
 		}
@@ -733,9 +617,9 @@ func (s *Server) changeGroup(w http.ResponseWriter, r *http.Request, d Device) {
 		groupFailure(w, ErrDenied)
 		return
 	} else if g.Closed && actor.Manager && len(g.Members) == 0 && g.Invitation == "" && g.RequestHash == "" {
-		_, err = tx.Exec("UPDATE devices SET revoked=1 WHERE app=? AND grp=?", d.App, d.Group)
+		_, err = tx.Exec("UPDATE v2_ledger_devices SET revoked=1 WHERE app=? AND grp=?", d.App, d.Group)
 		if err == nil {
-			_, err = tx.Exec("DELETE FROM group_invites WHERE app=? AND grp=?", d.App, d.Group)
+			_, err = tx.Exec("DELETE FROM v2_ledger_invites WHERE app=? AND grp=?", d.App, d.Group)
 		}
 	} else if actor.Manager && len(added) == 1 && len(removed) == 0 {
 		if automatic, e := isAutoInvite(tx, g.Invitation); e != nil || automatic {
@@ -743,7 +627,7 @@ func (s *Server) changeGroup(w http.ResponseWriter, r *http.Request, d Device) {
 			return
 		}
 		var req, owner, approved string
-		err = tx.QueryRow("SELECT request,owner,approved FROM group_invites WHERE id=? AND app=? AND grp=? AND expires>?", g.Invitation, d.App, d.Group, time.Now().Unix()).Scan(&req, &owner, &approved)
+		err = tx.QueryRow("SELECT request,owner,approved FROM v2_ledger_invites WHERE id=? AND app=? AND grp=? AND expires>?", g.Invitation, d.App, d.Group, time.Now().Unix()).Scan(&req, &owner, &approved)
 		var se SignedEntry
 		var j JoinRequest
 		if err != nil || owner != d.ID || approved != "" || json.Unmarshal([]byte(req), &se) != nil {
@@ -764,20 +648,20 @@ func (s *Server) changeGroup(w http.ResponseWriter, r *http.Request, d Device) {
 		}
 		if upgrade {
 			var token string
-			err = tx.QueryRow("SELECT token FROM devices WHERE app=? AND grp=? AND id=? AND revoked=0", d.App, d.Group, m.Device).Scan(&token)
+			err = tx.QueryRow("SELECT token_hash FROM v2_ledger_devices WHERE app=? AND grp=? AND id=? AND revoked=0", d.App, d.Group, m.Device).Scan(&token)
 			if err == nil && token != j.TokenHash {
 				err = ErrDenied
 			}
 		} else {
-			_, err = tx.Exec("INSERT INTO devices(app,grp,id,token,public_key) VALUES(?,?,?,?,?)", d.App, d.Group, m.Device, j.TokenHash, m.PublicKey)
+			_, err = tx.Exec("INSERT INTO v2_ledger_devices(app,grp,id,token_hash,public_key) VALUES(?,?,?,?,?)", d.App, d.Group, m.Device, j.TokenHash, m.PublicKey)
 		}
 		if err == nil {
-			_, err = tx.Exec("UPDATE group_invites SET approved=? WHERE id=?", string(raw), g.Invitation)
+			_, err = tx.Exec("UPDATE v2_ledger_invites SET approved=? WHERE id=?", string(raw), g.Invitation)
 		}
 	} else if len(removed) == 1 && len(added) == 0 && g.Invitation == "" && g.RequestHash == "" && (actor.Manager || removed[0].Device == d.ID) {
-		_, err = tx.Exec("UPDATE devices SET revoked=1 WHERE app=? AND grp=? AND id=?", d.App, d.Group, removed[0].Device)
+		_, err = tx.Exec("UPDATE v2_ledger_devices SET revoked=1 WHERE app=? AND grp=? AND id=?", d.App, d.Group, removed[0].Device)
 		if err == nil {
-			_, err = tx.Exec("DELETE FROM group_invites WHERE app=? AND grp=? AND owner=?", d.App, d.Group, removed[0].Device)
+			_, err = tx.Exec("DELETE FROM v2_ledger_invites WHERE app=? AND grp=? AND owner=?", d.App, d.Group, removed[0].Device)
 		}
 	} else {
 		groupFailure(w, ErrDenied)
@@ -786,13 +670,15 @@ func (s *Server) changeGroup(w http.ResponseWriter, r *http.Request, d Device) {
 	if err == nil {
 		err = insertEntry(tx, e, g)
 	}
+	projected := false
 	if err == nil {
+		projected = mirrorTx(tx, g, removed)
 		err = tx.Commit()
 	}
 	if err != nil {
 		groupFailure(w, err)
 		return
 	}
-	s.notifyGroupSynced(g, removed)
+	s.committed(g, removed, projected)
 	reply(w, e)
 }

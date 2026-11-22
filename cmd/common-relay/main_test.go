@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JunWeiUp/common-relay/internal/relay"
+	"github.com/JunWeiUp/common-relay/internal/v2/ledger"
 )
 
 func TestInvalidInvocationDoesNotCreateStore(t *testing.T) {
@@ -37,7 +37,7 @@ func TestServeRequiresV2AdminHash(t *testing.T) {
 	t.Cleanup(func() { os.Args = original })
 	tmp := t.TempDir()
 	access := filepath.Join(tmp, "access")
-	if err := os.WriteFile(access, []byte(relay.AccessPasswordHash("correct-horse-1")), 0o600); err != nil {
+	if err := os.WriteFile(access, []byte(ledger.AccessPasswordHash("correct-horse-1")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(tmp, "must-not-exist")

@@ -9,7 +9,7 @@ import (
 
 // SchemaVersion is the relay_v2.db schema version this binary understands.
 // Migrations are ordered and each runs exactly once, tracked by PRAGMA user_version.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // migrations[i] upgrades the schema from version i to i+1.
 var migrations = []func(tx *sql.Tx) error{
@@ -119,6 +119,56 @@ var migrations = []func(tx *sql.Tx) error{
 				fmt.Sprintf(`CREATE TRIGGER IF NOT EXISTS %[1]s_usage_del AFTER DELETE ON %[1]s BEGIN
 					UPDATE v2_usage SET bytes = bytes - %[2]s WHERE space_id = OLD.space_id; END`, t.table, sz("OLD")),
 			)
+		}
+		for _, q := range stmts {
+			if _, err := tx.Exec(q); err != nil {
+				return err
+			}
+		}
+		return nil
+	},
+	// 4 → 5: the signed device-group ledger and the end-to-end file plane move
+	// into this database (formerly relay.db, see internal/v2/ledger). Columns
+	// match the old tables one to one so the one-time import is a plain copy.
+	// Ledger file bytes count in v2_usage under the group's space id, so one
+	// set of counters bounds the whole data directory.
+	func(tx *sql.Tx) error {
+		stmts := []string{
+			`CREATE TABLE IF NOT EXISTS v2_ledger_devices (
+				app TEXT NOT NULL, grp TEXT NOT NULL, id TEXT NOT NULL,
+				token_hash TEXT UNIQUE NOT NULL, public_key TEXT NOT NULL,
+				revoked INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (app, grp, id))`,
+			`CREATE TABLE IF NOT EXISTS v2_ledger_entries (
+				app TEXT NOT NULL, grp TEXT NOT NULL, revision INTEGER NOT NULL, entry TEXT NOT NULL,
+				PRIMARY KEY (app, grp, revision))`,
+			`CREATE TABLE IF NOT EXISTS v2_ledger_creations (
+				app TEXT NOT NULL, grp TEXT NOT NULL, created INTEGER NOT NULL,
+				PRIMARY KEY (app, grp))`,
+			`CREATE TABLE IF NOT EXISTS v2_ledger_bootstrap (
+				token_hash TEXT PRIMARY KEY, app TEXT NOT NULL, grp TEXT NOT NULL, expires INTEGER NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS v2_ledger_invites (
+				id TEXT PRIMARY KEY, app TEXT NOT NULL, grp TEXT NOT NULL, owner TEXT NOT NULL,
+				secret_hash TEXT NOT NULL, expires INTEGER NOT NULL,
+				request TEXT NOT NULL DEFAULT '', token_hash TEXT NOT NULL DEFAULT '', approved TEXT NOT NULL DEFAULT '')`,
+			`CREATE TABLE IF NOT EXISTS v2_ledger_invite_grants (
+				id TEXT PRIMARY KEY REFERENCES v2_ledger_invites(id) ON DELETE CASCADE,
+				grant_entry TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS v2_ledger_invite_links (
+				id TEXT PRIMARY KEY REFERENCES v2_ledger_invites(id) ON DELETE CASCADE,
+				read_hash TEXT NOT NULL, packet TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS v2_ledger_files (
+				id TEXT PRIMARY KEY, app TEXT NOT NULL, grp TEXT NOT NULL,
+				sender TEXT NOT NULL, recipient TEXT NOT NULL,
+				size INTEGER NOT NULL, offset INTEGER NOT NULL DEFAULT 0,
+				metadata TEXT NOT NULL, digest TEXT NOT NULL DEFAULT '',
+				state TEXT NOT NULL DEFAULT 'uploading', expires INTEGER NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS v2_ledger_files_inbox ON v2_ledger_files(app, grp, recipient)`,
+			`CREATE TRIGGER IF NOT EXISTS v2_ledger_files_usage_ins AFTER INSERT ON v2_ledger_files BEGIN
+				INSERT INTO v2_usage(space_id, bytes) VALUES (NEW.grp, NEW.size)
+				ON CONFLICT(space_id) DO UPDATE SET bytes = bytes + NEW.size; END`,
+			`CREATE TRIGGER IF NOT EXISTS v2_ledger_files_usage_del AFTER DELETE ON v2_ledger_files BEGIN
+				UPDATE v2_usage SET bytes = bytes - OLD.size WHERE space_id = OLD.grp; END`,
 		}
 		for _, q := range stmts {
 			if _, err := tx.Exec(q); err != nil {

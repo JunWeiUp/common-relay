@@ -274,22 +274,21 @@ type Metrics struct {
 	Replaced          int64                  `json:"replaced"`
 	Recent            []ConnEvent            `json:"recent"`
 
-	// V1 is filled from the response's "v1" section when the relay still runs
-	// the legacy v1 server; nil otherwise.
-	V1 *V1Usage `json:"-"`
+	// Ledger is filled from the response's "ledger" section: calls into the
+	// signed device-group ledger and file plane (/v2/group, /v2/enroll,
+	// /v2/files) by app and kind. Nil when the relay does not report it.
+	Ledger *LedgerUsage `json:"-"`
 }
 
-// V1UsageRow counts calls into the legacy v1 server code by app, kind and URL family.
-type V1UsageRow struct {
-	App      string `json:"app"`
-	Kind     string `json:"kind"`   // ws | files | group | enroll | dav | webhook
-	Family   string `json:"family"` // v1 = client used a /relay/v1 URL; v2 = a /v2 URL served by v1 code
+// LedgerUsageRow counts calls of one app into one ledger surface.
+type LedgerUsageRow struct {
+	App      string `json:"app"`  // "?" for unauthenticated enrollment calls
+	Kind     string `json:"kind"` // group | enroll | files
 	Requests int64  `json:"requests"`
 	LastAt   int64  `json:"last_at"`
 }
 
-// V1Usage tells which apps still depend on v1 and whether they are connected now.
-type V1Usage struct {
-	Rows   []V1UsageRow   `json:"rows"`
-	LiveWS map[string]int `json:"live_ws"`
+// LedgerUsage is the "ledger" section of /v2/admin/metrics (in memory, reset on restart).
+type LedgerUsage struct {
+	Rows []LedgerUsageRow `json:"rows"`
 }

@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"database/sql"
@@ -92,7 +92,7 @@ func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var app, group, owner, token, request, approved, grantRaw string
-	err = tx.QueryRow(`SELECT i.app,i.grp,i.owner,i.token_hash,i.request,i.approved,a.grant_entry FROM group_invites i JOIN group_invite_grants a ON a.id=i.id WHERE i.id=? AND i.expires>?`, id, time.Now().Unix()).Scan(&app, &group, &owner, &token, &request, &approved, &grantRaw)
+	err = tx.QueryRow(`SELECT i.app,i.grp,i.owner,i.token_hash,i.request,i.approved,a.grant_entry FROM v2_ledger_invites i JOIN v2_ledger_invite_grants a ON a.id=i.id WHERE i.id=? AND i.expires>?`, id, time.Now().Unix()).Scan(&app, &group, &owner, &token, &request, &approved, &grantRaw)
 	if err != nil {
 		groupFailure(w, err)
 		return
@@ -117,7 +117,7 @@ func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
 	if approved != "" {
 		// A consumed invitation cannot restore access after the joiner is removed.
 		var active int
-		err = tx.QueryRow("SELECT count(*) FROM devices WHERE app=? AND grp=? AND token=? AND revoked=0", app, group, token).Scan(&active)
+		err = tx.QueryRow("SELECT count(*) FROM v2_ledger_devices WHERE app=? AND grp=? AND token_hash=? AND revoked=0", app, group, token).Scan(&active)
 		if err != nil || active != 1 {
 			groupFailure(w, ErrDenied)
 			return
@@ -151,7 +151,7 @@ func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(400)
 			return
 		}
-		rows, e := tx.Query("SELECT entry FROM group_entries WHERE app=? AND grp=? AND revision>? AND revision<=? ORDER BY revision LIMIT 64", app, group, after, revision)
+		rows, e := tx.Query("SELECT entry FROM v2_ledger_entries WHERE app=? AND grp=? AND revision>? AND revision<=? ORDER BY revision LIMIT 64", app, group, after, revision)
 		if e != nil {
 			groupFailure(w, e)
 			return
@@ -218,32 +218,34 @@ func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var used int
-	err = tx.QueryRow("SELECT count(*) FROM devices WHERE app=? AND grp=? AND id=?", app, group, actual.Device).Scan(&used)
+	err = tx.QueryRow("SELECT count(*) FROM v2_ledger_devices WHERE app=? AND grp=? AND id=?", app, group, actual.Device).Scan(&used)
 	if err != nil || used != 0 {
 		http.Error(w, "device ID cannot be reused", 409)
 		return
 	}
-	_, err = tx.Exec("INSERT INTO devices(app,grp,id,token,public_key) VALUES(?,?,?,?,?)", app, group, actual.Device, token, actual.PublicKey)
+	_, err = tx.Exec("INSERT INTO v2_ledger_devices(app,grp,id,token_hash,public_key) VALUES(?,?,?,?,?)", app, group, actual.Device, token, actual.PublicKey)
 	if err == nil {
 		err = insertEntry(tx, entry, next)
 	}
 	if err == nil {
-		_, err = tx.Exec("UPDATE group_invites SET approved=? WHERE id=?", string(raw), id)
+		_, err = tx.Exec("UPDATE v2_ledger_invites SET approved=? WHERE id=?", string(raw), id)
 	}
+	projected := false
 	if err == nil {
+		projected = mirrorTx(tx, next, nil)
 		err = tx.Commit()
 	}
 	if err != nil {
 		groupFailure(w, err)
 		return
 	}
-	s.notifyGroupSynced(next, nil)
+	s.committed(next, nil, projected)
 	reply(w, entry)
 }
 
 func isAutoInvite(tx *sql.Tx, id string) (bool, error) {
 	var n int
-	err := tx.QueryRow("SELECT count(*) FROM group_invite_grants WHERE id=?", id).Scan(&n)
+	err := tx.QueryRow("SELECT count(*) FROM v2_ledger_invite_grants WHERE id=?", id).Scan(&n)
 	if err != nil {
 		return false, err
 	}

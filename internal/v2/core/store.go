@@ -31,10 +31,6 @@ type Store struct {
 	GlobalQuota int64
 	OnBoxChange func(spaceID, boxName, event, ref string, seqOrVer int64)
 
-	// ExternalUsage reports bytes held by other stores sharing the same quota
-	// (the v1 relay.db when both protocols run in one process), so the global
-	// quota bounds the whole data directory rather than each store separately.
-	ExternalUsage func() int64
 	// DiskReserve is the minimum free space (bytes) that must remain on the data
 	// volume after any write. Zero disables the check.
 	DiskReserve uint64
@@ -288,14 +284,13 @@ func (s *Store) checkQuotaTx(tx *sql.Tx, spaceID string, extra int64) error {
 	if extra < 0 {
 		return ErrInvalidInput
 	}
-	// v2_usage is maintained by triggers (see migrate.go), so this is O(1).
+	// v2_usage is maintained by triggers (see migrate.go), so this is O(1). It
+	// also counts signed-ledger file transfers, so the global quota spans the
+	// whole data directory.
 	var globalUsed, spaceUsed int64
 	q := `SELECT COALESCE(SUM(bytes), 0), COALESCE(SUM(CASE WHEN space_id=? THEN bytes ELSE 0 END), 0) FROM v2_usage`
 	if err := tx.QueryRow(q, spaceID).Scan(&globalUsed, &spaceUsed); err != nil {
 		return err
-	}
-	if s.ExternalUsage != nil {
-		globalUsed += s.ExternalUsage()
 	}
 	if s.SpaceQuota > 0 && spaceUsed+extra > s.SpaceQuota {
 		return ErrQuota
@@ -660,15 +655,16 @@ func (s *Store) Status(onlinePeers int, plugins []string) (StatusSnapshot, error
 	return st, nil
 }
 
-// ManagedSpaceOwner is the provenance tag for spaces projected from v1 signed
-// groups of app. Devices carry ManagedSpaceOwner(app)+":"+group.
+// ManagedSpaceOwner is the provenance tag for spaces that mirror signed device
+// groups of app (internal/v2/ledger). Devices carry ManagedSpaceOwner(app)+":"+group.
+// The "v1:" prefix is historical and kept: existing rows and admin tools use it.
 func ManagedSpaceOwner(app string) string { return "v1:" + strings.TrimSpace(app) }
 
-// SyncConflicts counts projected members skipped because their device ID or
-// token already belonged to another identity (exposed for logs/metrics).
+// SyncConflicts counts group members skipped because their device ID or token
+// already belonged to another identity (exposed for logs/metrics).
 var SyncConflicts atomic.Int64
 
-// ManagedMember describes one active member projected from a signed group ledger into a v2 Space.
+// ManagedMember describes one active member of a signed device group mirrored into a v2 Space.
 type ManagedMember struct {
 	ID        string
 	Name      string
@@ -677,36 +673,45 @@ type ManagedMember struct {
 	Manager   bool
 }
 
-// SyncManagedGroup mirrors a cryptographically verified self-service group state into v2_spaces,
-// v2_devices, and v2_space_members so group members authenticate natively on /v2/ws.
-// Admin devices and unrelated spaces are never altered.
+// SyncManagedGroup mirrors a verified group state (without app namespace); see SyncManagedGroupTx.
 func (s *Store) SyncManagedGroup(spaceID, name string, members []ManagedMember, removed []string, closed bool) error {
 	return s.SyncManagedGroupWithApp(spaceID, "", name, members, removed, closed)
 }
 
-// SyncManagedGroupWithApp mirrors a signed group state including its originating app namespace.
+// SyncManagedGroupWithApp runs SyncManagedGroupTx in its own transaction.
 func (s *Store) SyncManagedGroupWithApp(spaceID, app, name string, members []ManagedMember, removed []string, closed bool) error {
-	if !ValidIdent(spaceID) {
-		return ErrInvalidInput
-	}
-	now := time.Now().Unix()
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := SyncManagedGroupTx(tx, spaceID, app, name, members, removed, closed); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SyncManagedGroupTx writes a cryptographically verified signed-group state into
+// v2_spaces, v2_devices and v2_space_members inside the caller's transaction (the
+// ledger commits the signed entry in the same one), so group members authenticate
+// natively on /v2/ws. Admin devices and unrelated spaces are never altered.
+func SyncManagedGroupTx(tx *sql.Tx, spaceID, app, name string, members []ManagedMember, removed []string, closed bool) error {
+	if !ValidIdent(spaceID) {
+		return ErrInvalidInput
+	}
+	now := time.Now().Unix()
 
 	appNorm := strings.TrimSpace(app)
 	owner := ManagedSpaceOwner(appNorm)
 	devOwner := owner + ":" + spaceID
 
-	// Provenance guard: only ever touch a space this exact (app, group) projection
-	// created. A same-named admin space or another app's group is never merged.
+	// Provenance guard: only ever touch a space this exact (app, group) created.
+	// A same-named admin space or another app's group is never merged.
 	var curOwner string
 	switch err := tx.QueryRow(`SELECT managed_by FROM v2_spaces WHERE id=?`, spaceID).Scan(&curOwner); {
 	case errors.Is(err, sql.ErrNoRows):
 		if closed {
-			return tx.Commit()
+			return nil
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO v2_spaces(id, name, app, trust_level, created_at, managed_by) VALUES(?,?,?,?,?,?)`,
@@ -717,13 +722,12 @@ func (s *Store) SyncManagedGroupWithApp(spaceID, app, name string, members []Man
 	case err != nil:
 		return err
 	case curOwner != owner:
-		return fmt.Errorf("%w: space %s is owned by %q, refusing projection from %q", ErrConflict, spaceID, curOwner, owner)
+		return fmt.Errorf("%w: space %s is owned by %q, refusing group %q", ErrConflict, spaceID, curOwner, owner)
 	default:
 		if _, err := tx.Exec(`UPDATE v2_spaces SET name=? WHERE id=?`, strings.TrimSpace(name), spaceID); err != nil {
 			return err
 		}
 	}
-
 	active := make(map[string]struct{}, len(members))
 	for _, m := range members {
 		if !ValidIdent(m.ID) || len(m.PublicKey) != 64 || len(m.TokenHash) != 64 {
@@ -809,5 +813,5 @@ func (s *Store) SyncManagedGroupWithApp(spaceID, app, name string, members []Man
 			_, _ = tx.Exec(`UPDATE v2_devices SET revoked=1 WHERE id=? AND is_admin=0 AND managed_by=?`, devID, devOwner)
 		}
 	}
-	return tx.Commit()
+	return nil
 }

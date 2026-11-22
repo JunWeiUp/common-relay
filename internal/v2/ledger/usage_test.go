@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"net/http"
@@ -24,7 +24,7 @@ func TestUsageTracksAppsAndKinds(t *testing.T) {
 	u := f.s.Usage.Snapshot()
 	find := func(app, kind string) int64 {
 		for _, r := range u.Rows {
-			if r.App == app && r.Kind == kind && r.Family == "v2" {
+			if r.App == app && r.Kind == kind {
 				return r.Requests
 			}
 		}

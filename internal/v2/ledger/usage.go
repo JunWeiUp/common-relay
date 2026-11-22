@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"net/http"
@@ -20,13 +20,12 @@ type usageKey struct{ app, kind string }
 // UsageRow is one (app, kind) counter.
 type UsageRow struct {
 	App      string `json:"app"`
-	Kind     string `json:"kind"`   // files | group | enroll
-	Family   string `json:"family"` // always "v2": /relay/v1 URLs no longer exist
+	Kind     string `json:"kind"` // files | group | enroll
 	Requests int64  `json:"requests"`
 	LastAt   int64  `json:"last_at"`
 }
 
-// UsageSnapshot is exposed through /v2/admin/metrics.
+// UsageSnapshot is exposed through /v2/admin/metrics as "ledger".
 type UsageSnapshot struct {
 	Rows []UsageRow `json:"rows"`
 }
@@ -65,7 +64,7 @@ func (u *Usage) record(app string, r *http.Request) {
 			row = u.rows[k]
 		}
 		if row == nil {
-			row = &UsageRow{App: k.app, Kind: k.kind, Family: "v2"}
+			row = &UsageRow{App: k.app, Kind: k.kind}
 			u.rows[k] = row
 		}
 	}

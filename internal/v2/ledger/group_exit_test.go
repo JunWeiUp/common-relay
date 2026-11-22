@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"crypto/ed25519"
@@ -26,7 +26,7 @@ func TestSignedExitAndDisband(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.s.Store.DB.Exec("INSERT INTO group_entries VALUES(?,?,?,?)", g.App, g.Group, 1, string(raw)); err != nil {
+	if _, err := f.s.Store.DB.Exec("INSERT INTO v2_ledger_entries VALUES(?,?,?,?)", g.App, g.Group, 1, string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	rename := g

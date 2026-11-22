@@ -1,38 +1,73 @@
-package relay
+package ledger
 
 import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/JunWeiUp/common-relay/internal/v2/core"
 )
 
 type fixture struct {
 	t      *testing.T
 	s      *Server
+	hub    *fakeHub
 	http   *httptest.Server
 	tokens map[string]string
 }
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
-	store, err := OpenStore(t.TempDir())
+	v2, err := core.OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(v2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := New(store)
 	s.DiskReserve = 0
-	f := &fixture{t: t, s: s, http: httptest.NewServer(s.Handler()), tokens: map[string]string{}}
-	t.Cleanup(func() { f.http.Close(); store.DB.Close() })
+	hub := &fakeHub{}
+	s.Hub = hub
+	f := &fixture{t: t, s: s, hub: hub, http: httptest.NewServer(s.Handler()), tokens: map[string]string{}}
+	t.Cleanup(func() { f.http.Close(); v2.Close() })
 	return f
+}
+
+// fakeHub records what the ledger pushes to live sessions.
+type fakeHub struct {
+	mu           sync.Mutex
+	online       map[string][]string
+	notified     []string // space@revision
+	disconnected []string
+}
+
+func (h *fakeHub) OnlineDevices(space string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.online[space]...)
+}
+func (h *fakeHub) NotifyGroupChanged(space string, revision int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.notified = append(h.notified, fmt.Sprintf("%s@%d", space, revision))
+}
+func (h *fakeHub) DisconnectDevice(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.disconnected = append(h.disconnected, id)
 }
 func (f *fixture) add(id, app string) Device {
 	d := Device{App: app, Group: "test", ID: id, PublicKey: strings.Repeat("01", 32)}
@@ -47,7 +82,7 @@ func (f *fixture) add(id, app string) Device {
 // addTestDevice inserts a credential row directly; production devices only
 // arrive through the signed group ledger.
 func addTestDevice(s *Store, d Device, token string) error {
-	_, err := s.DB.Exec("INSERT INTO devices(app,grp,id,token,public_key) VALUES(?,?,?,?,?)", d.App, d.Group, d.ID, hashToken(token), d.PublicKey)
+	_, err := s.DB.Exec("INSERT INTO v2_ledger_devices(app,grp,id,token_hash,public_key) VALUES(?,?,?,?,?)", d.App, d.Group, d.ID, hashToken(token), d.PublicKey)
 	return err
 }
 func (f *fixture) request(id, method, path string, body []byte, headers map[string]string) (int, []byte) {
@@ -99,7 +134,7 @@ func TestFilesResumeIsolationCommitAndCleanup(t *testing.T) {
 	if code, b := f.request("bob", "GET", "/"+id+"/data", nil, map[string]string{"Range": "bytes=5-"}); code != 206 || !bytes.Equal(b, data[5:]) {
 		t.Fatalf("range %d %s", code, b)
 	}
-	f.s.Store.DB.Exec("UPDATE files SET expires=0 WHERE id=?", id)
+	f.s.Store.DB.Exec("UPDATE v2_ledger_files SET expires=0 WHERE id=?", id)
 	if err := f.s.Collect(); err != nil {
 		t.Fatal(err)
 	}

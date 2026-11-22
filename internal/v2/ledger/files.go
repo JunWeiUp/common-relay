@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"crypto/sha256"
@@ -32,7 +32,7 @@ func reply(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
 }
-func (s *Server) path(id string) string { return filepath.Join(s.Store.Dir, "files", id) }
+func (s *Server) path(id string) string { return filepath.Join(FilesDir(s.Store.Dir), id) }
 
 func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 	d, err := s.auth(r)
@@ -46,7 +46,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 		case "POST":
 			s.createFile(w, r, d)
 		case "GET":
-			rows, err := s.Store.DB.Query("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM files WHERE app=? AND grp=? AND recipient=? AND state='ready' AND expires>? ORDER BY rowid LIMIT 100", d.App, d.Group, d.ID, time.Now().Unix())
+			rows, err := s.Store.DB.Query("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM v2_ledger_files WHERE app=? AND grp=? AND recipient=? AND state='ready' AND expires>? ORDER BY rowid LIMIT 100", d.App, d.Group, d.ID, time.Now().Unix())
 			if err != nil {
 				http.Error(w, "storage", 500)
 				return
@@ -86,7 +86,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	var f File
-	err = s.Store.DB.QueryRow("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM files WHERE id=? AND app=? AND grp=?", id, d.App, d.Group).Scan(&f.ID, &f.From, &f.To, &f.Size, &f.Offset, &f.Metadata, &f.Digest, &f.State, &f.Expires)
+	err = s.Store.DB.QueryRow("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM v2_ledger_files WHERE id=? AND app=? AND grp=?", id, d.App, d.Group).Scan(&f.ID, &f.From, &f.To, &f.Size, &f.Offset, &f.Metadata, &f.Digest, &f.State, &f.Expires)
 	if err != nil || f.Expires <= time.Now().Unix() || (f.From != d.ID && f.To != d.ID) {
 		http.NotFound(w, r)
 		return
@@ -109,7 +109,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "storage", 500)
 			return
 		}
-		if _, err = s.Store.DB.Exec("DELETE FROM files WHERE id=?", id); err != nil {
+		if _, err = s.Store.DB.Exec("DELETE FROM v2_ledger_files WHERE id=?", id); err != nil {
 			http.Error(w, "storage", 500)
 			return
 		}
@@ -153,7 +153,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.Offset += int64(len(data))
-		if _, err = s.Store.DB.Exec("UPDATE files SET offset=? WHERE id=?", f.Offset, id); err != nil {
+		if _, err = s.Store.DB.Exec("UPDATE v2_ledger_files SET offset=? WHERE id=?", f.Offset, id); err != nil {
 			http.Error(w, "storage", 500)
 			return
 		}
@@ -180,7 +180,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "digest mismatch", 409)
 			return
 		}
-		if _, err = s.Store.DB.Exec("UPDATE files SET state='ready' WHERE id=?", id); err != nil {
+		if _, err = s.Store.DB.Exec("UPDATE v2_ledger_files SET state='ready' WHERE id=?", id); err != nil {
 			http.Error(w, "storage", 500)
 			return
 		}
@@ -241,11 +241,11 @@ func (s *Server) createFile(w http.ResponseWriter, r *http.Request, d Device) {
 	}
 	var stat syscall.Statfs_t
 	var reserved int64
-	if err = tx.QueryRow("SELECT COALESCE(SUM(size-offset),0) FROM files").Scan(&reserved); err != nil || syscall.Statfs(s.Store.Dir, &stat) != nil || uint64(stat.Bavail)*uint64(stat.Bsize) < s.DiskReserve+uint64(reserved+f.Size) {
+	if err = tx.QueryRow("SELECT COALESCE(SUM(size-offset),0) FROM v2_ledger_files").Scan(&reserved); err != nil || syscall.Statfs(s.Store.Dir, &stat) != nil || uint64(stat.Bavail)*uint64(stat.Bsize) < s.DiskReserve+uint64(reserved+f.Size) {
 		http.Error(w, "disk reserve", 507)
 		return
 	}
-	_, err = tx.Exec("INSERT INTO files(id,app,grp,sender,recipient,size,metadata,digest,expires) VALUES(?,?,?,?,?,?,?,?,?)", f.ID, d.App, d.Group, d.ID, f.To, f.Size, f.Metadata, f.Digest, f.Expires)
+	_, err = tx.Exec("INSERT INTO v2_ledger_files(id,app,grp,sender,recipient,size,metadata,digest,expires) VALUES(?,?,?,?,?,?,?,?,?)", f.ID, d.App, d.Group, d.ID, f.To, f.Size, f.Metadata, f.Digest, f.Expires)
 	if err != nil {
 		http.Error(w, "id conflict", 409)
 		return
@@ -289,13 +289,13 @@ func (s *Server) lockFile(id string) func() {
 }
 func (s *Server) Collect() error {
 	now := time.Now().Unix()
-	if _, err := s.Store.DB.Exec("DELETE FROM group_invites WHERE expires<=?", now); err != nil {
+	if _, err := s.Store.DB.Exec("DELETE FROM v2_ledger_invites WHERE expires<=?", now); err != nil {
 		return err
 	}
-	if _, err := s.Store.DB.Exec("DELETE FROM group_bootstrap WHERE expires<=?", now); err != nil {
+	if _, err := s.Store.DB.Exec("DELETE FROM v2_ledger_bootstrap WHERE expires<=?", now); err != nil {
 		return err
 	}
-	rows, err := s.Store.DB.Query(`SELECT f.id FROM files f WHERE expires<=? OR EXISTS(SELECT 1 FROM devices d WHERE d.app=f.app AND d.grp=f.grp AND d.id IN(f.sender,f.recipient) AND d.revoked=1)`, now)
+	rows, err := s.Store.DB.Query(`SELECT f.id FROM v2_ledger_files f WHERE expires<=? OR EXISTS(SELECT 1 FROM v2_ledger_devices d WHERE d.app=f.app AND d.grp=f.grp AND d.id IN(f.sender,f.recipient) AND d.revoked=1)`, now)
 	if err != nil {
 		return err
 	}
@@ -318,11 +318,11 @@ func (s *Server) Collect() error {
 		unlock := s.lockFile(id)
 		// Recheck under the same lock as upload/commit/create, including ID reuse.
 		var eligible int
-		err = s.Store.DB.QueryRow(`SELECT COUNT(*) FROM files f WHERE id=? AND (expires<=? OR EXISTS(SELECT 1 FROM devices d WHERE d.app=f.app AND d.grp=f.grp AND d.id IN(f.sender,f.recipient) AND d.revoked=1))`, id, now).Scan(&eligible)
+		err = s.Store.DB.QueryRow(`SELECT COUNT(*) FROM v2_ledger_files f WHERE id=? AND (expires<=? OR EXISTS(SELECT 1 FROM v2_ledger_devices d WHERE d.app=f.app AND d.grp=f.grp AND d.id IN(f.sender,f.recipient) AND d.revoked=1))`, id, now).Scan(&eligible)
 		if err == nil && eligible > 0 {
 			err = os.Remove(s.path(id))
 			if err == nil || os.IsNotExist(err) {
-				_, err = s.Store.DB.Exec("DELETE FROM files WHERE id=?", id)
+				_, err = s.Store.DB.Exec("DELETE FROM v2_ledger_files WHERE id=?", id)
 			}
 		}
 		unlock()

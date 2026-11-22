@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ type strictCase struct {
 
 func loadStrictVectors(t *testing.T) strictVectors {
 	t.Helper()
-	raw, err := os.ReadFile("../../protocol/group-vectors.json")
+	raw, err := os.ReadFile("../../../protocol/group-vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +75,9 @@ func TestChangeGroupRejectsAmbiguousPayload(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{"INSERT INTO group_entries VALUES('example','vectors',1,?)", []any{string(initial)}},
-		{"INSERT INTO group_entries VALUES('example','vectors',2,?)", []any{string(approved)}},
-		{"INSERT INTO devices(app,grp,id,token,public_key) VALUES('example','vectors','phone',?,'ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59')", []any{hashToken(token)}},
+		{"INSERT INTO v2_ledger_entries VALUES('example','vectors',1,?)", []any{string(initial)}},
+		{"INSERT INTO v2_ledger_entries VALUES('example','vectors',2,?)", []any{string(approved)}},
+		{"INSERT INTO v2_ledger_devices(app,grp,id,token_hash,public_key) VALUES('example','vectors','phone',?,'ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59')", []any{hashToken(token)}},
 	} {
 		if _, err := f.s.Store.DB.Exec(q.sql, q.args...); err != nil {
 			t.Fatal(err)
@@ -95,7 +95,7 @@ func TestChangeGroupRejectsAmbiguousPayload(t *testing.T) {
 		t.Fatalf("valid rename: %d %s", status, body)
 	}
 	raw, _ := json.Marshal(v.Strict.Invalid[0].Entry)
-	if _, err := f.s.Store.DB.Exec("INSERT INTO group_entries VALUES('example','vectors',4,?)", string(raw)); err != nil {
+	if _, err := f.s.Store.DB.Exec("INSERT INTO v2_ledger_entries VALUES('example','vectors',4,?)", string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	if bad, err := f.s.Store.CheckGroups(); err != nil || len(bad) != 1 || bad[0] != "example/vectors@4" {

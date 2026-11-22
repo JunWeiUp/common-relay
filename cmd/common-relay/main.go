@@ -8,8 +8,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/JunWeiUp/common-relay/internal/relay"
 	v2core "github.com/JunWeiUp/common-relay/internal/v2/core"
+	"github.com/JunWeiUp/common-relay/internal/v2/ledger"
 	v2drop "github.com/JunWeiUp/common-relay/internal/v2/plugins/drop"
 	v2mcp "github.com/JunWeiUp/common-relay/internal/v2/plugins/mcpedge"
 	v2webdav "github.com/JunWeiUp/common-relay/internal/v2/plugins/webdav"
@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -85,26 +84,43 @@ func run() error {
 			return fmt.Errorf("--access-password-file required")
 		}
 		var err error
-		if accessHash, err = relay.LoadAccessHash(*accessFile); err != nil {
+		if accessHash, err = ledger.LoadAccessHash(*accessFile); err != nil {
 			return err
 		}
 		if *v2AdminFile == "" {
 			return fmt.Errorf("--v2-admin-hash-file required (protocol v2 is the only protocol)")
 		}
 	}
-	s, err := relay.OpenStore(*dir)
+	// One store: relay_v2.db (+ blobs/) holds the v2 spaces, the signed device
+	// group ledger and the file plane. A legacy relay.db is imported once.
+	v2Store, err := v2core.OpenStore(*dir)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer v2Store.Close()
+	v2Store.SpaceQuota = *appQuota
+	v2Store.GlobalQuota = *globalQuota
+	v2Store.DiskReserve = *reserve
+	s, err := ledger.Open(v2Store)
 	if err != nil {
 		return err
 	}
-	defer s.DB.Close()
 	s.AppQuota = *appQuota
 	s.GlobalQuota = *globalQuota
+	imp, err := s.ImportLegacy()
+	if err != nil {
+		return err
+	}
+	if !imp.Skipped {
+		log.Printf("imported %s into relay_v2.db: %d groups, %d entries, %d devices, %d invites, %d files (%d payloads); %s and files/ are left untouched as a backup",
+			ledger.LegacyDB, imp.Groups, imp.Entries, imp.Devices, imp.Invites, imp.Files, imp.Payloads, ledger.LegacyDB)
+	}
 	switch command {
 	case "group-bootstrap":
 		if *out == "" {
 			return fmt.Errorf("--credential-out required")
 		}
-		secret := relay.RandomID() + relay.RandomID()
+		secret := ledger.RandomID() + ledger.RandomID()
 		file, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return err
@@ -119,19 +135,29 @@ func run() error {
 		}
 		return file.Sync()
 	case "check":
-		if err = s.DB.Ping(); err != nil {
+		if err = v2Store.DB.Ping(); err != nil {
 			return err
 		}
-		bad, err := s.CheckGroups()
+		rep, err := s.Check()
 		if err != nil {
 			return err
 		}
-		if len(bad) > 0 {
-			return fmt.Errorf("group entries violate strict payload rules: %s", strings.Join(bad, ", "))
+		if err := printJSON(rep); err != nil {
+			return err
+		}
+		if len(rep.Problems) > 0 {
+			bad := make([]string, 0, len(rep.Problems))
+			for _, p := range rep.Problems {
+				bad = append(bad, p.Where+" ("+p.Reason+")")
+			}
+			return fmt.Errorf("group ledger check failed: %s", strings.Join(bad, ", "))
 		}
 		return nil
 	case "serve":
-		server := relay.New(s)
+		if err := s.MirrorAll(); err != nil {
+			return fmt.Errorf("mirror groups into v2 spaces: %w", err)
+		}
+		server := ledger.New(s)
 		server.DiskReserve = *reserve
 		server.AccessHash = accessHash
 		server.SelfServiceApps = map[string]bool{}
@@ -142,33 +168,10 @@ func run() error {
 				selfServiceList = append(selfServiceList, name)
 			}
 		}
-		adminHashBytes, err := relay.LoadAccessHash(*v2AdminFile)
+		adminHashBytes, err := ledger.LoadAccessHash(*v2AdminFile)
 		if err != nil {
 			return fmt.Errorf("load v2 admin hash: %w", err)
 		}
-		v2Store, err := v2core.OpenStore(*dir)
-		if err != nil {
-			return fmt.Errorf("open v2 store: %w", err)
-		}
-		defer v2Store.Close()
-		v2Store.SpaceQuota = *appQuota
-		v2Store.GlobalQuota = *globalQuota
-		v2Store.DiskReserve = *reserve
-		// One global quota spans both stores. Each side reads the other's usage
-		// from a cached counter (refreshed every minute and after startup) so no
-		// transaction ever waits on the other database's single connection.
-		var ledgerUsed, v2Used atomic.Int64
-		refreshUsage := func() {
-			if n, err := s.UsedBytes(); err == nil {
-				ledgerUsed.Store(n)
-			}
-			if n, err := v2Store.UsedBytes(); err == nil {
-				v2Used.Store(n)
-			}
-		}
-		refreshUsage()
-		v2Store.ExternalUsage = ledgerUsed.Load
-		s.ExternalUsage = v2Used.Load
 
 		activeAccessHex, activeAccessSource, activeAccessUpdated, err := resolveAccessHash(v2Store, hex.EncodeToString(accessHash))
 		if err != nil {
@@ -186,7 +189,7 @@ func run() error {
 			SelfServiceAll:  server.SelfServiceApps["*"],
 			SelfServiceApps: selfServiceList,
 		})
-		v2Srv.V1Usage = func() any { return server.Usage.Snapshot() }
+		v2Srv.LedgerUsage = func() any { return server.Usage.Snapshot() }
 		v2Srv.OnAccessHashChanged = func(hexHash string) {
 			if raw, decErr := hex.DecodeString(hexHash); decErr == nil && len(raw) == 32 {
 				server.SetAccessHash(raw)
@@ -207,45 +210,16 @@ func run() error {
 				v2Srv.Pipe.OriginPatterns = append(v2Srv.Pipe.OriginPatterns, o)
 			}
 		}
+		server.Hub = v2Srv.Pipe
 		v2Handler := v2Srv.Handler()
-		server.OnlinePeers = func(_, group string) []string {
-			return v2Srv.Pipe.OnlineDevices(group)
-		}
-		server.OnGroupSynced = func(app, group, groupName string, members []relay.SyncedGroupMember, removed []string, closed bool, revision int) {
-			projected := make([]v2core.ManagedMember, 0, len(members))
-			for _, m := range members {
-				projected = append(projected, v2core.ManagedMember{
-					ID:        m.ID,
-					Name:      m.Name,
-					PublicKey: m.PublicKey,
-					TokenHash: m.TokenHash,
-					Manager:   m.Manager,
-				})
-			}
-			if err := v2Store.SyncManagedGroupWithApp(group, app, groupName, projected, removed, closed); err != nil {
-				log.Printf("v2 group sync error for %s: %v", group, err)
-				return
-			}
-			for _, id := range removed {
-				v2Srv.Pipe.DisconnectDevice(id)
-			}
-			if closed {
-				for _, id := range v2Srv.Pipe.OnlineDevices(group) {
-					v2Srv.Pipe.DisconnectDevice(id)
-				}
-			} else {
-				v2Srv.Pipe.NotifyGroupChanged(group, revision)
-			}
-		}
-		server.SyncExistingGroups()
-		ledger := server.Handler()
+		ledgerHandler := server.Handler()
 		mux := http.NewServeMux()
-		mux.HandleFunc("/healthz", server.Healthz)
-		mux.Handle("/v2/group", ledger)
-		mux.Handle("/v2/group/", ledger)
-		mux.Handle("/v2/enroll/", ledger)
-		mux.Handle("/v2/files", ledger)
-		mux.Handle("/v2/files/", ledger)
+		mux.Handle("/healthz", v2Handler)
+		mux.Handle("/v2/group", ledgerHandler)
+		mux.Handle("/v2/group/", ledgerHandler)
+		mux.Handle("/v2/enroll/", ledgerHandler)
+		mux.Handle("/v2/files", ledgerHandler)
+		mux.Handle("/v2/files/", ledgerHandler)
 		mux.Handle("/v2/", v2Handler)
 		mux.Handle("/edge/", v2Handler)
 		var handler http.Handler = mux
@@ -264,7 +238,6 @@ func run() error {
 						log.Printf("collection failed")
 					}
 					v2Store.SweepExpired()
-					refreshUsage()
 				}
 			}
 		}()
@@ -292,9 +265,9 @@ func hashPassword() error {
 		return fmt.Errorf("read password from stdin: %w", err)
 	}
 	p := strings.TrimRight(line, "\r\n")
-	if !relay.ValidAccessPassword(p) {
+	if !ledger.ValidAccessPassword(p) {
 		return fmt.Errorf("password must be 8-128 printable ASCII characters without spaces")
 	}
-	fmt.Println(relay.AccessPasswordHash(p))
+	fmt.Println(ledger.AccessPasswordHash(p))
 	return nil
 }

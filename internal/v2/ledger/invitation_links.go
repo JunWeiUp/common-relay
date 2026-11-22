@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"database/sql"
@@ -46,13 +46,13 @@ func (s *Server) publishInvitationLink(w http.ResponseWriter, r *http.Request, d
 		return
 	}
 	var request, approved string
-	err = tx.QueryRow("SELECT request,approved FROM group_invites WHERE id=? AND app=? AND grp=? AND owner=? AND expires>?", id, d.App, d.Group, d.ID, time.Now().Unix()).Scan(&request, &approved)
+	err = tx.QueryRow("SELECT request,approved FROM v2_ledger_invites WHERE id=? AND app=? AND grp=? AND owner=? AND expires>?", id, d.App, d.Group, d.ID, time.Now().Unix()).Scan(&request, &approved)
 	if err != nil {
 		groupFailure(w, err)
 		return
 	}
 	var hash, packet string
-	err = tx.QueryRow("SELECT read_hash,packet FROM group_invite_links WHERE id=?", id).Scan(&hash, &packet)
+	err = tx.QueryRow("SELECT read_hash,packet FROM v2_ledger_invite_links WHERE id=?", id).Scan(&hash, &packet)
 	if err == nil {
 		if hash == in.ReadHash && packet == in.Packet {
 			reply(w, map[string]bool{"published": true})
@@ -69,7 +69,7 @@ func (s *Server) publishInvitationLink(w http.ResponseWriter, r *http.Request, d
 		http.Error(w, "invitation already claimed", 409)
 		return
 	}
-	_, err = tx.Exec("INSERT INTO group_invite_links VALUES(?,?,?)", id, in.ReadHash, in.Packet)
+	_, err = tx.Exec("INSERT INTO v2_ledger_invite_links VALUES(?,?,?)", id, in.ReadHash, in.Packet)
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -102,7 +102,7 @@ func (s *Server) readInvitationLink(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var app, group, owner, packet string
-	err = tx.QueryRow(`SELECT i.app,i.grp,i.owner,l.packet FROM group_invite_links l JOIN group_invites i ON i.id=l.id WHERE i.id=? AND l.read_hash=? AND i.expires>? AND i.approved=''`, id, hashToken(strings.TrimPrefix(auth, "InvitationLink ")), time.Now().Unix()).Scan(&app, &group, &owner, &packet)
+	err = tx.QueryRow(`SELECT i.app,i.grp,i.owner,l.packet FROM v2_ledger_invite_links l JOIN v2_ledger_invites i ON i.id=l.id WHERE i.id=? AND l.read_hash=? AND i.expires>? AND i.approved=''`, id, hashToken(strings.TrimPrefix(auth, "InvitationLink ")), time.Now().Unix()).Scan(&app, &group, &owner, &packet)
 	if err != nil {
 		groupFailure(w, err)
 		return

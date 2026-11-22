@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"database/sql"
@@ -48,14 +48,14 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	// A retry succeeds only with the identical root and still-active credential,
 	// even if the group has advanced since the first response was lost.
 	var raw string
-	err = tx.QueryRow("SELECT entry FROM group_entries WHERE app=? AND grp=? AND revision=1", g.App, g.Group).Scan(&raw)
+	err = tx.QueryRow("SELECT entry FROM v2_ledger_entries WHERE app=? AND grp=? AND revision=1", g.App, g.Group).Scan(&raw)
 	if err == nil {
 		var token string
 		var count int
-		tx.QueryRow("SELECT count(*) FROM group_creations WHERE app=? AND grp=?", g.App, g.Group).Scan(&count)
+		tx.QueryRow("SELECT count(*) FROM v2_ledger_creations WHERE app=? AND grp=?", g.App, g.Group).Scan(&count)
 		e := SignedEntry{}
 		json.Unmarshal([]byte(raw), &e)
-		err = tx.QueryRow("SELECT token FROM devices WHERE app=? AND grp=? AND id=? AND revoked=0", g.App, g.Group, m.Device).Scan(&token)
+		err = tx.QueryRow("SELECT token_hash FROM v2_ledger_devices WHERE app=? AND grp=? AND id=? AND revoked=0", g.App, g.Group, m.Device).Scan(&token)
 		if count == 1 && err == nil && token == in.TokenHash && e == in.Entry {
 			reply(w, in.Entry)
 			return
@@ -68,12 +68,12 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var existing, total, recent int
-	err = tx.QueryRow("SELECT (SELECT count(*) FROM devices WHERE app=? AND grp=?) + (SELECT count(*) FROM group_bootstrap WHERE app=? AND grp=?)", g.App, g.Group, g.App, g.Group).Scan(&existing)
+	err = tx.QueryRow("SELECT (SELECT count(*) FROM v2_ledger_devices WHERE app=? AND grp=?) + (SELECT count(*) FROM v2_ledger_bootstrap WHERE app=? AND grp=?)", g.App, g.Group, g.App, g.Group).Scan(&existing)
 	if err != nil || existing != 0 {
 		groupFailure(w, ErrDenied)
 		return
 	}
-	err = tx.QueryRow("SELECT count(*),coalesce(sum(created>?),0) FROM group_creations", time.Now().Add(-time.Hour).Unix()).Scan(&total, &recent)
+	err = tx.QueryRow("SELECT count(*),coalesce(sum(created>?),0) FROM v2_ledger_creations", time.Now().Add(-time.Hour).Unix()).Scan(&total, &recent)
 	if err != nil {
 		groupFailure(w, err)
 		return
@@ -83,20 +83,22 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "group creation capacity reached; retry later", 429)
 		return
 	}
-	_, err = tx.Exec("INSERT INTO devices(app,grp,id,token,public_key) VALUES(?,?,?,?,?)", g.App, g.Group, m.Device, in.TokenHash, m.PublicKey)
+	_, err = tx.Exec("INSERT INTO v2_ledger_devices(app,grp,id,token_hash,public_key) VALUES(?,?,?,?,?)", g.App, g.Group, m.Device, in.TokenHash, m.PublicKey)
 	if err == nil {
 		err = insertEntry(tx, in.Entry, g)
 	}
 	if err == nil {
-		_, err = tx.Exec("INSERT INTO group_creations VALUES(?,?,?)", g.App, g.Group, time.Now().Unix())
+		_, err = tx.Exec("INSERT INTO v2_ledger_creations VALUES(?,?,?)", g.App, g.Group, time.Now().Unix())
 	}
+	projected := false
 	if err == nil {
+		projected = mirrorTx(tx, g, nil)
 		err = tx.Commit()
 	}
 	if err != nil {
 		groupFailure(w, err)
 		return
 	}
-	s.notifyGroupSynced(g, nil)
+	s.committed(g, nil, projected)
 	reply(w, in.Entry)
 }

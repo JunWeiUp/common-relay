@@ -28,6 +28,13 @@ func TestBackupSnapshotsLiveStoreAndPrunes(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = os.WriteFile(filepath.Join(data, "plugin-secrets.key"), []byte("k"), 0o600)
+	// Ledger payloads grow in place while uploading: they must be copied, not linked.
+	if err := os.MkdirAll(filepath.Join(data, "blobs", "files"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "blobs", "files", "f1"), []byte("part"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// Keep writing while snapshots are taken: VACUUM INTO must not block or tear.
 	stop := make(chan struct{})
@@ -74,11 +81,15 @@ func TestBackupSnapshotsLiveStoreAndPrunes(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(last, "blobs", "ab")); err != nil || string(b) != "payload" {
 		t.Fatalf("blob copy: %q %v", b, err)
 	}
+	src, _ := os.Stat(filepath.Join(data, "blobs", "files", "f1"))
+	if fi, err := os.Stat(filepath.Join(last, "blobs", "files", "f1")); err != nil || os.SameFile(src, fi) {
+		t.Fatalf("ledger payload must be an independent copy: %v", err)
+	}
 	if fi, err := os.Stat(filepath.Join(last, "relay_v2.db")); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("snapshot db perm: %v %v", fi, err)
 	}
 	rep, err := schemaReport(last)
-	if err != nil || rep["data_v2"] != v2core.SchemaVersion || rep["binary_v2"] != v2core.SchemaVersion {
+	if err != nil || rep["data_v2"] != v2core.SchemaVersion || rep["binary_v2"] != v2core.SchemaVersion || rep["ledger_imported"] != 0 {
 		t.Fatalf("schema report = %v %v", rep, err)
 	}
 	if _, err := runBackup(data, filepath.Join(data, "inside"), 1, base); err == nil {

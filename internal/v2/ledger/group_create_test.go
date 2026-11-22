@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"crypto/ed25519"

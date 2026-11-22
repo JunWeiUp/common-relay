@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"bytes"
@@ -43,17 +43,6 @@ func groupRequest(t *testing.T, f *fixture, method, path, auth string, value any
 }
 func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 	f := setup(t)
-	var synced struct {
-		removed  string
-		revision int
-		members  int
-	}
-	var syncMu sync.Mutex
-	f.s.OnGroupSynced = func(_, _, _ string, members []SyncedGroupMember, removed []string, _ bool, revision int) {
-		syncMu.Lock()
-		defer syncMu.Unlock()
-		synced.revision, synced.members, synced.removed = revision, len(members), strings.Join(removed, ",")
-	}
 	pk, sk, _ := ed25519.GenerateKey(nil)
 	token := RandomID() + RandomID()
 	secret := RandomID() + RandomID()
@@ -155,11 +144,15 @@ func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 	if status != 401 {
 		t.Fatalf("revoked token: %d", status)
 	}
-	syncMu.Lock()
-	got := synced
-	syncMu.Unlock()
-	if got.removed != c.device || got.revision != 3 || got.members != 1 {
-		t.Fatalf("v2 sync after removal = %+v", got)
+	// The removal reached the v2 space in the same commit and the live session was dropped.
+	var members, revoked int
+	f.s.Store.DB.QueryRow("SELECT count(*) FROM v2_space_members WHERE space_id='test'").Scan(&members)
+	f.s.Store.DB.QueryRow("SELECT revoked FROM v2_devices WHERE id=?", c.device).Scan(&revoked)
+	f.hub.mu.Lock()
+	notified, disconnected := strings.Join(f.hub.notified, ","), strings.Join(f.hub.disconnected, ",")
+	f.hub.mu.Unlock()
+	if members != 1 || revoked != 1 || disconnected != c.device || !strings.HasSuffix(notified, "test@3") {
+		t.Fatalf("v2 space after removal: members=%d revoked=%d disconnected=%q notified=%q", members, revoked, disconnected, notified)
 	}
 	status, _ = groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, c.entry)
 	if status != 409 {

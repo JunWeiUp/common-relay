@@ -35,10 +35,10 @@ type Server struct {
 	Pipe                *core.PipeHub
 	Plugins             *plugin.Host
 	OnAccessHashChanged func(hexHash string)
-	// V1Usage, when set, adds the signed group ledger / file plane usage counters
-	// (the code inherited from v1, served on /v2/group, /v2/enroll, /v2/files) to
-	// /v2/admin/metrics under "v1".
-	V1Usage         func() any
+	// LedgerUsage, when set, adds the signed group ledger / file plane call
+	// counters (/v2/group, /v2/enroll, /v2/files by app and kind) to
+	// /v2/admin/metrics under "ledger".
+	LedgerUsage     func() any
 	cfg             Config
 	accessMu        sync.RWMutex
 	accessHash      string
@@ -445,8 +445,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case p == "metrics" && r.Method == http.MethodGet:
 		res := map[string]any{"ok": true, "metrics": s.Pipe.Metrics.Snapshot()}
-		if s.V1Usage != nil {
-			res["v1"] = s.V1Usage()
+		if s.LedgerUsage != nil {
+			res["ledger"] = s.LedgerUsage()
 		}
 		replyJSON(w, http.StatusOK, res)
 

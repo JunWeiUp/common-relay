@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"bytes"
@@ -101,14 +101,14 @@ func TestCollectContinuesAfterFailedFileAndRetries(t *testing.T) {
 	if err := os.WriteFile(f.s.path(good), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Store.DB.Exec("UPDATE files SET expires=0"); err != nil {
+	if _, err := f.s.Store.DB.Exec("UPDATE v2_ledger_files SET expires=0"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.s.Collect(); err == nil {
 		t.Fatal("expected deletion failure")
 	}
 	var count int
-	f.s.Store.DB.QueryRow("SELECT COUNT(*) FROM files").Scan(&count)
+	f.s.Store.DB.QueryRow("SELECT COUNT(*) FROM v2_ledger_files").Scan(&count)
 	if count != 1 {
 		t.Fatal(count)
 	}
@@ -121,7 +121,7 @@ func TestCollectContinuesAfterFailedFileAndRetries(t *testing.T) {
 	if err := f.s.Collect(); err != nil {
 		t.Fatal(err)
 	}
-	f.s.Store.DB.QueryRow("SELECT COUNT(*) FROM files").Scan(&count)
+	f.s.Store.DB.QueryRow("SELECT COUNT(*) FROM v2_ledger_files").Scan(&count)
 	if count != 0 {
 		t.Fatal(count)
 	}
@@ -148,7 +148,7 @@ func TestSameFileConcurrentUploadCommitAndCollection(t *testing.T) {
 		t.Fatal(a, b)
 	}
 	// Expiry wins whichever operation gets the per-file lock first; no ready orphan remains.
-	f.s.Store.DB.Exec("UPDATE files SET expires=0 WHERE id=?", id)
+	f.s.Store.DB.Exec("UPDATE v2_ledger_files SET expires=0 WHERE id=?", id)
 	cleaned := make(chan error, 1)
 	go func() { cleaned <- f.s.Collect() }()
 	if code, _ := f.request("alice", "POST", "/"+id+"/commit", nil, nil); code != 404 {

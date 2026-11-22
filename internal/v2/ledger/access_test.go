@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"net/http"
@@ -44,10 +44,11 @@ func TestAccessPasswordRequiredOnEveryEndpoint(t *testing.T) {
 			t.Fatalf("%s: got %d, want 404", p, code)
 		}
 	}
+	// /healthz belongs to the v2 server (one store); the ledger handler does not claim it.
 	rec := httptest.NewRecorder()
-	f.s.Healthz(rec, httptest.NewRequest("GET", "/healthz", nil))
-	if rec.Code != 200 {
-		t.Fatalf("healthz: %d", rec.Code)
+	f.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	if rec.Code != 404 {
+		t.Fatalf("healthz on ledger handler: %d", rec.Code)
 	}
 }
 

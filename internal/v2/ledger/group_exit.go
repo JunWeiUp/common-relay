@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"bytes"
@@ -35,7 +35,7 @@ func (s *Server) exitGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	var d Device
 	var revoked int
-	err = s.Store.DB.QueryRow("SELECT app,grp,id,public_key,revoked FROM devices WHERE token=?", hashToken(strings.TrimPrefix(auth, "Bearer "))).Scan(&d.App, &d.Group, &d.ID, &d.PublicKey, &revoked)
+	err = s.Store.DB.QueryRow("SELECT app,grp,id,public_key,revoked FROM v2_ledger_devices WHERE token_hash=?", hashToken(strings.TrimPrefix(auth, "Bearer "))).Scan(&d.App, &d.Group, &d.ID, &d.PublicKey, &revoked)
 	if err != nil || d.App != g.App || d.Group != g.Group || d.ID != e.Signer {
 		w.WriteHeader(401)
 		return
@@ -43,7 +43,7 @@ func (s *Server) exitGroup(w http.ResponseWriter, r *http.Request) {
 	if revoked != 0 {
 		var raw string
 		var saved SignedEntry
-		err = s.Store.DB.QueryRow("SELECT entry FROM group_entries WHERE app=? AND grp=? AND revision=?", d.App, d.Group, g.Revision).Scan(&raw)
+		err = s.Store.DB.QueryRow("SELECT entry FROM v2_ledger_entries WHERE app=? AND grp=? AND revision=?", d.App, d.Group, g.Revision).Scan(&raw)
 		if err == nil && json.Unmarshal([]byte(raw), &saved) == nil && saved == e {
 			reply(w, e)
 			return

@@ -1,4 +1,4 @@
-package relay
+package ledger
 
 import (
 	"bytes"
