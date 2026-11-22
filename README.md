@@ -10,7 +10,7 @@ English · [简体中文](README.zh-CN.md)
 
 Common Relay is a Go relay server with Swift, Android Java, Dart, Python, Go, and Rust client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
 
-**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. **The server speaks protocol v2 only** (`serve` requires `--v2-admin-hash-file`): the `/v2/ws` device pipe, signed device groups on `/v2/group` and `/v2/enroll`, resumable encrypted files on `/v2/files`, spaces and boxes, and `/edge/*` plugins (Webhook, Drop, WebDAV, MCP). The v1 transport and every `/relay/v1/*` route were removed (see the [changelog](CHANGELOG.md)); the group ledger and file wire formats in the [protocol notes](protocol/README.md) are unchanged under `/v2`. The SDKs are v2-only too: the TypeScript and Kotlin SDKs and every v1-only client API were removed. See [V2 architecture](docs/V2-ARCHITECTURE.md).
+**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. **The server speaks protocol v2 only** (`serve` requires `--v2-admin-hash-file`): the `/v2/ws` device pipe, signed device groups on `/v2/group` and `/v2/enroll`, resumable encrypted files on `/v2/files`, spaces and boxes, and `/edge/*` plugins (Webhook, Drop, WebDAV, MCP). The v1 transport and every `/relay/v1/*` route were removed (see the [changelog](CHANGELOG.md)); the complete wire protocol is specified in [protocol/v2](protocol/v2/README.md). The SDKs are v2-only too: the TypeScript and Kotlin SDKs and every v1-only client API were removed. See [V2 architecture](docs/V2-ARCHITECTURE.md).
 
 [Quick start](#quick-start) · [SDKs](#client-sdks) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
 
@@ -136,7 +136,7 @@ The READMEs and contribution guide are bilingual. Detailed guides currently cont
 | Guide | Contents |
 | --- | --- |
 | [Examples](examples/README.md) | Runnable demos and integration notes |
-| [Protocol notes](protocol/README.md) | Encryption, signed group ledger and file wire formats (served under `/v2`) |
+| [Protocol v2](protocol/v2/README.md) | Authoritative wire specification (pipe, boxes, signed group ledger, invitations, files, sealed payloads, admin, limits) and shared test vectors |
 | [V2 architecture](docs/V2-ARCHITECTURE.md) | v2 spaces, boxes, edge plugins, admin API and the v1 retirement (Chinese) |
 | [Architecture](docs/ARCHITECTURE.md) | Components, storage, and resource limits |
 | [Device groups](docs/DEVICE-GROUPS.md) | Trust, membership, and invitations |

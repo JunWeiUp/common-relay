@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 文档与测试：v2 协议规范与共享测试向量
+
+- `protocol/v2/README.md` 成为唯一权威线协议规范（按服务端代码编写）：鉴权头与凭据类别、`/v2/ws` 帧与全部事件/错误码、保活与背压、Box 路由（queue/object/ephemeral、单条/批量 ACK、CAS/ETag）、签名组账本（记录格式、签名与哈希链、严格载荷、手动/自动邀请、短邀请、初始化、自助创建、退出/解散）、端到端文件、`crs1` 封存格式、`/v2/me`、管理面与插件 `if_version`、边缘插件鉴权、限额与状态码。v1 协议文档删除，`protocol/README.md` 只留索引与历史说明。
+- 共享向量移至 `protocol/v2/`，只含 v2 地址（`/v2/ws`、`common-relay://host/v2/i/…`），由 `go run ./scripts/protocol-vectors` 确定性生成（`-check` 与测试校验未过期）：新增 `sealed-vectors.json`（`crs1` 正例与篡改反例）、`group-vectors.json` 的 `entry_hashes`（载荷哈希、签名有效性、链接）、`invitation-link-vectors.json` 的 `packet_plaintext`/`read_hash`/`invalid_links`，`vectors.json` 的 `hash_secret` 改为多用例列表。删除无人使用的 `journal-vectors.json`、`webhook-vectors.json` 与 `scripts/group-strict-vectors.py`（严格载荷反例改由生成器产出，内容不变）。
+- 服务端与 Go、Dart、Java、Rust、Swift、Python SDK 测试直接读取同一批向量，去掉测试内把 v1 向量改写成 v2 的逻辑（含 Java `AccessTest.v2Link`）。
+- Go SDK：`NewGroups`、`NewFiles` 与短邀请只接受 `/v2` 地址（不再接受 `/relay/v1/*` 与旧 `/i/` 链接）。
+- 清理 SDK 删除后遗留的文档（TypeScript/Kotlin SDK、已删除的 v1 互通脚本、`RelayClient`、`/relay/v1` 路径与把 `relay.db` 当作在用存储的描述）。
+
 ### 性能：v2 存储读写分离
 
 - `relay_v2.db` 新增只读连接池（`mode=ro` + `query_only`，WAL，最多 4 连接，`Store.RDB` / `Store.Reader()`）：鉴权、成员角色、Space/Box/条目/对象列表与下载、状态与用量、插件绑定查询、账本组记录与文件列表改走读池，不再排在写事务之后。所有写入与事务仍走唯一写连接（账本共用）；事务内禁止使用读池。`backup`、旧库导入不受影响。

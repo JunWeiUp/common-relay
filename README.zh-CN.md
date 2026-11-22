@@ -10,7 +10,7 @@
 
 Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java、Dart、Python、Go 和 Rust 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
 
-**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。**服务端只提供协议 v2**（`serve` 必须传入 `--v2-admin-hash-file`）：`/v2/ws` 设备管道、`/v2/group` 与 `/v2/enroll` 签名设备组、`/v2/files` 可续传加密文件、Space/Box，以及 Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件。v1 传输与全部 `/relay/v1/*` 路由已移除（见[变更记录](CHANGELOG.md)）；[协议说明](protocol/README.md)中的签名组与文件报文格式在 `/v2` 下保持不变。SDK 同样只支持 v2：TypeScript、Kotlin SDK 及所有仅限 v1 的客户端接口已删除。详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
+**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。**服务端只提供协议 v2**（`serve` 必须传入 `--v2-admin-hash-file`）：`/v2/ws` 设备管道、`/v2/group` 与 `/v2/enroll` 签名设备组、`/v2/files` 可续传加密文件、Space/Box，以及 Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件。v1 传输与全部 `/relay/v1/*` 路由已移除（见[变更记录](CHANGELOG.md)）；完整线协议见 [protocol/v2](protocol/v2/README.md)。SDK 同样只支持 v2：TypeScript、Kotlin SDK 及所有仅限 v1 的客户端接口已删除。详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
 
 [快速开始](#快速开始) · [客户端 SDK](#客户端-sdk) · [文档](#文档) · [参与贡献](CONTRIBUTING.md#简体中文)
 
@@ -136,7 +136,7 @@ README 和贡献指南提供中英文版本。详细指南目前主要使用中�
 | 文档 | 内容 |
 | --- | --- |
 | [示例](examples/README.md) | 可运行示例与接入说明 |
-| [协议说明](protocol/README.md) | 加密、签名组与文件报文格式（在 `/v2` 下提供） |
+| [协议 v2](protocol/v2/README.md) | 权威线协议规范（管道、Box、签名组账本、邀请、文件、封存载荷、管理面、限额）与共享测试向量（英文） |
 | [V2 架构](docs/V2-ARCHITECTURE.md) | v2：Space、Box、边缘插件、管理接口与 v1 退役 |
 | [架构](docs/ARCHITECTURE.md) | 模块、存储与资源限制 |
 | [设备组](docs/DEVICE-GROUPS.md) | 信任、成员与邀请 |

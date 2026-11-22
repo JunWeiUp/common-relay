@@ -1,6 +1,6 @@
 # Common Relay Dart SDK
 
-See the repository README and `protocol/README.md` for the protocol.
+See the repository README and [`protocol/v2/README.md`](../../protocol/v2/README.md) for the protocol.
 
 This SDK speaks Common Relay v2 only: `RelayV2Client` / `RelayV2Pipe` for the `/v2/ws`
 pipe, `RelayGroups` for the signed group ledger under `/v2/group` and `/v2/enroll`, and

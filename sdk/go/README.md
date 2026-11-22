@@ -1,6 +1,6 @@
 # Go client
 
-原生 Go SDK：加密在线消息、在线设备查询、presence 通知、持久化离线消息、双向加密流和加密文件。独立 module 为 `github.com/JunWeiUp/common-relay/sdk/go`，Go 1.25+；仅依赖 `coder/websocket` 与 `golang.org/x/crypto`、`golang.org/x/sys`（Windows 文件锁），无需 CGO、libsodium、Rust 或预编译库。secretstream（xchacha20poly1305）基于 x/crypto 的 HChaCha20/ChaCha20/Poly1305 实现，与 libsodium 输出逐字节一致（`testdata/secretstream-libsodium.json` 由 PyNaCl 生成）。
+原生 Go SDK（协议见 [protocol/v2/README.md](../../protocol/v2/README.md)）：加密在线消息、在线设备查询、presence 通知、持久化离线消息、双向加密流和加密文件。独立 module 为 `github.com/JunWeiUp/common-relay/sdk/go`，Go 1.25+；仅依赖 `coder/websocket` 与 `golang.org/x/crypto`、`golang.org/x/sys`（Windows 文件锁），无需 CGO、libsodium、Rust 或预编译库。secretstream（xchacha20poly1305）基于 x/crypto 的 HChaCha20/ChaCha20/Poly1305 实现，与 libsodium 输出逐字节一致（`testdata/secretstream-libsodium.json` 由 PyNaCl 生成）。
 
 当前通过源码接入，尚无稳定公共模块版本。在接入项目中：
 
@@ -17,7 +17,7 @@ import relay "github.com/JunWeiUp/common-relay/sdk/go"
 identity, err := relay.NewIdentity("example", "my-group", "my-device", secretKey, trustedPeers)
 if err != nil { return err }
 // relayPassword 是中继服务器的接入密码，每个请求都以 Relay-Access 头发送。
-client, err := relay.Dial(ctx, "wss://relay.example.com/relay/v1/ws", deviceToken, identity, relay.Options{Password: relayPassword})
+client, err := relay.Dial(ctx, "wss://relay.example.com/v2/ws", deviceToken, identity, relay.Options{Password: relayPassword})
 if err != nil { return err }
 defer client.Close()
 peers, err := client.Peers(ctx) // 发现信息不能自动成为可信公钥。
@@ -54,7 +54,7 @@ if event.Type == "message" { process(event); err = client.Acknowledge(ctx, event
 
 ### 文件
 
-`PrepareFile` 将源文件加密为 `length[4 BE]|secretstream` 记录的暂存密文（0600，不覆盖已存在文件），`Files.Upload` 创建对象，409 后严格核对原描述再按服务器偏移续传（每块 ≤1 MiB）并提交；`Inbox`/`Status`/`Download`（Range 续传）/`Delete`。`DecryptFile` 先校验密文 SHA-256，再逐条认证并要求 final，同步后以硬链接发布到不存在的目标路径，不覆盖已有文件。远端文件名只是不可信元数据，可用 `SafeFileName` 处理后在应用自己的目录内选择唯一路径。`NewFiles` 只接受 `https://…/relay/v1/files`，拒绝重定向且不使用环境代理。
+`PrepareFile` 将源文件加密为 `length[4 BE]|secretstream` 记录的暂存密文（0600，不覆盖已存在文件），`Files.Upload` 创建对象，409 后严格核对原描述再按服务器偏移续传（每块 ≤1 MiB）并提交；`Inbox`/`Status`/`Download`（Range 续传）/`Delete`。`DecryptFile` 先校验密文 SHA-256，再逐条认证并要求 final，同步后以硬链接发布到不存在的目标路径，不覆盖已有文件。远端文件名只是不可信元数据，可用 `SafeFileName` 处理后在应用自己的目录内选择唯一路径。`NewFiles` 只接受 `https://…/v2/files`，拒绝重定向且不使用环境代理。
 
 ### 设备组
 
@@ -66,16 +66,16 @@ if event.Type == "message" { process(event); err = client.Acknowledge(ctx, event
 - 加入：`Join(invitation, name)` 后由应用驱动 `FinishJoin()`；auto 模式由扫码方验证授权链后自行签署入组，邀请端可离线。
 - 成员变更：`Refresh`、`Remove`、`Rename`、`PrepareExit(disband)` + `Exit()`（退出本机或由管理员解散）。
 
-签名载荷执行与服务端相同的字节级严格校验，签名链逐条验证（含委托 `authorization`，`VerifyGroupAdvance`），不信任未验证的 HTTP 成员列表。组 HTTP 请求拒绝重定向。`examples/groupprobe` 供 `scripts/group-interop.py` 驱动。
+`GroupConfig.URL` 必须是 `wss://host/v2/ws`，组请求走 `/v2/group*` / `/v2/enroll/*`，短邀请为 `common-relay://host/v2/i/…`。签名载荷执行与服务端相同的字节级严格校验，签名链逐条验证（含委托 `authorization`，`VerifyGroupAdvance`），不信任未验证的 HTTP 成员列表。组 HTTP 请求拒绝重定向。`examples/groupprobe` 供 `scripts/group-interop.py` 驱动。
 
-连接由 `Close` 结束，`Dial` 的 context 只控制握手。请求自身 context 可取消等待，但无法撤销已发送消息；请求上限 64、最长 45 秒，事件队列上限 64，满时关闭连接。断线后显式创建新连接，不重放。仅支持 WSS；拒绝重定向；测试选项只允许 `127.0.0.1` 的明文回环连接。
+`Dial` 仍保留旧 `/relay/v1/ws` 模式的代码路径，但服务端已不提供 v1，新接入一律使用 `/v2/ws`。连接由 `Close` 结束，`Dial` 的 context 只控制握手。请求自身 context 可取消等待，但无法撤销已发送消息；请求上限 64、最长 45 秒，事件队列上限 64，满时关闭连接。断线后显式创建新连接，不重放。仅支持 WSS；拒绝重定向；测试选项只允许 `127.0.0.1` 的明文回环连接。
 
 ```sh
 cd sdk/go
 go test -race ./...
 ```
 
-测试覆盖共享密码向量（含流与离线向量）、libsodium secretstream 逐字节一致与计数回绕换钥、上下文与公钥固定、篡改/过期拒绝、在线消息、查询、超时取消、关闭、重定向、无日志离线拒绝、日志重启重试/冲突/过期/终态/7 天清理/批量上限/目录独占、ACK 丢失重投去重、流 credit 窗口与 FINAL、文件加解密拒绝及上传续传/下载续传。仓库根目录的 `go test ./...` **不会**运行此独立 module，需单独执行。`scripts/lightweight-interop.py` 使用临时回环服务和身份验证 Python ↔ Go 在线互通；`examples/echo` 在配置含 `state_path` 时还回显离线消息（并 ACK）与流，可供 `scripts/local-interop.py` 驱动（双向离线 + 8 MiB 双向流）。
+测试读取 `protocol/v2/` 共享向量（内容信封与 secretstream、设备组含载荷哈希/严格载荷/委托授权、短邀请；`v2client` 另验证 `hash_secret` 与 `crs1` 封存向量）、libsodium secretstream 逐字节一致与计数回绕换钥、上下文与公钥固定、篡改/过期拒绝、在线消息、查询、超时取消、关闭、重定向、无日志离线拒绝、日志重启重试/冲突/过期/终态/7 天清理/批量上限/目录独占、ACK 丢失重投去重、流 credit 窗口与 FINAL、文件加解密拒绝及上传续传/下载续传。仓库根目录的 `go test ./...` **不会**运行此独立 module，需单独执行。`examples/groupprobe` 由 `scripts/group-interop.py` 驱动跨 SDK 设备组互通；`examples/echo` 是回显消息、离线消息与流的最小示例。
 
 ## 服务器接入密码
 
