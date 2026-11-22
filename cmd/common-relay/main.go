@@ -52,12 +52,14 @@ func run() error {
 	importSpace := f.String("space", "", "import-v1: target v2 space (bridge_allowed or client_encrypted)")
 	importSeal := f.String("seal-public-key", "", "import-v1: optional X25519 public key (hex) to seal imported routes' payloads")
 	importDry := f.Bool("dry-run", false, "import-v1: print the bindings without writing")
+	backupOut := f.String("out", "", "backup: directory for snapshots (not inside --data)")
+	backupKeep := f.Int("keep", 7, "backup: number of snapshots to keep (0 = keep all)")
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check|hash-password|import-v1 [flags]")
+		return fmt.Errorf("usage: common-relay serve|device-add|device-revoke|group-bootstrap|check|backup|schema|hash-password|import-v1 [flags]")
 	}
 	command := os.Args[1]
 	switch command {
-	case "serve", "device-add", "device-revoke", "group-bootstrap", "check", "import-v1":
+	case "serve", "device-add", "device-revoke", "group-bootstrap", "check", "import-v1", "backup", "schema":
 	case "hash-password":
 		return hashPassword()
 	default:
@@ -68,6 +70,22 @@ func run() error {
 	}
 	if f.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", f.Args())
+	}
+	// backup and schema read the data directory without opening (and migrating) it.
+	switch command {
+	case "backup":
+		path, err := runBackup(*dir, *backupOut, *backupKeep, time.Now())
+		if err != nil {
+			return err
+		}
+		fmt.Println(path)
+		return nil
+	case "schema":
+		rep, err := schemaReport(*dir)
+		if err != nil {
+			return err
+		}
+		return printJSON(rep)
 	}
 	var accessHash []byte
 	if command == "serve" {

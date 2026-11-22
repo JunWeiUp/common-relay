@@ -1,0 +1,11 @@
+[Unit]
+Description=Common Relay daily data snapshot
+After=common-relay.service
+
+[Service]
+Type=oneshot
+# Consistent online snapshot (VACUUM INTO + key + immutable payloads); keeps 7.
+ExecStart=/usr/local/bin/common-relay backup --data /var/lib/common-relay --out /var/backups/common-relay/daily --keep 7
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
