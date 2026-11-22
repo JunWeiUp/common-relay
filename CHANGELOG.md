@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 性能：v2 存储读写分离
+
+- `relay_v2.db` 新增只读连接池（`mode=ro` + `query_only`，WAL，最多 4 连接，`Store.RDB` / `Store.Reader()`）：鉴权、成员角色、Space/Box/条目/对象列表与下载、状态与用量、插件绑定查询、账本组记录与文件列表改走读池，不再排在写事务之后。所有写入与事务仍走唯一写连接（账本共用）；事务内禁止使用读池。`backup`、旧库导入不受影响。
+
+### 新增：小条目内联唤醒与批量 ACK（向后兼容）
+
+- `/v2/ws` 可声明 `?features=box-inline`（或请求头 `X-Relay-Features: box-inline`）。仅对声明的连接，≤64 KiB 的队列/临时条目在 `box.changed` 中附带 `item`（条目元数据 + `data_b64`）；超过帧上限或发送队列压力过大时退回普通事件。内联只是预取，条目仍需 ACK。未声明的客户端行为与报文完全不变。
+- 新增 `POST /v2/spaces/{space}/boxes/{box}/items/ack`（`{"ids":[...]}`，≤200）：同一事务批量确认，返回 `acked` / `missing`，幂等，鉴权与单条 `DELETE` 相同。
+- Go `v2client`：新增 `Client.AckBoxItems`；`Hub` 自动启用内联，小条目直接交给处理函数，确认按 200 ms / 50 条批量发送（旧服务端回退逐条 `DELETE`）；处理失败不确认、下次拉取重投。实测 3 个小条目由 12 次 HTTP 降为 1 次。
+- `/v2/admin/metrics` 新增 `box_inline`、`box_inline_skipped`。
+
 ### Breaking：服务端只保留一个数据库
 
 - 签名设备组账本与端到端文件从 `relay.db` + `files/` 迁入 `relay_v2.db`（schema 5，`v2_ledger_*` 表）+ `blobs/files/`（`internal/relay` → `internal/v2/ledger`）。首次启动在一个事务内导入已有 `relay.db`，`relay.db`/`files/` 原样保留作备份；失败整体回滚并拒绝启动。
