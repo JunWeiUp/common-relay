@@ -16,3 +16,4 @@ paseo.json
 node_modules/
 /sdk/typescript/dist/
 /sdk/rust/target/
+/common-relay
