@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Breaking：服务端只保留一个数据库
+
+- 签名设备组账本与端到端文件从 `relay.db` + `files/` 迁入 `relay_v2.db`（schema 5，`v2_ledger_*` 表）+ `blobs/files/`（`internal/relay` → `internal/v2/ledger`）。首次启动在一个事务内导入已有 `relay.db`，`relay.db`/`files/` 原样保留作备份；失败整体回滚并拒绝启动。
+- 组成员变化与签名记录在同一事务内写入 v2 Space / 成员 / 设备，删除原「投影」钩子（`OnGroupSynced`）与两库互读配额（`ExternalUsage`）；组内传输中的文件计入该组 Space 的用量。`managed_by` 仍为 `v1:<app>[:<group>]`。
+- `/v2/group*`、`/v2/enroll/*`、`/v2/files*` 报文不变，客户端无需更新。
+- `/v2/admin/metrics` 的 `v1` 段改为 `ledger`（`rows: [{app, kind, requests, last_at}]`）；Go `v2client.Metrics.V1` → `Metrics.Ledger`。
+- `common-relay check` 额外校验每组修订号连续与哈希链并输出 JSON 摘要；`schema` 报告 `ledger_imported`；`backup` 包含 `blobs/files/`（复制，不硬链接）。
+
+### Breaking：SDK 仅支持 v2
+
+- 删除全部只连 `/relay/v1/*` 的 SDK 接口，设备组、短邀请与文件客户端只接受 `/v2/ws`、`/v2/files`（报文格式不变）。
+- TypeScript SDK（整体 v1、无应用使用）删除，Release 不再附带 tgz；Kotlin SDK 删除，JitPack 与 Release 只发布 `common-relay:java`。
+- Rust：删除 `Client`/`Event`/`Peer`/`RelayStream`/`RelayJournal` 与 echo 示例；`Groups`、`RelayFiles`、短邀请改走 `/v2`；`Options`/`ACCESS_HEADER` 移至 `access` 模块；去掉 tokio-tungstenite、futures-util 与直接 rustls 依赖。
+- Python：`Client` 只接受 `/v2/ws`，删除 v1 字节流（`Stream`、`open_stream`/`accept_stream`）；设备组与邀请链接改走 `/v2/group`、`/v2/enroll`；`Files` 要求 `/v2/files`。
+- Dart/Java/Swift：删除 `RelayClient`/`RelayStream`（Java、Swift 另删 `RelayJournal`，Swift 删 `RelayDevice`），设备消息改用各自 v2 客户端（`RelayV2Client`/`RelayV2Pipe`、`V2Client`）；`RelayGroups` 只接受 `/v2/ws`；Swift `RelayFiles` 要求 `/v2/files`。
+- 短邀请只生成和解析 `common-relay://host/v2/i/…`，旧 `/i/` 链接被拒绝。
+- 测试：Python、Rust、Dart 设备组/文件测试直接对真实服务端运行（用签名设备组注册设备）；`group-interop.py` 覆盖 Swift/Dart/Java/Go/Rust。
+- 应用影响：SyncApp（Flutter/macOS）升级 SDK 时需删除 v1 分支，仅保留 `RelayV2Pipe` 路径。
+
 ### Breaking：移除 Common Relay v1
 
 服务端只提供协议 v2，`serve` 现在必须带 `--v2-admin-hash-file`（缺少时启动即报错）。
@@ -14,7 +33,7 @@
 - **不变**：`/v2/group`、`/v2/group/*`、`/v2/enroll/*`（含 `/auto`、`/link`）、`/v2/files`、`/v2/files/*` 的报文、签名账本、`Relay-Access` 校验与行为完全不变；组变更继续投影到 v2 Space（`OnGroupSynced`）。
 - 数据：旧库的 `messages`、`receipts`、`webdav_*`、`webhook_receipts` 表不再读写，原样保留（无破坏性迁移）；配额只计文件。
 - `/v2/admin/metrics` 的 `v1` 段只统计账本/文件调用，`family` 恒为 `v2`，移除 `live_ws`。
-- **SDK 影响**：只支持 v1 的 SDK 接口不能再连接服务端——TypeScript SDK（整体 v1）、Rust `client`/`groups`/`files`、Python 设备组与邀请链接、Dart `RelayClient`。请改用各 SDK 的 v2 客户端（Go `v2client`、Dart `v2_*`、Swift `V2Client`/`V2Pipe`、Java `V2Client`、Rust `v2`）；Go/Java/Swift 的设备组与文件客户端传入 `/v2/ws`、`/v2/files` 地址即可继续使用。这些 SDK 的 v1 集成测试在服务端不再支持 v1 时自动跳过。
+- **SDK**：见下方「SDK 仅支持 v2」。
 
 ### v2（实验性，需 `--v2-admin-hash-file`）
 
