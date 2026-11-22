@@ -22,7 +22,7 @@ type strictCase struct {
 
 func loadStrictVectors(t *testing.T) strictVectors {
 	t.Helper()
-	raw, err := os.ReadFile("../../../protocol/group-vectors.json")
+	raw, err := os.ReadFile("../../../protocol/v2/group-vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}

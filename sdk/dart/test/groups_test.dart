@@ -1,19 +1,17 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
+import 'package:crypto/crypto.dart' show sha256;
 import 'package:test/test.dart';
 import 'package:sodium/sodium.dart';
 import 'package:common_relay/common_relay.dart';
+import 'vectors.dart';
 
 void main() {
   test(
     'shared membership signatures, revocation and rollback rejection',
     () async {
       final sodium = await SodiumInit.init();
-      final v =
-          jsonDecode(
-                File('../../protocol/group-vectors.json').readAsStringSync(),
-              )
-              as Map<String, dynamic>;
+      final v = vectors('group-vectors.json');
       final groups = RelayGroups(sodium, v['config'] as Map<String, dynamic>);
       final first = v['initial'] as Map<String, dynamic>,
           added = v['approved'] as Map<String, dynamic>,
@@ -45,4 +43,32 @@ void main() {
       );
     },
   );
+
+  test('entry_hashes: payload digests, signatures and previous links', () async {
+    final sodium = await SodiumInit.init();
+    final v = vectors('group-vectors.json');
+    final groups = RelayGroups(sodium, v['config'] as Map<String, dynamic>);
+    Map<String, dynamic> entry(String path) =>
+        path.split('.').fold<dynamic>(v, (node, k) => node[k]) as Map<String, dynamic>;
+    Uint8List raw(String path) => base64Decode(entry(path)['payload'] as String);
+    final hashes = v['entry_hashes'] as Map<String, dynamic>;
+    for (final c in hashes['cases'] as List) {
+      final path = c['entry'] as String, why = '$path / ${c['verify_key']}';
+      expect(sha256.convert(raw(path)).toString(), c['payload_sha256'], reason: why);
+      expect(RelayGroups.digest(raw(path)), c['payload_sha256'], reason: why);
+      final ok = () {
+        try {
+          groups.verify(entry(path), c['verify_key'] as String);
+          return true;
+        } on StateError {
+          return false;
+        }
+      }();
+      expect(ok, c['signature_valid'], reason: why);
+    }
+    for (final l in hashes['links'] as List) {
+      final next = jsonDecode(utf8.decode(raw(l['next'] as String))) as Map<String, dynamic>;
+      expect(next['previous'], RelayGroups.digest(raw(l['base'] as String)), reason: '${l['base']} -> ${l['next']}');
+    }
+  });
 }

@@ -134,50 +134,47 @@ pub fn parse_link(text: &str, local: bool) -> Result<(String, String, [u8; 32], 
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// The shared vectors describe the retired `/relay/v1` link shape; the packet crypto is
-    /// unchanged, so v2 links are the same vectors with `/v2/ws` and the `/v2/i/` prefix.
-    fn v2_vectors() -> Value {
-        let mut v: Value = serde_json::from_str(include_str!(
-            "../../../protocol/invitation-link-vectors.json"
+    fn vectors() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../protocol/v2/invitation-link-vectors.json"
         ))
-        .unwrap();
-        v["invitation"]["url"] = json!(v["invitation"]["url"]
-            .as_str()
+        .unwrap()
+    }
+    fn key_nonce(v: &Value) -> ([u8; 32], [u8; 24]) {
+        let key = hex::decode(v["key"].as_str().unwrap())
             .unwrap()
-            .replace("/relay/v1/ws", "/v2/ws"));
-        for k in ["link", "link_with_password"] {
-            v[k] = json!(v[k].as_str().unwrap().replacen("/i/", "/v2/i/", 1));
-        }
-        v
+            .try_into()
+            .unwrap();
+        let nonce = hex::decode(v["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        (key, nonce)
     }
     #[test]
-    fn vectors() {
-        let raw: Value = serde_json::from_str(include_str!(
-            "../../../protocol/invitation-link-vectors.json"
-        ))
-        .unwrap();
-        let v = v2_vectors();
-        let key: [u8; 32] = hex::decode(v["key"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let nonce: [u8; 24] = hex::decode(v["nonce"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap();
-        assert_eq!(read_token(&key), v["read_token"]);
+    fn vectors_round_trip() {
+        let v = vectors();
+        let (key, nonce) = key_nonce(&v);
+        let read = read_token(&key);
+        assert_eq!(read, v["read_token"]);
         assert_eq!(
-            seal(&raw["invitation"], &key, &nonce).unwrap(),
-            raw["packet"]
+            hex::encode(Sha256::digest(read.as_bytes())),
+            v["read_hash"].as_str().unwrap()
         );
-        assert_eq!(
-            open_packet(raw["packet"].as_str().unwrap(), &key).unwrap(),
-            raw["invitation"]
-        );
-        // Retired v1 links are rejected.
-        assert!(parse_link(raw["link"].as_str().unwrap(), false).is_err());
-        assert_eq!(make_link(&v["invitation"], &key, None).unwrap(), v["link"]);
-        let (url, id, k, p) = parse_link(v["link"].as_str().unwrap(), false).unwrap();
+        let packet = v["packet"].as_str().unwrap();
+        assert_eq!(seal(&v["invitation"], &key, &nonce).unwrap(), packet);
+        assert_eq!(open_packet(packet, &key).unwrap(), v["invitation"]);
+        let raw = STANDARD.decode(packet).unwrap();
+        let plain = XSalsa20Poly1305::new((&key).into())
+            .decrypt(Nonce::from_slice(&raw[..24]), &raw[24..])
+            .unwrap();
+        assert_eq!(&raw[..24], &nonce);
+        assert_eq!(plain, v["packet_plaintext"].as_str().unwrap().as_bytes());
+
+        let link = v["link"].as_str().unwrap();
+        assert_eq!(link.len() as u64, v["link_length"].as_u64().unwrap());
+        assert_eq!(make_link(&v["invitation"], &key, None).unwrap(), link);
+        let (url, id, k, p) = parse_link(link, false).unwrap();
         assert_eq!(url, v["invitation"]["url"]);
         assert_eq!(id, v["invitation"]["id"]);
         assert_eq!(k, key);
@@ -196,20 +193,20 @@ mod tests {
     }
     #[test]
     fn rejects_bad_links_and_packets() {
-        let v = v2_vectors();
-        let key: [u8; 32] = hex::decode(v["key"].as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap();
+        let v = vectors();
+        let (key, _) = key_nonce(&v);
         let link = v["link"].as_str().unwrap();
+        let invalid = v["invalid_links"].as_array().unwrap();
+        assert!(!invalid.is_empty());
+        for bad in invalid {
+            let bad = bad.as_str().unwrap();
+            assert!(parse_link(bad, false).is_err(), "accepted {bad}");
+        }
         for bad in [
             link.replace("common-relay://", "https://"),
-            format!("{link}="),
-            link.replace("/v2/i/", "/v2/j/"),
-            link.replace("/v2/i/", "/i/"),
             link.replace("#", "?x=1#"),
         ] {
-            assert!(parse_link(&bad, false).is_err());
+            assert!(parse_link(&bad, false).is_err(), "accepted {bad}");
         }
         let suffixes = v["invalid_link_suffixes"].as_array().unwrap();
         assert!(!suffixes.is_empty());

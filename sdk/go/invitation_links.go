@@ -66,11 +66,10 @@ func invitationMakeLink(inv GroupInvitation, key [32]byte, password string) (str
 	if password != "" {
 		suffix = "." + base64.RawURLEncoding.EncodeToString([]byte(password))
 	}
-	prefix := "/i/"
-	if u.Path == "/v2/ws" {
-		prefix = "/v2/i/"
+	if u.Path != "/v2/ws" {
+		return "", errors.New("invalid invitation")
 	}
-	return "common-relay://" + u.Host + prefix + base64.RawURLEncoding.EncodeToString(id) + "#" + base64.RawURLEncoding.EncodeToString(key[:]) + suffix, nil
+	return "common-relay://" + u.Host + "/v2/i/" + base64.RawURLEncoding.EncodeToString(id) + "#" + base64.RawURLEncoding.EncodeToString(key[:]) + suffix, nil
 }
 
 // invitationParseLink returns relay URL, invitation ID, link key and the optional access password.
@@ -84,13 +83,9 @@ func invitationParseLink(text string, local bool) (string, string, [32]byte, str
 	if err != nil || u.Scheme != "common-relay" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || u.RawFragment != "" {
 		return "", "", key, "", bad
 	}
-	isV2 := strings.HasPrefix(u.Path, "/v2/i/")
-	if !isV2 && !strings.HasPrefix(u.Path, "/i/") {
+	rawID, ok := strings.CutPrefix(u.Path, "/v2/i/")
+	if !ok {
 		return "", "", key, "", bad
-	}
-	rawID := strings.TrimPrefix(u.Path, "/i/")
-	if isV2 {
-		rawID = strings.TrimPrefix(u.Path, "/v2/i/")
 	}
 	id, err := base64.RawURLEncoding.Strict().DecodeString(rawID)
 	if err != nil || len(id) != 16 || base64.RawURLEncoding.EncodeToString(id) != rawID {
@@ -114,9 +109,5 @@ func invitationParseLink(text string, local bool) (string, string, [32]byte, str
 	if local && u.Hostname() == "127.0.0.1" {
 		scheme = "ws"
 	}
-	wsPath := "/relay/v1/ws"
-	if isV2 {
-		wsPath = "/v2/ws"
-	}
-	return scheme + "://" + u.Host + wsPath, hex.EncodeToString(id), key, password, nil
+	return scheme + "://" + u.Host + "/v2/ws", hex.EncodeToString(id), key, password, nil
 }

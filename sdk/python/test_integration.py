@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[2]
 
 class CryptoTests(unittest.TestCase):
     def test_shared_offline_vector(self):
-        v=json.loads((ROOT/'protocol/crypto-vectors.json').read_text())
+        v=json.loads((ROOT/'protocol/v2/crypto-vectors.json').read_text())
         bob=Identity(v['app'],v['group'],'bob',v['bob_secret'],{'alice':v['alice_public']})
         self.assertEqual(bob.open('alice','message',v['id'],v['offline_message'])['expires'],v['offline_expires'])
 

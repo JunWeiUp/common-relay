@@ -1,18 +1,12 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:common_relay/common_relay.dart';
+import 'package:crypto/crypto.dart' show sha256;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:sodium/sodium.dart';
 import 'package:test/test.dart';
-
-// Fixed vectors produced by sdk/go/v2client SealStream (recipient private key = 32 x 0x42).
-const vecPublic = '132c442be010fbd57e72603328aa76e71fccc1503aae219327d14d9c9993f472';
-final vecPrivate = '42' * 32;
-const vecHello =
-    '435253318060211cbbbb765d2dcb943d8373a8389ce9e2409001ca7cd5fa9572c3267b305d3593574756b28720e140d0a61e3bc20371a2aa079a321fb808722e208c2d2cb4e3804a2b3f32f1160a1e832e7a55fb08290b6df4e8cd043917b0f2f3c89463000000210ea5b12a2fb9ef63bc511f08e718632e069600737c791c3032ee1bd1dbf961bc9d';
-const vecEmpty =
-    '43525331d23a619a1d158a1af281e170675d0d63e98c4fb84c8dc1cc4598bea00692183cfac3564174de5cd264f242fd4972beea37f96f1c0901e95d147a63f561235f78d02b9b6fd1f2bc8a1195b015fcd417064dea8fa17a669b86d3bcc4fe6d7d3a230000001024ef6f7ff1b06ef0b51a3ecc2b6e9026';
+import 'vectors.dart';
 
 const bindingJson = {
   'id': 'b1', 'plugin_id': 'webhook', 'mount': 'gh hooks', 'space_id': 'personal', 'box_name': 'inbox',
@@ -188,25 +182,43 @@ void main() {
     expect(RelayV2Client.isUnsupported(err!), isTrue);
   });
 
-  test('opens crs1 vectors sealed by the Go SDK', () async {
+  test('opens protocol/v2/sealed-vectors.json and rejects every invalid case', () async {
     final sodium = await SodiumInit.init();
-    final pub = RelayV2Sealed.parseKey(vecPublic), priv = RelayV2Sealed.parseKey(vecPrivate);
-    final hello = unhex(vecHello);
-    expect(RelayV2Sealed.isSealed(hello), isTrue);
-    expect(RelayV2Sealed.isSealed(utf8.encode('{"x":1}')), isFalse);
-    expect(utf8.decode(RelayV2Sealed.open(sodium, hello, pub, priv)), 'hello sealed crs1');
-    expect(RelayV2Sealed.open(sodium, unhex(vecEmpty), pub, priv), isEmpty);
-
-    // Truncation, trailing junk and bit flips in key, prefix and frame must fail.
-    expect(() => RelayV2Sealed.open(sodium, Uint8List.sublistView(hello, 0, hello.length - 1), pub, priv), throwsFormatException);
-    expect(() => RelayV2Sealed.open(sodium, Uint8List.fromList([...hello, 0]), pub, priv), throwsFormatException);
-    for (final i in [10, 90, 110, hello.length - 1]) {
-      final t = Uint8List.fromList(hello)..[i] ^= 1;
-      expect(() => RelayV2Sealed.open(sodium, t, pub, priv), throwsFormatException, reason: 'flip at $i');
+    final v = vectors('sealed-vectors.json');
+    final pub = RelayV2Sealed.parseKey(v['recipient_public'] as String),
+        priv = RelayV2Sealed.parseKey(v['recipient_private'] as String);
+    final sealed = <String, Uint8List>{};
+    for (final c in v['valid'] as List) {
+      final name = c['name'] as String, bytes = base64Decode(c['sealed_b64'] as String);
+      sealed[name] = bytes;
+      expect(RelayV2Sealed.isSealed(bytes), isTrue, reason: name);
+      final plain = RelayV2Sealed.open(sodium, bytes, pub, priv);
+      expect(plain.length, int.parse('${c['plaintext_length']}'), reason: name);
+      expect(sha256.convert(plain).toString(), c['plaintext_sha256'], reason: name);
+      if (c['plaintext_hex'] != null) expect(hex(plain), c['plaintext_hex'], reason: name);
+      if (name == 'two_frames') {
+        expect(plain, List.generate(plain.length, (i) => (i * 7 + 3) & 0xff), reason: name);
+      }
     }
+    expect(sealed.keys, containsAll(['hello', 'empty', 'two_frames']));
+    expect(RelayV2Sealed.isSealed(utf8.encode('{"x":1}')), isFalse);
+
+    for (final c in v['invalid'] as List) {
+      final base = sealed[c['base']]!;
+      final bad = switch (c['op']) {
+        'truncate' => Uint8List.sublistView(base, 0, c['length'] as int),
+        'append' => Uint8List.fromList([...base, ...unhex(c['hex'] as String)]),
+        'flip' => Uint8List.fromList(base)..[c['offset'] as int] ^= 1,
+        final op => throw StateError('unknown op $op'),
+      };
+      expect(() => RelayV2Sealed.open(sodium, bad, pub, priv), throwsFormatException, reason: c['name'] as String);
+    }
+    final wrongPub = RelayV2Sealed.parseKey(v['wrong_public'] as String),
+        wrongPriv = RelayV2Sealed.parseKey(v['wrong_private'] as String);
+    expect(() => RelayV2Sealed.open(sodium, sealed['hello']!, wrongPub, wrongPriv), throwsFormatException);
+
     final other = RelayV2Sealed.generateKeyPair(sodium);
     expect(other.publicKey.length, 64);
-    expect(() => RelayV2Sealed.open(sodium, hello, RelayV2Sealed.parseKey(other.publicKey), RelayV2Sealed.parseKey(other.privateKey)), throwsFormatException);
     expect(() => RelayV2Sealed.parseKey('abcd'), throwsArgumentError);
   });
 

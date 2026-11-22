@@ -20,7 +20,7 @@ const RELAY_PASSWORD: &str = "local-test-access-1";
 fn vectors() -> HashMap<String, String> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/crypto-vectors.json"
+        "/../../protocol/v2/crypto-vectors.json"
     );
     let all: HashMap<String, serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
@@ -143,7 +143,7 @@ impl Drop for TempDir {
 fn all_vectors() -> serde_json::Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/crypto-vectors.json"
+        "/../../protocol/v2/crypto-vectors.json"
     );
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }

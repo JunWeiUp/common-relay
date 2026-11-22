@@ -2,9 +2,7 @@ import XCTest
 @testable import CommonRelay
 final class CryptoTests: XCTestCase {
     func testPythonVectorsAndTamper() throws {
-        var root = URL(fileURLWithPath: #filePath)
-        for _ in 0..<5 { root.deleteLastPathComponent() }
-        let v = try dictionary(Data(contentsOf: root.appendingPathComponent("protocol/crypto-vectors.json")))
+        let v = try ProtocolVectors.load("crypto-vectors.json")
         let id = v["id"] as! String
         let bob = try RelayIdentity(app: "example", group: "test", device: "bob", secretKey: Data(relayHex: v["bob_secret"] as! String), trustedPeers: ["alice": Data(relayHex: v["alice_public"] as! String)])
         XCTAssertEqual(bob.publicKey.relayHex, v["bob_public"] as? String)

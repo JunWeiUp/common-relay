@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn strict_state_vectors() {
         let vectors: serde_json::Value =
-            serde_json::from_str(include_str!("../../../protocol/group-vectors.json")).unwrap();
+            serde_json::from_str(include_str!("../../../protocol/v2/group-vectors.json")).unwrap();
         for (key, expected) in [("valid", true), ("invalid", false)] {
             for case in vectors["strict_payload"][key].as_array().unwrap() {
                 let Ok(bytes) = STANDARD.decode(case["entry"]["payload"].as_str().unwrap()) else {
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn request_and_grant_are_strict() {
         let vectors: serde_json::Value =
-            serde_json::from_str(include_str!("../../../protocol/group-vectors.json")).unwrap();
+            serde_json::from_str(include_str!("../../../protocol/v2/group-vectors.json")).unwrap();
         for (entry, kind) in [
             (&vectors["request"], PayloadKind::Request),
             (&vectors["auto_admission"]["grant"], PayloadKind::Grant),

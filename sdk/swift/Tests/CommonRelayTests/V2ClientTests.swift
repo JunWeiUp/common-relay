@@ -3,16 +3,19 @@ import XCTest
 
 final class V2ClientTests: XCTestCase {
     func testProtocolV2VectorsAndRouting() throws {
-        XCTAssertEqual(
-            RelayV2Client.hashSecret("common-relay-v2-vector-secret"),
-            "adc39f9ca5ad73f3c7e6aa2af6008c4e86e09e0d0c3596226b6b44ea82b20413"
-        )
-        let payload = Data("ZIP_STREAM_CHUNK_DATA".utf8)
-        let frame = try RelayV2Client.encodeStreamFrame(streamID: "0123456789abcdef", payload: payload)
-        let hex = frame.map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(hex, "303132333435363738396162636465665a49505f53545245414d5f4348554e4b5f44415441")
-        let (sid, decoded) = try RelayV2Client.decodeStreamFrame(frame)
-        XCTAssertEqual(sid, "0123456789abcdef")
+        let v = try ProtocolVectors.load("vectors.json")
+        let hashes = v["hash_secret"] as! [[String: Any]]
+        XCTAssertFalse(hashes.isEmpty)
+        for item in hashes {
+            XCTAssertEqual(RelayV2Client.hashSecret(item["input"] as! String), item["sha256"] as? String, item["use"] as? String ?? "")
+        }
+        let vector = v["binary_stream_frame"] as! [String: Any]
+        let streamID = vector["stream_id"] as! String
+        let payload = Data((vector["payload_utf8"] as! String).utf8)
+        let frame = try RelayV2Client.encodeStreamFrame(streamID: streamID, payload: payload)
+        XCTAssertEqual(frame.relayHex, vector["frame_hex"] as? String)
+        let (sid, decoded) = try RelayV2Client.decodeStreamFrame(try Data(relayHex: vector["frame_hex"] as! String))
+        XCTAssertEqual(sid, streamID)
         XCTAssertEqual(decoded, payload)
 
         XCTAssertEqual(RelayV2Client.chooseRoute(lanReachable: true, peerOnline: true), .lanDirect)
@@ -147,33 +150,44 @@ final class V2ClientTests: XCTestCase {
 
     // MARK: - Sealed (crs1)
 
-    static let vectorPub = "132c442be010fbd57e72603328aa76e71fccc1503aae219327d14d9c9993f472"
-    static let vectorPriv = String(repeating: "42", count: 32)
-    static let vectorHello = "435253318060211cbbbb765d2dcb943d8373a8389ce9e2409001ca7cd5fa9572c3267b305d3593574756b28720e140d0a61e3bc20371a2aa079a321fb808722e208c2d2cb4e3804a2b3f32f1160a1e832e7a55fb08290b6df4e8cd043917b0f2f3c89463000000210ea5b12a2fb9ef63bc511f08e718632e069600737c791c3032ee1bd1dbf961bc9d"
-    static let vectorEmpty = "43525331d23a619a1d158a1af281e170675d0d63e98c4fb84c8dc1cc4598bea00692183cfac3564174de5cd264f242fd4972beea37f96f1c0901e95d147a63f561235f78d02b9b6fd1f2bc8a1195b015fcd417064dea8fa17a669b86d3bcc4fe6d7d3a230000001024ef6f7ff1b06ef0b51a3ecc2b6e9026"
-
     func testOpenSealedGoVectors() throws {
-        let pk = try RelayV2Sealed.parseKey(Self.vectorPub)
-        let sk = try RelayV2Sealed.parseKey(Self.vectorPriv)
-        let hello = try Data(relayHex: Self.vectorHello)
-        XCTAssertTrue(RelayV2Sealed.isSealed(hello))
+        let v = try ProtocolVectors.load("sealed-vectors.json")
+        XCTAssertEqual(RelayV2Sealed.contentType, v["content_type"] as? String)
+        let pk = try RelayV2Sealed.parseKey(v["recipient_public"] as! String)
+        let sk = try RelayV2Sealed.parseKey(v["recipient_private"] as! String)
+        var sealed: [String: Data] = [:]
+        let valid = v["valid"] as! [[String: Any]]
+        XCTAssertEqual(Set(valid.map { $0["name"] as! String }), ["hello", "empty", "two_frames"])
+        for item in valid {
+            let name = item["name"] as! String
+            let bytes = try XCTUnwrap(Data(base64Encoded: item["sealed_b64"] as! String), name)
+            sealed[name] = bytes
+            XCTAssertTrue(RelayV2Sealed.isSealed(bytes), name)
+            let plain = try RelayV2Sealed.open(bytes, publicKey: pk, secretKey: sk)
+            XCTAssertEqual(plain.count, item["plaintext_length"] as? Int, name)
+            XCTAssertEqual(RelayGroups.digest(plain), item["plaintext_sha256"] as? String, name)
+            if let hex = item["plaintext_hex"] as? String { XCTAssertEqual(plain, try Data(relayHex: hex), name) }
+            if name == "two_frames" { XCTAssertEqual(plain, Data((0..<plain.count).map { UInt8(($0 * 7 + 3) & 0xff) })) }
+        }
         XCTAssertFalse(RelayV2Sealed.isSealed(Data("CRS".utf8)))
         XCTAssertFalse(RelayV2Sealed.isSealed(Data("hello".utf8)))
-        XCTAssertEqual(try RelayV2Sealed.open(hello, publicKey: pk, secretKey: sk), Data("hello sealed crs1".utf8))
-        XCTAssertEqual(try RelayV2Sealed.open(try Data(relayHex: Self.vectorEmpty), publicKey: pk, secretKey: sk), Data())
-        XCTAssertEqual(RelayV2Sealed.contentType, "application/vnd.common-relay.sealed")
 
-        // Truncation, trailing garbage and bit flips must all fail.
-        XCTAssertThrowsError(try RelayV2Sealed.open(hello.dropLast(), publicKey: pk, secretKey: sk))
-        XCTAssertThrowsError(try RelayV2Sealed.open(hello.prefix(100), publicKey: pk, secretKey: sk))
-        XCTAssertThrowsError(try RelayV2Sealed.open(hello + Data([0, 0, 0, 0]), publicKey: pk, secretKey: sk))
-        for index in [0, 10, 90, hello.count - 1] {
-            var tampered = hello
-            tampered[index] ^= 0x01
-            XCTAssertThrowsError(try RelayV2Sealed.open(tampered, publicKey: pk, secretKey: sk), "index \(index)")
+        let invalid = v["invalid"] as! [[String: Any]]
+        XCTAssertFalse(invalid.isEmpty)
+        for item in invalid {
+            let name = item["name"] as! String
+            var bytes = try XCTUnwrap(sealed[item["base"] as! String], name)
+            switch item["op"] as! String {
+            case "truncate": bytes = bytes.prefix(item["length"] as! Int)
+            case "append": bytes += try Data(relayHex: item["hex"] as! String)
+            case "flip": let i = bytes.startIndex + (item["offset"] as! Int); bytes[i] ^= 0x01
+            default: XCTFail("unknown op \(name)"); continue
+            }
+            XCTAssertThrowsError(try RelayV2Sealed.open(Data(bytes), publicKey: pk, secretKey: sk), name)
         }
-        let other = try RelayV2Sealed.generateKeyPair()
-        XCTAssertThrowsError(try RelayV2Sealed.open(hello, publicKey: try RelayV2Sealed.parseKey(other.publicHex), secretKey: try RelayV2Sealed.parseKey(other.privateHex))) { error in
+        let wrongPK = try RelayV2Sealed.parseKey(v["wrong_public"] as! String)
+        let wrongSK = try RelayV2Sealed.parseKey(v["wrong_private"] as! String)
+        XCTAssertThrowsError(try RelayV2Sealed.open(sealed["hello"]!, publicKey: wrongPK, secretKey: wrongSK)) { error in
             XCTAssertEqual(error as? RelayV2Error, .sealedCorrupt)
         }
         XCTAssertThrowsError(try RelayV2Sealed.parseKey("abcd"))

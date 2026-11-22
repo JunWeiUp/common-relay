@@ -1,14 +1,14 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:common_relay/common_relay.dart';
 import 'package:sodium/sodium.dart';
 import 'package:test/test.dart';
+import 'vectors.dart';
 
 void main() {
   test('Python envelope and final stream record interoperate', () async {
     final sodium = await SodiumInit.init();
-    final v = jsonDecode(File('../../protocol/crypto-vectors.json').readAsStringSync()) as Map<String, dynamic>;
+    final v = vectors('crypto-vectors.json');
     final key = SecureKey.fromList(sodium, unhex(v['bob_secret'] as String));
     final bob = RelayIdentity(sodium: sodium, app: 'example', group: 'test', device: 'bob', secretKey: key, publicKey: unhex(v['bob_public'] as String), trustedPeers: {'alice': unhex(v['alice_public'] as String)});
     final id = v['id'] as String;

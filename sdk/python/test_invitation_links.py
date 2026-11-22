@@ -1,32 +1,37 @@
-import json,unittest
+import base64,hashlib,json,unittest
 from pathlib import Path
+from nacl.secret import SecretBox
 from common_relay import invitation_links as links
 
-def v2_vectors():
- # Shared vectors predate v2; the packet crypto is unchanged, only the endpoint moves to /v2.
- v=json.loads((Path(__file__).resolve().parents[2]/'protocol/invitation-link-vectors.json').read_text())
- inv=dict(v['invitation'],url=v['invitation']['url'].replace('/relay/v1/ws','/v2/ws'))
- to_v2=lambda link:link if '/v2/i/' in link else link.replace('/i/','/v2/i/')
- return v,inv,to_v2(v['link']),to_v2(v['link_with_password']),bytes.fromhex(v['key'])
+V=json.loads((Path(__file__).resolve().parents[2]/'protocol/v2/invitation-link-vectors.json').read_text())
+KEY=bytes.fromhex(V['key'])
 
 class InvitationLinkVectors(unittest.TestCase):
  def test_shared_encrypted_packet_and_tamper(self):
-  v,inv,link,_,key=v2_vectors()
-  self.assertEqual(links.open_packet(v['packet'],key),v['invitation']);self.assertEqual(links.read_token(key),v['read_token'])
-  self.assertEqual(links.make_link(inv,key),link);self.assertEqual(links.parse_link(link),('wss://relay.example.com/v2/ws',inv['id'],key,None))
+  v,inv=V,V['invitation']
+  self.assertEqual(links.open_packet(v['packet'],KEY),inv)
+  self.assertEqual(links.seal(inv,KEY,bytes.fromhex(v['nonce'])),v['packet'])
+  self.assertEqual(SecretBox(KEY).decrypt(base64.b64decode(v['packet'])),v['packet_plaintext'].encode())
+  self.assertEqual(links.read_token(KEY),v['read_token'])
+  self.assertEqual(hashlib.sha256(v['read_token'].encode()).hexdigest(),v['read_hash'])
+  self.assertEqual(links.make_link(inv,KEY),v['link']);self.assertEqual(len(v['link']),v['link_length'])
+  self.assertEqual(links.parse_link(v['link']),('wss://relay.example.com/v2/ws',inv['id'],KEY,None))
   with self.assertRaises(Exception):links.open_packet(v['packet'],bytes(32))
-  with self.assertRaises(Exception):links.open_packet(v['packet'][:-8]+'AAAAAAAA',key)
+  with self.assertRaises(Exception):links.open_packet(v['packet'][:-8]+'AAAAAAAA',KEY)
+  link=v['link']
   for text in (link+'=',link.replace('/v2/i/','/other/'),link.replace('relay.example.com','user@relay.example.com'),link.replace('#','?x=1#')):
    with self.subTest(text=text),self.assertRaises(Exception):links.parse_link(text)
  def test_link_carries_access_password(self):
-  v,inv,link,with_password,key=v2_vectors()
-  self.assertEqual(links.make_link(inv,key,v['access_password']),with_password)
-  self.assertEqual(links.parse_link(with_password),('wss://relay.example.com/v2/ws',inv['id'],key,v['access_password']))
+  v,inv=V,V['invitation']
+  self.assertEqual(links.make_link(inv,KEY,v['access_password']),v['link_with_password'])
+  self.assertEqual(links.parse_link(v['link_with_password']),('wss://relay.example.com/v2/ws',inv['id'],KEY,v['access_password']))
   for suffix in v['invalid_link_suffixes']:
-   with self.subTest(suffix=suffix),self.assertRaises(ValueError):links.parse_link(link+suffix)
- def test_removed_v1_forms_rejected(self):
-  v,inv,_,_,key=v2_vectors()
-  with self.assertRaises(ValueError):links.parse_link(v['link'].replace('/v2/i/','/i/'))
-  with self.assertRaises(ValueError):links.make_link(dict(inv,url='wss://relay.example.com/relay/v1/ws'),key)
+   with self.subTest(suffix=suffix),self.assertRaises(ValueError):links.parse_link(v['link']+suffix)
+ def test_invalid_links_rejected(self):
+  # Includes the removed legacy /i/ form.
+  self.assertTrue(any('/i/' in l and '/v2/i/' not in l for l in V['invalid_links']))
+  for text in V['invalid_links']:
+   with self.subTest(text=text),self.assertRaises(ValueError):links.parse_link(text)
+  with self.assertRaises(ValueError):links.make_link(dict(V['invitation'],url='wss://relay.example.com/relay/v1/ws'),KEY)
 
 if __name__=='__main__':unittest.main()

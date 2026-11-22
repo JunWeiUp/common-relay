@@ -13,7 +13,7 @@ func TestGroupContextCancellation(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done() }))
 	defer server.Close()
-	group, e := NewGroups(&GroupConfig{URL: strings.Replace(server.URL, "http://", "ws://", 1) + "/relay/v1/ws", App: "test", Device: "test"}, true)
+	group, e := NewGroups(&GroupConfig{URL: strings.Replace(server.URL, "http://", "ws://", 1) + "/v2/ws", App: "test", Device: "test"}, true)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -37,7 +37,7 @@ func TestResolveInvitationHonorsCancellation(t *testing.T) {
 	hits := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++; w.WriteHeader(500) }))
 	defer server.Close()
-	endpoint := strings.Replace(server.URL, "http://", "ws://", 1) + "/relay/v1/ws"
+	endpoint := strings.Replace(server.URL, "http://", "ws://", 1) + "/v2/ws"
 	group, e := NewGroups(&GroupConfig{URL: endpoint, App: "example"}, true)
 	if e != nil {
 		t.Fatal(e)

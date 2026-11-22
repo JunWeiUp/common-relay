@@ -672,69 +672,102 @@ impl V2Client {
 mod tests {
     use super::*;
 
+    fn vectors(name: &str) -> serde_json::Value {
+        let path = format!("{}/../../protocol/v2/{name}", env!("CARGO_MANIFEST_DIR"));
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
     #[test]
     fn matches_protocol_v2_vectors() {
-        assert_eq!(
-            hash_secret("common-relay-v2-vector-secret"),
-            "adc39f9ca5ad73f3c7e6aa2af6008c4e86e09e0d0c3596226b6b44ea82b20413"
-        );
-        let frame = encode_stream_frame("0123456789abcdef", b"ZIP_STREAM_CHUNK_DATA").unwrap();
-        assert_eq!(
-            hex::encode(&frame),
-            "303132333435363738396162636465665a49505f53545245414d5f4348554e4b5f44415441"
-        );
-        let (sid, payload) = decode_stream_frame(&frame).unwrap();
-        assert_eq!(sid, "0123456789abcdef");
-        assert_eq!(payload, b"ZIP_STREAM_CHUNK_DATA");
+        let v = vectors("vectors.json");
+        let cases = v["hash_secret"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for c in cases {
+            assert_eq!(
+                hash_secret(c["input"].as_str().unwrap()),
+                c["sha256"].as_str().unwrap(),
+                "{}",
+                c["use"]
+            );
+        }
+        let f = &v["binary_stream_frame"];
+        let sid = f["stream_id"].as_str().unwrap();
+        let payload = f["payload_utf8"].as_str().unwrap().as_bytes();
+        let frame = encode_stream_frame(sid, payload).unwrap();
+        assert_eq!(hex::encode(&frame), f["frame_hex"].as_str().unwrap());
+        let wire = hex::decode(f["frame_hex"].as_str().unwrap()).unwrap();
+        let (got_sid, got_payload) = decode_stream_frame(&wire).unwrap();
+        assert_eq!(got_sid, sid);
+        assert_eq!(got_payload, payload);
 
         let c = V2Client::new("https://relay.example/", "acc", "tok", false).unwrap();
         assert_eq!(c.ws_url(), "wss://relay.example/v2/ws");
         assert!(V2Client::new("http://relay.example", "acc", "tok", false).is_err());
     }
 
-    const GO_PUB: &str = "132c442be010fbd57e72603328aa76e71fccc1503aae219327d14d9c9993f472";
-    const GO_SEALED_HELLO: &str = "435253318060211cbbbb765d2dcb943d8373a8389ce9e2409001ca7cd5fa9572c3267b305d3593574756b28720e140d0a61e3bc20371a2aa079a321fb808722e208c2d2cb4e3804a2b3f32f1160a1e832e7a55fb08290b6df4e8cd043917b0f2f3c89463000000210ea5b12a2fb9ef63bc511f08e718632e069600737c791c3032ee1bd1dbf961bc9d";
-    const GO_SEALED_EMPTY: &str = "43525331d23a619a1d158a1af281e170675d0d63e98c4fb84c8dc1cc4598bea00692183cfac3564174de5cd264f242fd4972beea37f96f1c0901e95d147a63f561235f78d02b9b6fd1f2bc8a1195b015fcd417064dea8fa17a669b86d3bcc4fe6d7d3a230000001024ef6f7ff1b06ef0b51a3ecc2b6e9026";
-
     #[test]
-    fn opens_go_sealed_vectors() {
-        let public = parse_public_key(GO_PUB).unwrap();
-        let secret = [0x42u8; 32];
-        let hello = hex::decode(GO_SEALED_HELLO).unwrap();
-        assert!(is_sealed(&hello));
+    fn opens_shared_sealed_vectors() {
+        use base64::Engine;
+        use sha2::Digest;
+        let v = vectors("sealed-vectors.json");
+        let key = |k: &str| parse_public_key(v[k].as_str().unwrap()).unwrap();
+        let (public, secret) = (key("recipient_public"), key("recipient_private"));
+        let mut sealed_by_name = std::collections::HashMap::new();
+        let valid = v["valid"].as_array().unwrap();
+        assert!(valid.len() >= 3);
+        for c in valid {
+            let name = c["name"].as_str().unwrap();
+            let sealed = base64::engine::general_purpose::STANDARD
+                .decode(c["sealed_b64"].as_str().unwrap())
+                .unwrap();
+            assert!(is_sealed(&sealed), "{name}");
+            let plain = open_sealed(&sealed, &public, &secret).unwrap();
+            assert_eq!(
+                plain.len() as u64,
+                c["plaintext_length"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                hex::encode(sha2::Sha256::digest(&plain)),
+                c["plaintext_sha256"].as_str().unwrap(),
+                "{name}"
+            );
+            if let Some(h) = c["plaintext_hex"].as_str() {
+                assert_eq!(hex::encode(&plain), h, "{name}");
+            }
+            if name == "two_frames" {
+                let want: Vec<u8> = (0..plain.len())
+                    .map(|i| ((i * 7 + 3) & 0xff) as u8)
+                    .collect();
+                assert_eq!(plain, want);
+            }
+            sealed_by_name.insert(name.to_string(), sealed);
+        }
         assert!(!is_sealed(b"CRS"));
-        assert_eq!(
-            open_sealed(&hello, &public, &secret).unwrap(),
-            b"hello sealed crs1"
-        );
-        let empty = hex::decode(GO_SEALED_EMPTY).unwrap();
-        assert_eq!(open_sealed(&empty, &public, &secret).unwrap(), b"");
 
-        // Truncation: dropping bytes of the only (final) frame must fail.
-        assert!(open_sealed(&hello[..hello.len() - 1], &public, &secret).is_err());
-        assert!(open_sealed(&hello[..SEALED_HEADER_LEN], &public, &secret).is_err());
-        // Appending a frame turns the real final frame into a non-final one.
-        let mut extended = hello.clone();
-        extended.extend_from_slice(&hello[SEALED_HEADER_LEN..]);
-        assert!(open_sealed(&extended, &public, &secret).is_err());
-        // Tampering anywhere (sealed key, prefix, frame) must fail.
-        for idx in [10, 4 + SEALED_KEY_LEN + 3, hello.len() - 2] {
-            let mut bad = hello.clone();
-            bad[idx] ^= 1;
+        let invalid = v["invalid"].as_array().unwrap();
+        assert!(!invalid.is_empty());
+        for c in invalid {
+            let name = c["name"].as_str().unwrap();
+            let mut bad = sealed_by_name[c["base"].as_str().unwrap()].clone();
+            match c["op"].as_str().unwrap() {
+                "truncate" => bad.truncate(c["length"].as_u64().unwrap() as usize),
+                "append" => bad.extend(hex::decode(c["hex"].as_str().unwrap()).unwrap()),
+                "flip" => bad[c["offset"].as_u64().unwrap() as usize] ^= 0x01,
+                op => panic!("unknown op {op}"),
+            }
             assert!(
                 open_sealed(&bad, &public, &secret).is_err(),
-                "tamper at {idx}"
+                "accepted {name}"
             );
         }
-        // Wrong key pair.
-        let (other_pub, other_priv) = generate_seal_key_pair().unwrap();
-        let (op, os) = (
-            parse_public_key(&other_pub).unwrap(),
-            parse_public_key(&other_priv).unwrap(),
-        );
-        assert!(open_sealed(&hello, &op, &os).is_err());
+
+        let hello = &sealed_by_name["hello"];
+        let (wp, ws) = (key("wrong_public"), key("wrong_private"));
+        assert!(open_sealed(hello, &wp, &ws).is_err());
         // Mismatched public/secret halves.
-        assert!(open_sealed(&hello, &op, &secret).is_err());
+        assert!(open_sealed(hello, &wp, &secret).is_err());
+        assert!(open_sealed(hello, &public, &ws).is_err());
     }
 
     #[test]

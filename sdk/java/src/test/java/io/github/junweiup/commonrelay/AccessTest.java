@@ -16,8 +16,6 @@ public class AccessTest {
     private static OkHttpClient recording(List<Request> seen){
         return new OkHttpClient.Builder().addInterceptor(chain->{Request r=chain.request();synchronized(seen){seen.add(r);seen.notifyAll();}return new Response.Builder().request(r).protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized").body(ResponseBody.create("unauthorized",MediaType.get("text/plain"))).build();}).build();
     }
-    /** The shared vectors predate v2; relays now only serve "/v2/i/" short links. */
-    static String v2Link(JSONObject v,String name)throws Exception{return v.getString(name).replace("/i/","/v2/i/");}
     @Test public void validatesPassword(){
         assertNull(RelayAccess.validate(null));
         assertEquals(PASSWORD,RelayAccess.validate(PASSWORD));
@@ -34,8 +32,8 @@ public class AccessTest {
         RelayGroups groups=new RelayGroups(config,false,recording(seen));
         assertThrows(Exception.class,()->groups.call("GET","/group?after=0",null,null));
         assertThrows(Exception.class,()->groups.call("POST","/group/create",new JSONObject(),null));
-        JSONObject v=new JSONObject(new String(Files.readAllBytes(Path.of("../../protocol/invitation-link-vectors.json")),java.nio.charset.StandardCharsets.UTF_8));
-        Exception e=assertThrows(Exception.class,()->groups.resolveInvitation(v2Link(v,"link")));
+        JSONObject v=new JSONObject(new String(Files.readAllBytes(Path.of("../../protocol/v2/invitation-link-vectors.json")),java.nio.charset.StandardCharsets.UTF_8));
+        Exception e=assertThrows(Exception.class,()->groups.resolveInvitation(v.getString("link")));
         assertFalse(String.valueOf(e.getMessage()).contains(PASSWORD));
         assertEquals(3,seen.size());
         for(Request r:seen)assertEquals(PASSWORD,r.header(RelayAccess.HEADER));
@@ -43,12 +41,12 @@ public class AccessTest {
         assertTrue(seen.get(2).header("Authorization").startsWith("InvitationLink "));
         List<Request> foreign=new ArrayList<>();
         RelayGroups other=new RelayGroups(new JSONObject(config.toString()).put("url","wss://other.example.com/v2/ws"),false,recording(foreign));
-        assertThrows(Exception.class,()->other.resolveInvitation(v2Link(v,"link")));
+        assertThrows(Exception.class,()->other.resolveInvitation(v.getString("link")));
         assertEquals(1,foreign.size());assertEquals("relay.example.com",foreign.get(0).url().host());
         assertNull("password must not be sent to a different relay",foreign.get(0).header(RelayAccess.HEADER));
         List<Request> carried=new ArrayList<>();
         RelayGroups scanner=new RelayGroups(new JSONObject(config.toString()).put("url","wss://other.example.com/v2/ws"),false,recording(carried));
-        assertThrows(Exception.class,()->scanner.resolveInvitation(v2Link(v,"link_with_password")));
+        assertThrows(Exception.class,()->scanner.resolveInvitation(v.getString("link_with_password")));
         assertEquals("link password wins",v.getString("access_password"),carried.get(0).header(RelayAccess.HEADER));
     }
     @Test public void joinAdoptsInvitationPassword()throws Exception{

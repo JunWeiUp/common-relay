@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn group_vectors() {
         let v: Value =
-            serde_json::from_str(include_str!("../../../protocol/group-vectors.json")).unwrap();
+            serde_json::from_str(include_str!("../../../protocol/v2/group-vectors.json")).unwrap();
         verify(&v["initial"], field(&v["manager"], "signing_key").unwrap()).unwrap();
         verify(
             &v["request"],
@@ -1043,6 +1043,43 @@ mod tests {
                     case["case"]
                 );
             }
+        }
+    }
+    #[test]
+    fn group_entry_hash_vectors() {
+        let v: Value =
+            serde_json::from_str(include_str!("../../../protocol/v2/group-vectors.json")).unwrap();
+        let entry =
+            |path: &str| -> Value { path.split('.').fold(v.clone(), |acc, k| acc[k].clone()) };
+        let digest = |e: &Value| {
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(field(e, "payload").unwrap())
+                .unwrap();
+            hex::encode(Sha256::digest(raw))
+        };
+        let cases = v["entry_hashes"]["cases"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for c in cases {
+            let name = c["entry"].as_str().unwrap();
+            let e = entry(name);
+            assert_eq!(digest(&e), c["payload_sha256"].as_str().unwrap(), "{name}");
+            assert_eq!(
+                verify(&e, c["verify_key"].as_str().unwrap()).is_ok(),
+                c["signature_valid"].as_bool().unwrap(),
+                "{name}"
+            );
+        }
+        let links = v["entry_hashes"]["links"].as_array().unwrap();
+        assert!(!links.is_empty());
+        for l in links {
+            let (base, next) = (l["base"].as_str().unwrap(), l["next"].as_str().unwrap());
+            let payload = raw(&entry(next)).unwrap();
+            let payload: Value = serde_json::from_slice(&payload).unwrap();
+            assert_eq!(
+                payload["previous"].as_str().unwrap(),
+                digest(&entry(base)),
+                "{base} -> {next}"
+            );
         }
     }
     #[tokio::test]

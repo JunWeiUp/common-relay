@@ -1,7 +1,7 @@
 {
-  "note": "Public test identities only; never deploy",
+  "note": "Public test identities only; never deploy. Base fixtures are frozen signed entries; config, strict_payload and entry_hashes are maintained by `go run ./scripts/protocol-vectors`.",
   "config": {
-    "url": "wss://example.invalid/relay/v1/ws",
+    "url": "wss://relay.example.com/v2/ws",
     "app": "example",
     "group": "vectors",
     "device": "mac",
@@ -380,6 +380,115 @@
             "signer": "mac"
           }
         }
+      }
+    ]
+  },
+  "entry_hashes": {
+    "note": "payload_sha256 = lowercase hex SHA-256 of the base64-decoded payload bytes (the next state's \"previous\"). signature_valid = Ed25519 verify(verify_key, payload bytes, signature).",
+    "cases": [
+      {
+        "entry": "initial",
+        "payload_sha256": "3c24213aa06dc0de17d539d7cae5de4b29480db0589bfe95bd0a23c25bcce11b",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": true
+      },
+      {
+        "entry": "initial",
+        "payload_sha256": "3c24213aa06dc0de17d539d7cae5de4b29480db0589bfe95bd0a23c25bcce11b",
+        "verify_key": "7be9c6f9a7247a5531a40e0883aa93e2246c034f94d031008b56205d78950753",
+        "signature_valid": false
+      },
+      {
+        "entry": "request",
+        "payload_sha256": "2124ddb0fba135f0aff65b8682551f90e4e701be530fac78907d6544169599a7",
+        "verify_key": "7be9c6f9a7247a5531a40e0883aa93e2246c034f94d031008b56205d78950753",
+        "signature_valid": true
+      },
+      {
+        "entry": "approved",
+        "payload_sha256": "48d5392a441b2e764b554ec97c3659c358915a524b3cf3b98f2f9776155d56c5",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": true
+      },
+      {
+        "entry": "removed",
+        "payload_sha256": "631fe2a2df2c6423b4b4a4b7dd66e51b16dbb99bfee2856306ae2e72366bb668",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": true
+      },
+      {
+        "entry": "self_service",
+        "payload_sha256": "aec672cb8b730c0cdc42a1dcb06fa67c47de8a66f895dcdec2497052a1df87a5",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": true
+      },
+      {
+        "entry": "left",
+        "payload_sha256": "631fe2a2df2c6423b4b4a4b7dd66e51b16dbb99bfee2856306ae2e72366bb668",
+        "verify_key": "7be9c6f9a7247a5531a40e0883aa93e2246c034f94d031008b56205d78950753",
+        "signature_valid": true
+      },
+      {
+        "entry": "disbanded",
+        "payload_sha256": "97471c992410cc4c0ff81ad63067f3b316cfc264f64cb99840b3383288ebde10",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": true
+      },
+      {
+        "entry": "renamed",
+        "payload_sha256": "00972ddb40239854caff64902de1e44a3109206e69dc59ddc7ab82a7ac0f5db1",
+        "verify_key": "7be9c6f9a7247a5531a40e0883aa93e2246c034f94d031008b56205d78950753",
+        "signature_valid": true
+      },
+      {
+        "entry": "renamed",
+        "payload_sha256": "00972ddb40239854caff64902de1e44a3109206e69dc59ddc7ab82a7ac0f5db1",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": false
+      },
+      {
+        "entry": "auto_admission.grant",
+        "payload_sha256": "ec08724e4fcb4785b3a8c01100326b052e72466386c1b0080cfaeeccbecbe71e",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": true
+      },
+      {
+        "entry": "auto_admission.approved",
+        "payload_sha256": "48d5392a441b2e764b554ec97c3659c358915a524b3cf3b98f2f9776155d56c5",
+        "verify_key": "7afe87dedcb92ffd2aa70a536f8da7efea639242d893202190427c91e25559e0",
+        "signature_valid": true
+      },
+      {
+        "entry": "auto_admission.approved",
+        "payload_sha256": "48d5392a441b2e764b554ec97c3659c358915a524b3cf3b98f2f9776155d56c5",
+        "verify_key": "d1e7f9e4365972235e13fce337c8009f88e92e00d172eeac7f3d099bbe01593a",
+        "signature_valid": false
+      }
+    ],
+    "links": [
+      {
+        "base": "initial",
+        "next": "approved"
+      },
+      {
+        "base": "approved",
+        "next": "removed"
+      },
+      {
+        "base": "approved",
+        "next": "left"
+      },
+      {
+        "base": "approved",
+        "next": "disbanded"
+      },
+      {
+        "base": "approved",
+        "next": "renamed"
+      },
+      {
+        "base": "initial",
+        "next": "auto_admission.approved"
       }
     ]
   }

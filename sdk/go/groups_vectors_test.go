@@ -9,7 +9,7 @@ import (
 )
 
 func TestGroupVectors(t *testing.T) {
-	b, err := os.ReadFile("../../protocol/group-vectors.json")
+	b, err := os.ReadFile("../../protocol/v2/group-vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,7 @@ import (
 
 func vectors(t *testing.T) map[string]string {
 	t.Helper()
-	raw, err := os.ReadFile("../../protocol/crypto-vectors.json")
+	raw, err := os.ReadFile("../../protocol/v2/crypto-vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}

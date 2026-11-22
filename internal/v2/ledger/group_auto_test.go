@@ -7,7 +7,7 @@ import (
 )
 
 func TestAutomaticAdmissionVectors(t *testing.T) {
-	raw, err := os.ReadFile("../../../protocol/group-vectors.json")
+	raw, err := os.ReadFile("../../../protocol/v2/group-vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}

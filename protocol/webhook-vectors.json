@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "body": {"text": "示例测试", "records": [1, 2]},
-  "metadata": {"type": "webhook", "version": 1, "route": "phone", "content_type": "application/json"},
-  "retained_expires": 253402300799,
-  "response_status": 202
-}

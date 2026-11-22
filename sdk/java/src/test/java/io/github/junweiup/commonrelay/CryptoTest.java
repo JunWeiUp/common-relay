@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 public class CryptoTest {
     @Test public void pythonVectors()throws Exception {
-        JSONObject v=new JSONObject(new String(Files.readAllBytes(Path.of("../../protocol/crypto-vectors.json")),StandardCharsets.UTF_8));
+        JSONObject v=new JSONObject(new String(Files.readAllBytes(Path.of("../../protocol/v2/crypto-vectors.json")),StandardCharsets.UTF_8));
         Crypto bob=new Crypto("example","test","bob",v.getString("bob_secret"),Map.of("alice",v.getString("alice_public")));
         assertEquals(v.getString("bob_public"),bob.publicKey());String id=v.getString("id");
         assertEquals("aGVsbG8=",bob.open("alice","message",id,v.getString("message")).getString("data"));

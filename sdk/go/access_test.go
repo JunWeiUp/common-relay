@@ -54,11 +54,11 @@ func TestAccessPasswordValidation(t *testing.T) {
 	}
 	h := &headerLog{}
 	s := h.server(t)
-	ws := strings.Replace(s.URL, "http://", "ws://", 1) + "/relay/v1/ws"
+	ws := strings.Replace(s.URL, "http://", "ws://", 1) + "/v2/ws"
 	if _, err := NewGroups(&GroupConfig{URL: ws, Password: "bad pass word"}, true); err == nil {
 		t.Fatal("groups accepted invalid password")
 	}
-	if _, err := NewFiles(s.URL+"/relay/v1/files", strings.Repeat("x", 64), Options{AllowLocalTest: true, Password: "short"}); err == nil {
+	if _, err := NewFiles(s.URL+"/v2/files", strings.Repeat("x", 64), Options{AllowLocalTest: true, Password: "short"}); err == nil {
 		t.Fatal("files accepted invalid password")
 	}
 	if _, err := Dial(context.Background(), ws, strings.Repeat("x", 64), &Identity{}, Options{AllowLocalTest: true, Password: "short"}); err == nil || strings.Contains(err.Error(), "short") {
@@ -73,7 +73,7 @@ func TestAccessHeaderOnEveryRequest(t *testing.T) {
 	for _, pw := range []string{testAccess, ""} {
 		h := &headerLog{}
 		s := h.server(t)
-		ws := strings.Replace(s.URL, "http://", "ws://", 1) + "/relay/v1/ws"
+		ws := strings.Replace(s.URL, "http://", "ws://", 1) + "/v2/ws"
 		token := strings.Repeat("x", 64)
 		Dial(context.Background(), ws, token, &Identity{}, Options{AllowLocalTest: true, Password: pw})
 		g, err := NewGroups(&GroupConfig{URL: ws, App: "example", Token: token, Password: pw}, true)
@@ -84,10 +84,10 @@ func TestAccessHeaderOnEveryRequest(t *testing.T) {
 		g.call("GET", "/group", nil, "", &out)
 		id := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
 		key := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
-		if _, err = g.ResolveInvitation("common-relay://" + strings.TrimPrefix(s.URL, "http://") + "/i/" + id + "#" + key); err == nil || strings.Contains(err.Error(), testAccess) {
+		if _, err = g.ResolveInvitation("common-relay://" + strings.TrimPrefix(s.URL, "http://") + "/v2/i/" + id + "#" + key); err == nil || strings.Contains(err.Error(), testAccess) {
 			t.Fatalf("resolve: %v", err)
 		}
-		f, err := NewFiles(s.URL+"/relay/v1/files", token, Options{AllowLocalTest: true, Password: pw})
+		f, err := NewFiles(s.URL+"/v2/files", token, Options{AllowLocalTest: true, Password: pw})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +98,7 @@ func TestAccessHeaderOnEveryRequest(t *testing.T) {
 		h.mu.Lock()
 		joined := strings.Join(h.seen, " ")
 		h.mu.Unlock()
-		for _, p := range []string{"/relay/v1/ws", "/relay/v1/group", "/relay/v1/enroll/", "/relay/v1/files/x"} {
+		for _, p := range []string{"/v2/ws", "/v2/group", "/v2/enroll/", "/v2/files/x"} {
 			if !strings.Contains(joined, p) {
 				t.Fatalf("missing request %s in %s", p, joined)
 			}
@@ -109,13 +109,13 @@ func TestAccessHeaderOnEveryRequest(t *testing.T) {
 func TestResolveInvitationForeignRelayGetsNoPassword(t *testing.T) {
 	own, foreign := &headerLog{}, &headerLog{}
 	o, f := own.server(t), foreign.server(t)
-	g, err := NewGroups(&GroupConfig{URL: strings.Replace(o.URL, "http://", "ws://", 1) + "/relay/v1/ws", App: "example", Password: testAccess}, true)
+	g, err := NewGroups(&GroupConfig{URL: strings.Replace(o.URL, "http://", "ws://", 1) + "/v2/ws", App: "example", Password: testAccess}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
 	key := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
-	if _, err = g.ResolveInvitation("common-relay://" + strings.TrimPrefix(f.URL, "http://") + "/i/" + id + "#" + key); err == nil {
+	if _, err = g.ResolveInvitation("common-relay://" + strings.TrimPrefix(f.URL, "http://") + "/v2/i/" + id + "#" + key); err == nil {
 		t.Fatal("expected failure")
 	}
 	foreign.all(t, "")

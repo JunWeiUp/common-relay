@@ -266,7 +266,7 @@ func SafeFileName(name string) string {
 	return clean
 }
 
-// Files is the /relay/v1/files client. Redirects and environment proxies are not
+// Files is the /v2/files client. Redirects and environment proxies are not
 // followed so the bearer credential only reaches the configured relay.
 type Files struct {
 	base     string
@@ -275,16 +275,16 @@ type Files struct {
 	http     *http.Client
 }
 
-// NewFiles takes the files base URL, e.g. https://relay.example.com/relay/v1/files.
+// NewFiles takes the files base URL, e.g. https://relay.example.com/v2/files.
 func NewFiles(base, token string, options Options) (*Files, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return nil, errors.New("invalid files endpoint")
 	}
 	local := options.AllowLocalTest && u.Scheme == "http" && u.Hostname() == "127.0.0.1"
-	validPath := u.Path == "/relay/v1/files" || u.Path == "/relay/v1/files/" || u.Path == "/v2/files" || u.Path == "/v2/files/"
+	validPath := u.Path == "/v2/files" || u.Path == "/v2/files/"
 	if (u.Scheme != "https" && !local) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || !validPath {
-		return nil, errors.New("an HTTPS /v2/files or /relay/v1/files endpoint is required")
+		return nil, errors.New("an HTTPS /v2/files endpoint is required")
 	}
 	if !tokenPattern.MatchString(token) {
 		return nil, errors.New("invalid device credential")
@@ -294,14 +294,8 @@ func NewFiles(base, token string, options Options) (*Files, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	// Keep the family the caller asked for: a /v2/files URL must not silently
-	// fall back to the legacy /relay/v1 path.
-	prefix := "/relay/v1/files"
-	if strings.HasPrefix(u.Path, "/v2/") {
-		prefix = "/v2/files"
-	}
 	return &Files{
-		base:     u.Scheme + "://" + u.Host + prefix,
+		base:     u.Scheme + "://" + u.Host + "/v2/files",
 		token:    token,
 		password: options.Password,
 		http: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {

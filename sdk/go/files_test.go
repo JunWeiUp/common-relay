@@ -23,7 +23,7 @@ import (
 )
 
 func TestSharedStreamAndOfflineVectors(t *testing.T) {
-	raw, err := os.ReadFile("../../protocol/crypto-vectors.json")
+	raw, err := os.ReadFile("../../protocol/v2/crypto-vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestFileEncryptionRoundTripAndRejections(t *testing.T) {
 	}
 }
 
-// fakeFiles implements the /relay/v1/files contract closely enough for client tests.
+// fakeFiles implements the /v2/files contract closely enough for client tests.
 type fakeFiles struct {
 	mu      sync.Mutex
 	objects map[string]*FileInfo
@@ -201,7 +201,7 @@ func (f *fakeFiles) handler(t *testing.T) http.Handler {
 			w.WriteHeader(status)
 			json.NewEncoder(w).Encode(v)
 		}
-		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/relay/v1/files"), "/")
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v2/files"), "/")
 		switch {
 		case len(parts) == 1 && r.Method == "POST":
 			var info FileInfo
@@ -279,15 +279,15 @@ func TestFilesUploadResumeDownloadAndDelete(t *testing.T) {
 	s := httptest.NewServer(server.handler(t))
 	defer s.Close()
 	token := strings.Repeat("x", 64)
-	if _, err := NewFiles(s.URL+"/relay/v1/files", token, Options{}); err == nil {
+	if _, err := NewFiles(s.URL+"/v2/files", token, Options{}); err == nil {
 		t.Fatal("plain HTTP accepted without local test option")
 	}
-	for _, bad := range []string{s.URL + "/relay/v1/other", s.URL + "/relay/v1/files?x=1", "http://user@127.0.0.1/relay/v1/files", "http://localhost/relay/v1/files"} {
+	for _, bad := range []string{s.URL + "/relay/v1/files", s.URL + "/v2/other", s.URL + "/v2/files?x=1", "http://user@127.0.0.1/v2/files", "http://localhost/v2/files"} {
 		if _, err := NewFiles(bad, token, Options{AllowLocalTest: true}); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}
 	}
-	files, err := NewFiles(s.URL+"/relay/v1/files", token, Options{AllowLocalTest: true})
+	files, err := NewFiles(s.URL+"/v2/files", token, Options{AllowLocalTest: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestFilesNeverFollowRedirects(t *testing.T) {
 		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
 	defer source.Close()
-	files, err := NewFiles(source.URL+"/relay/v1/files", strings.Repeat("x", 64), Options{AllowLocalTest: true})
+	files, err := NewFiles(source.URL+"/v2/files", strings.Repeat("x", 64), Options{AllowLocalTest: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,8 +368,8 @@ func TestFilesNeverFollowRedirects(t *testing.T) {
 func TestFilesKeepsRequestedURLFamily(t *testing.T) {
 	token := strings.Repeat("a", 64)
 	for in, want := range map[string]string{
-		"http://127.0.0.1:1/v2/files":        "http://127.0.0.1:1/v2/files",
-		"http://127.0.0.1:1/relay/v1/files/": "http://127.0.0.1:1/relay/v1/files",
+		"http://127.0.0.1:1/v2/files":  "http://127.0.0.1:1/v2/files",
+		"http://127.0.0.1:1/v2/files/": "http://127.0.0.1:1/v2/files",
 	} {
 		f, err := NewFiles(in, token, Options{AllowLocalTest: true})
 		if err != nil {

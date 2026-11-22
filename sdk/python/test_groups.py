@@ -266,17 +266,40 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
 
 class GroupVectors(unittest.TestCase):
  def test_shared_vectors(self):
-  v=json.loads((ROOT/'protocol/group-vectors.json').read_text());verify(v['initial'],v['manager']['signing_key']);verify(v['request'],v['new_member']['signing_key']);advance(v['initial'],v['approved']);advance(v['approved'],v['removed'])
+  v=json.loads((ROOT/'protocol/v2/group-vectors.json').read_text());verify(v['initial'],v['manager']['signing_key']);verify(v['request'],v['new_member']['signing_key']);advance(v['initial'],v['approved']);advance(v['approved'],v['removed'])
   self.assertEqual(member(v['config'],'Mac')['signing_key'],v['manager']['signing_key'])
   with self.assertRaises(Exception):advance(v['initial'],v['removed'])
 
  def test_auto_shared_vectors(self):
-  v=json.loads((ROOT/'protocol/group-vectors.json').read_text());a=v['auto_admission'];advance(v['initial'],a['approved'])
+  v=json.loads((ROOT/'protocol/v2/group-vectors.json').read_text());a=v['auto_admission'];advance(v['initial'],a['approved'])
   for case in a['invalid']:
    with self.subTest(case=case['case']),self.assertRaises(Exception):advance(v['initial'],case['entry'])
 
+ def test_entry_hash_vectors(self):
+  v=json.loads((ROOT/'protocol/v2/group-vectors.json').read_text());h=v['entry_hashes']
+  def entry(path):
+   e=v
+   for part in path.split('.'):e=e[part]
+   return e
+  self.assertTrue(h['cases'])
+  for case in h['cases']:
+   with self.subTest(entry=case['entry'],key=case['verify_key']):
+    e=entry(case['entry']);self.assertEqual(digest(payload(e)),case['payload_sha256'])
+    try:verify(e,case['verify_key']);ok=True
+    except Exception:ok=False
+    self.assertEqual(ok,case['signature_valid'])
+  self.assertTrue(h['links'])
+  for link in h['links']:
+   with self.subTest(base=link['base'],next=link['next']):self.assertEqual(unpack(entry(link['next']))['previous'],digest(payload(entry(link['base']))))
+
+ def test_hash_secret_vectors(self):
+  # groups.digest computes token_hash / secret_hash; shared SHA-256 hex rule for every v2 secret hash.
+  cases=json.loads((ROOT/'protocol/v2/vectors.json').read_text())['hash_secret'];self.assertTrue(cases)
+  for case in cases:
+   with self.subTest(use=case['use']):self.assertEqual(digest(case['input'].encode()),case['sha256'])
+
  def test_strict_payload_vectors(self):
-  v=json.loads((ROOT/'protocol/group-vectors.json').read_text());s=v['strict_payload']
+  v=json.loads((ROOT/'protocol/v2/group-vectors.json').read_text());s=v['strict_payload']
   for case in s['valid']:
    with self.subTest(case=case['case']):advance(v['approved'],case['entry'])
   for case in s['invalid']:

@@ -9,10 +9,11 @@ import java.util.*;
 import static org.junit.Assert.*;
 
 public class V2ClientTest {
-    private static final String PUB = "132c442be010fbd57e72603328aa76e71fccc1503aae219327d14d9c9993f472";
-    private static final String PRIV = "42".repeat(32);
-    private static final String HELLO = "435253318060211cbbbb765d2dcb943d8373a8389ce9e2409001ca7cd5fa9572c3267b305d3593574756b28720e140d0a61e3bc20371a2aa079a321fb808722e208c2d2cb4e3804a2b3f32f1160a1e832e7a55fb08290b6df4e8cd043917b0f2f3c89463000000210ea5b12a2fb9ef63bc511f08e718632e069600737c791c3032ee1bd1dbf961bc9d";
-    private static final String EMPTY = "43525331d23a619a1d158a1af281e170675d0d63e98c4fb84c8dc1cc4598bea00692183cfac3564174de5cd264f242fd4972beea37f96f1c0901e95d147a63f561235f78d02b9b6fd1f2bc8a1195b015fcd417064dea8fa17a669b86d3bcc4fe6d7d3a230000001024ef6f7ff1b06ef0b51a3ecc2b6e9026";
+    private static JSONObject vectors(String name) throws Exception {
+        return new JSONObject(new String(java.nio.file.Files.readAllBytes(java.nio.file.Path.of("../../protocol/v2/" + name)), StandardCharsets.UTF_8));
+    }
+
+    private static String sha256(byte[] b) throws Exception { return RelayGroups.digest(b); }
 
     /** Records requests and answers with a canned status/body without touching the network. */
     private static OkHttpClient canned(List<Request> seen, List<String> bodies, int code, String contentType, String body) {
@@ -133,28 +134,67 @@ public class V2ClientTest {
         assertTrue(V2Client.isUnsupported(assertThrows(V2Client.ApiException.class, old::me)));
     }
 
+    @Test public void hashSecretVectors() throws Exception {
+        org.json.JSONArray cases = vectors("vectors.json").getJSONArray("hash_secret");
+        assertTrue(cases.length() > 0);
+        for (int i = 0; i < cases.length(); i++) {
+            JSONObject c = cases.getJSONObject(i);
+            assertEquals(c.getString("use"), c.getString("sha256"), V2Client.hashSecret(c.getString("input")));
+        }
+    }
+
     @Test public void opensGoSealedVectors() throws Exception {
-        byte[] pub = V2Sealed.parsePublicKey(PUB), priv = V2Sealed.parseKey(PRIV);
-        byte[] hello = Crypto.unhex(HELLO);
-        assertTrue(V2Sealed.isSealed(hello));
+        JSONObject v = vectors("sealed-vectors.json");
+        byte[] pub = V2Sealed.parsePublicKey(v.getString("recipient_public")), priv = V2Sealed.parseKey(v.getString("recipient_private"));
+        Map<String, byte[]> sealed = new HashMap<>();
+        org.json.JSONArray valid = v.getJSONArray("valid");
+        assertTrue(valid.length() >= 3);
+        for (int i = 0; i < valid.length(); i++) {
+            JSONObject c = valid.getJSONObject(i);
+            String name = c.getString("name");
+            byte[] box = Base64.getDecoder().decode(c.getString("sealed_b64"));
+            sealed.put(name, box);
+            assertTrue(name, V2Sealed.isSealed(box));
+            byte[] plain = V2Sealed.openSealed(box, pub, priv);
+            assertEquals(name, c.getInt("plaintext_length"), plain.length);
+            assertEquals(name, c.getString("plaintext_sha256"), sha256(plain));
+            if (c.has("plaintext_hex")) assertEquals(name, c.getString("plaintext_hex"), Crypto.hex(plain));
+            if (name.equals("two_frames")) for (int j = 0; j < plain.length; j++) assertEquals((byte) ((j * 7 + 3) & 0xff), plain[j]);
+        }
+        assertEquals("hello sealed crs1", new String(V2Sealed.openSealed(sealed.get("hello"), pub, priv), StandardCharsets.UTF_8));
+        assertEquals(0, V2Sealed.openSealed(sealed.get("empty"), pub, priv).length);
         assertFalse(V2Sealed.isSealed("CRS".getBytes(StandardCharsets.US_ASCII)));
         assertFalse(V2Sealed.isSealed("{\"a\":1}".getBytes(StandardCharsets.US_ASCII)));
-        assertEquals("hello sealed crs1", new String(V2Sealed.openSealed(hello, pub, priv), StandardCharsets.UTF_8));
-        assertEquals(0, V2Sealed.openSealed(Crypto.unhex(EMPTY), pub, priv).length);
 
-        // Truncation (drop the whole single frame, or part of it), tampering, and trailing junk fail.
-        assertThrows(V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(Arrays.copyOf(hello, 100), pub, priv));
-        assertThrows(V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(Arrays.copyOf(hello, hello.length - 1), pub, priv));
-        byte[] tampered = hello.clone(); tampered[tampered.length - 1] ^= 1;
-        assertThrows(V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(tampered, pub, priv));
-        byte[] junk = Arrays.copyOf(hello, hello.length + 4);
-        assertThrows(V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(junk, pub, priv));
+        // Truncation, tampering, and trailing junk fail.
+        org.json.JSONArray invalid = v.getJSONArray("invalid");
+        assertTrue(invalid.length() > 0);
+        for (int i = 0; i < invalid.length(); i++) {
+            JSONObject c = invalid.getJSONObject(i);
+            byte[] base = sealed.get(c.getString("base")), bad;
+            assertNotNull(c.getString("base"), base);
+            switch (c.getString("op")) {
+                case "truncate": bad = Arrays.copyOf(base, c.getInt("length")); break;
+                case "append": {
+                    byte[] extra = Crypto.unhex(c.getString("hex"));
+                    bad = Arrays.copyOf(base, base.length + extra.length);
+                    System.arraycopy(extra, 0, bad, base.length, extra.length);
+                    break;
+                }
+                case "flip": bad = base.clone(); bad[c.getInt("offset")] ^= 1; break;
+                default: throw new AssertionError("unknown op " + c.getString("op"));
+            }
+            final byte[] attempt = bad;
+            assertThrows(c.getString("name"), V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(attempt, pub, priv));
+        }
+        byte[] wrongPub = V2Sealed.parseKey(v.getString("wrong_public")), wrongPriv = V2Sealed.parseKey(v.getString("wrong_private"));
+        assertThrows(V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(sealed.get("hello"), wrongPub, wrongPriv));
 
         V2Sealed.KeyPair other = V2Sealed.generateSealKeyPair();
         assertEquals(64, other.publicHex.length());
         assertEquals(64, other.privateHex.length());
         assertNotEquals(other.publicHex, V2Sealed.generateSealKeyPair().publicHex);
-        assertThrows(V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(hello, V2Sealed.parseKey(other.publicHex), V2Sealed.parseKey(other.privateHex)));
+        assertThrows(V2Sealed.CorruptException.class, () -> V2Sealed.openSealed(sealed.get("hello"), V2Sealed.parseKey(other.publicHex), V2Sealed.parseKey(other.privateHex)));
         assertThrows(IllegalArgumentException.class, () -> V2Sealed.parseKey("zz"));
         assertEquals(V2Sealed.SEALED_CONTENT_TYPE, "application/vnd.common-relay.sealed");
     }
