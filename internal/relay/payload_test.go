@@ -84,14 +84,14 @@ func TestChangeGroupRejectsAmbiguousPayload(t *testing.T) {
 		}
 	}
 	for _, c := range v.Strict.Invalid {
-		if status, _ := groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+token, c.Entry); status == 200 {
+		if status, _ := groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, c.Entry); status == 200 {
 			t.Errorf("%s stored", c.Case)
 		}
 	}
 	if bad, err := f.s.Store.CheckGroups(); err != nil || len(bad) != 0 {
 		t.Fatalf("check: %v %v", bad, err)
 	}
-	if status, body := groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+token, v.Strict.Valid[0].Entry); status != 200 {
+	if status, body := groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, v.Strict.Valid[0].Entry); status != 200 {
 		t.Fatalf("valid rename: %d %s", status, body)
 	}
 	raw, _ := json.Marshal(v.Strict.Invalid[0].Entry)

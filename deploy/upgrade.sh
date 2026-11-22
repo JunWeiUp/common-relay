@@ -40,8 +40,8 @@ reh="$STAGE/rehearsal"; rm -rf "$reh"; cp -a "$snap" "$reh"
 before=$("$NEW" schema --data "$reh")
 "$NEW" check --data "$reh"
 port=47917
-args=(serve --data "$reh" --listen "127.0.0.1:$port" --disk-reserve 0 --access-password-file "$ACCESS_FILE")
-[[ -s $V2_ADMIN_FILE ]] && args+=(--v2-admin-hash-file "$V2_ADMIN_FILE")
+[[ -s $V2_ADMIN_FILE ]] || { echo "$V2_ADMIN_FILE missing: serve requires --v2-admin-hash-file" >&2; exit 1; }
+args=(serve --data "$reh" --listen "127.0.0.1:$port" --disk-reserve 0 --access-password-file "$ACCESS_FILE" --v2-admin-hash-file "$V2_ADMIN_FILE")
 "$NEW" "${args[@]}" >"$STAGE/rehearsal.log" 2>&1 & rpid=$!
 ok=0; for _ in $(seq 1 50); do curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && { ok=1; break; }; sleep 0.2; done
 kill "$rpid" 2>/dev/null || true; wait "$rpid" 2>/dev/null || true

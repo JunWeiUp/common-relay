@@ -5,7 +5,10 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/JunWeiUp/common-relay/internal/relay"
 )
 
 func TestInvalidInvocationDoesNotCreateStore(t *testing.T) {
@@ -26,5 +29,33 @@ func TestInvalidInvocationDoesNotCreateStore(t *testing.T) {
 				t.Fatalf("invalid invocation touched data directory: %v", err)
 			}
 		})
+	}
+}
+
+func TestServeRequiresV2AdminHash(t *testing.T) {
+	original := os.Args
+	t.Cleanup(func() { os.Args = original })
+	tmp := t.TempDir()
+	access := filepath.Join(tmp, "access")
+	if err := os.WriteFile(access, []byte(relay.AccessPasswordHash("correct-horse-1")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(tmp, "must-not-exist")
+	for _, removed := range [][]string{{"device-add"}, {"device-revoke"}, {"import-v1"}} {
+		os.Args = append([]string{"common-relay"}, removed...)
+		if err := run(); err == nil || !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("%s: %v", removed[0], err)
+		}
+	}
+	os.Args = []string{"common-relay", "serve", "--data", dir, "--access-password-file", access}
+	if err := run(); err == nil || !strings.Contains(err.Error(), "--v2-admin-hash-file") {
+		t.Fatalf("serve without v2 admin hash: %v", err)
+	}
+	os.Args = []string{"common-relay", "serve", "--data", dir, "--access-password-file", access, "--webhook-config", "x"}
+	if err := run(); err == nil {
+		t.Fatal("removed --webhook-config flag accepted")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("serve touched data directory: %v", err)
 	}
 }

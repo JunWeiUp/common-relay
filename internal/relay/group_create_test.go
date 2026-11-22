@@ -14,7 +14,7 @@ func TestSelfServiceCreationBoundaries(t *testing.T) {
 	g := GroupState{Name: "我的设备", Version: 1, App: "example", Group: "g-" + RandomID(), Revision: 1, Members: []Member{m}}
 	token := RandomID() + RandomID()
 	send := func(state GroupState, tokenHash string) int {
-		code, _ := groupRequest(t, f, "POST", "/relay/v1/group/create", "", map[string]any{"entry": groupSigned(t, state, m.Device, sk), "token_hash": tokenHash})
+		code, _ := groupRequest(t, f, "POST", "/v2/group/create", "", map[string]any{"entry": groupSigned(t, state, m.Device, sk), "token_hash": tokenHash})
 		return code
 	}
 	if send(g, hashToken(token)) != 403 {
@@ -37,7 +37,7 @@ func TestSelfServiceCreationBoundaries(t *testing.T) {
 	}
 	old := g
 	old.Group = "g-" + RandomID()
-	if err := f.s.Store.AddDevice(Device{App: old.App, Group: old.Group, ID: "old", PublicKey: m.PublicKey}, RandomID()+RandomID()); err != nil {
+	if err := addTestDevice(f.s.Store, Device{App: old.App, Group: old.Group, ID: "old", PublicKey: m.PublicKey}, RandomID()+RandomID()); err != nil {
 		t.Fatal(err)
 	}
 	if send(old, hashToken(RandomID())) != 403 {

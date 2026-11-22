@@ -13,9 +13,13 @@ case "$(uname -s)/$(uname -m)" in
 esac
 binary="$stage/build/common-relay-linux-$arch"
 test -f "$binary"
-# The service refuses to start without a server access password hash.
+# The service refuses to start without the access password and v2 Root Admin hashes.
 if ! test -s /etc/common-relay/access-password.sha256; then
   echo 'Create /etc/common-relay/access-password.sha256 first: install -d -m 0700 /etc/common-relay; common-relay hash-password > /etc/common-relay/access-password.sha256 (reads one line from stdin); chmod 0600 it' >&2
+  exit 1
+fi
+if ! test -s /etc/common-relay/v2-admin.sha256; then
+  echo 'Create /etc/common-relay/v2-admin.sha256 first: common-relay hash-password > /etc/common-relay/v2-admin.sha256 (reads the Root Admin secret from stdin); chmod 0600 it' >&2
   exit 1
 fi
 python3 - "$site" <<'PYTHON'

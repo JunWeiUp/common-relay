@@ -1,6 +1,8 @@
 # Common Relay v1
 
-唯一支持的协议版本。不提供其他协议的兼容适配。
+> **服务端状态（v1 已退役）**：服务端已删除 v1 传输与全部 `/relay/v1/*` 路由，只提供协议 v2（见 [V2-ARCHITECTURE](../docs/V2-ARCHITECTURE.md)）。本文中的签名设备组、邀请、短邀请与文件报文仍然有效，但路径前缀由 `/relay/v1` 改为 `/v2`（`/v2/group*`、`/v2/enroll/*`、`/v2/files*`），`Relay-Access` 规则不变；`/relay/v1/ws` 控制消息、离线消息、双向流及 Webhook/WebDAV 入口只作为 SDK 历史实现参考，服务端不再提供。
+
+不提供其他协议的兼容适配。
 
 ## 身份与接入
 
@@ -171,10 +173,6 @@ After decryption, the SDK requires version/purpose match, the original relay URL
 
 `group_invite_links` is an additive table with an invitation foreign key and delete cascade. Cancellation, expiry cleanup, issuer removal and disband remove or disable packets; successful approval makes them unreadable. A resolver needs an online relay, just as actual group enrollment does. Four SDKs share `invitation-link-vectors.json`, including authenticated ciphertext, key derivation and URL encoding. No business message/stream format changes.
 
-## 可选 Webhook 入口
+## Webhook / WebDAV 入口（已移除）
 
-`POST /relay/v1/webhooks/{route}` 是显式信任的服务器桥接入口，不改变 v1 文件密码格式。现有各语言 Files 接口均可接收；扩展元数据和完整 HTTP 契约见 [WEBHOOKS](../docs/WEBHOOKS.md)，共享样例见 `webhook-vectors.json`。Webhook 文件使用保留到确认的 expires 哨兵值 253402300799，普通文件 TTL 不变。
-
-## 可选 WebDAV 上传入口
-
-`/relay/v1/dav/{route}/` 同样是显式信任的服务器桥接入口，与 Webhook 共用加密投递流程，不改变 v1 文件密码格式，各语言 SDK 无需改动，现有 Files 接口即可接收。入口使用每条路由独立的 HTTP Basic 账号密码，不要求 `Relay-Access`；只收不读，`GET` 文件返回 403。投递文件使用同一 expires 哨兵值 253402300799，解密后的元数据 `type` 为 `webdav`（含 `route`、`path`、`name`、`content_type`、`size`、`sha256`、`received_at`）。完整方法、去重与投递语义见 [WEBDAV](../docs/WEBDAV.md)。
+v1 的 `/relay/v1/webhooks/{route}` 与 `/relay/v1/dav/{route}/` 已随 v1 服务端一起删除；改用 v2 `webhook`/`webdav` 边缘插件，见 [V2-ARCHITECTURE](../docs/V2-ARCHITECTURE.md)。`webhook-vectors.json` 仅供 SDK 解析历史投递文件。

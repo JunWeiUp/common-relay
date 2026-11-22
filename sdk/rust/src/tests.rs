@@ -962,6 +962,18 @@ impl LocalRelay {
             eprintln!("skipping: {server} not built");
             return None;
         }
+        // common-relay removed v1 (and device-add) on 2026-11-22; this client is v1-only.
+        if let Ok(out) = std::process::Command::new(server)
+            .arg("device-add")
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stderr).to_string()
+                + &String::from_utf8_lossy(&out.stdout);
+            if text.contains("unknown command") {
+                eprintln!("skipping: server no longer speaks v1");
+                return None;
+            }
+        }
         let dir = TempDir::new();
         let data = dir.path().join("server");
         let access_file = dir.path().join("access-password.sha256");

@@ -22,7 +22,7 @@ func TestSignedExitAndDisband(t *testing.T) {
 		m     Member
 		token string
 	}{{a, at}, {b, bt}} {
-		if err := f.s.Store.AddDevice(Device{App: g.App, Group: g.Group, ID: item.m.Device, PublicKey: item.m.PublicKey}, item.token); err != nil {
+		if err := addTestDevice(f.s.Store, Device{App: g.App, Group: g.Group, ID: item.m.Device, PublicKey: item.m.PublicKey}, item.token); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -36,13 +36,13 @@ func TestSignedExitAndDisband(t *testing.T) {
 	rename.Previous = digest(rootBytes)
 	rename.Members[0].Name = "Not allowed"
 	denied := groupSigned(t, rename, b.Device, bk)
-	if code, _ := groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+bt, denied); code != 403 {
+	if code, _ := groupRequest(t, f, "PUT", "/v2/group", "Bearer "+bt, denied); code != 403 {
 		t.Fatalf("ordinary rename other: %d", code)
 	}
 	rename.Members[0] = a
 	rename.Members[1].Name = "My phone"
 	renamed := groupSigned(t, rename, b.Device, bk)
-	if code, _ := groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+bt, renamed); code != 200 {
+	if code, _ := groupRequest(t, f, "PUT", "/v2/group", "Bearer "+bt, renamed); code != 200 {
 		t.Fatalf("self rename: %d", code)
 	}
 	g = rename
@@ -55,19 +55,19 @@ func TestSignedExitAndDisband(t *testing.T) {
 	next.Members = []Member{}
 	next.Closed = true
 	req := groupSigned(t, next, b.Device, bk)
-	if code, _ := groupRequest(t, f, "POST", "/relay/v1/group/exit", "Bearer "+bt, req); code != 403 {
+	if code, _ := groupRequest(t, f, "POST", "/v2/group/exit", "Bearer "+bt, req); code != 403 {
 		t.Fatalf("ordinary disband: %d", code)
 	}
 	next.Closed = false
 	next.Members = []Member{b}
 	req = groupSigned(t, next, a.Device, sk)
-	if code, _ := groupRequest(t, f, "POST", "/relay/v1/group/exit", "Bearer "+at, req); code != 403 {
+	if code, _ := groupRequest(t, f, "POST", "/v2/group/exit", "Bearer "+at, req); code != 403 {
 		t.Fatalf("last manager exit: %d", code)
 	}
 	next.Members = []Member{a}
 	req = groupSigned(t, next, b.Device, bk)
 	for i := 0; i < 2; i++ {
-		if code, _ := groupRequest(t, f, "POST", "/relay/v1/group/exit", "Bearer "+bt, req); code != 200 {
+		if code, _ := groupRequest(t, f, "POST", "/v2/group/exit", "Bearer "+bt, req); code != 200 {
 			t.Fatalf("leave/retry: %d", code)
 		}
 	}
@@ -82,14 +82,14 @@ func TestSignedExitAndDisband(t *testing.T) {
 	closed.Closed = true
 	end := groupSigned(t, closed, a.Device, sk)
 	for i := 0; i < 2; i++ {
-		if code, _ := groupRequest(t, f, "POST", "/relay/v1/group/exit", "Bearer "+at, end); code != 200 {
+		if code, _ := groupRequest(t, f, "POST", "/v2/group/exit", "Bearer "+at, end); code != 200 {
 			t.Fatalf("disband/retry: %d", code)
 		}
 	}
 	if _, err := f.s.Store.Authenticate(at); err == nil {
 		t.Fatal("manager still authorized")
 	}
-	if code, _ := groupRequest(t, f, "POST", "/relay/v1/group/exit", "Bearer "+bt, end); code != 401 {
+	if code, _ := groupRequest(t, f, "POST", "/v2/group/exit", "Bearer "+bt, end); code != 401 {
 		t.Fatal("foreign token acknowledged exit")
 	}
 }

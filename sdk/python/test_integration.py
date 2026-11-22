@@ -15,6 +15,15 @@ from common_relay.files import Files, prepare, decrypt
 
 ROOT=Path(__file__).resolve().parents[2]
 
+
+def _server_speaks_v1(binary):
+    """common-relay removed v1 (and device-add) on 2026-11-22; v1-only SDK APIs cannot be exercised."""
+    try:
+        r = subprocess.run([binary, 'device-add'], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return 'unknown command' not in (r.stdout + r.stderr)
+
 class CryptoTests(unittest.TestCase):
     def test_shared_offline_vector(self):
         v=json.loads((ROOT/'protocol/crypto-vectors.json').read_text())
@@ -40,6 +49,8 @@ class Integration(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.dir=Path(self.tmp.name)
         binary=os.environ.get('COMMON_RELAY_BINARY',str(ROOT/'build/common-relay'))
+        if not Path(binary).exists() or not _server_speaks_v1(binary):
+            self.skipTest('server binary missing or v1 removed (v1-only SDK API)')
         keys={name:PrivateKey.generate() for name in ('a','b')}
         self.ids={name:Identity('example','group',name,bytes(keys[name]).hex(),{other:bytes(keys[other].public_key).hex() for other in keys if other!=name}) for name in keys}
         self.tokens={}

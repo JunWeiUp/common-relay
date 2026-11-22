@@ -34,30 +34,13 @@ func reply(w http.ResponseWriter, v any) {
 }
 func (s *Server) path(id string) string { return filepath.Join(s.Store.Dir, "files", id) }
 
-// V2FilesHandler serves /v2/files and /v2/files/* using the exact resumable encrypted file
-// plane and Relay-Access guard, rewriting the prefix onto /relay/v1/files.
-func (s *Server) V2FilesHandler() http.HandlerFunc {
-	return s.requireAccess(func(w http.ResponseWriter, r *http.Request) {
-		r2 := r.Clone(r.Context())
-		u := *r.URL
-		if u.Path == "/v2/files" || strings.HasPrefix(u.Path, "/v2/files/") {
-			u.Path = "/relay/v1" + strings.TrimPrefix(u.Path, "/v2")
-		} else {
-			http.NotFound(w, r)
-			return
-		}
-		r2.URL = &u
-		s.files(w, markV2(r2))
-	})
-}
-
 func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 	d, err := s.auth(r)
 	if err != nil {
 		http.Error(w, "unauthorized", 401)
 		return
 	}
-	suffix := strings.TrimPrefix(r.URL.Path, "/relay/v1/files")
+	suffix := strings.TrimPrefix(r.URL.Path, "/v2/files")
 	if suffix == "" || suffix == "/" {
 		switch r.Method {
 		case "POST":
@@ -306,9 +289,6 @@ func (s *Server) lockFile(id string) func() {
 }
 func (s *Server) Collect() error {
 	now := time.Now().Unix()
-	if _, err := s.Store.DB.Exec("DELETE FROM webhook_receipts WHERE expires<=?", now); err != nil {
-		return err
-	}
 	if _, err := s.Store.DB.Exec("DELETE FROM group_invites WHERE expires<=?", now); err != nil {
 		return err
 	}
@@ -349,14 +329,6 @@ func (s *Server) Collect() error {
 		if err != nil {
 			failures = append(failures, err)
 		}
-	}
-	_, err = s.Store.DB.Exec(`DELETE FROM messages WHERE expires<=? OR EXISTS(SELECT 1 FROM devices d WHERE d.app=messages.app AND d.grp=messages.grp AND d.id IN(messages.sender,messages.recipient) AND d.revoked=1)`, now)
-	if err != nil {
-		failures = append(failures, err)
-	}
-	_, err = s.Store.DB.Exec("DELETE FROM receipts WHERE expires<=?", now)
-	if err != nil {
-		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
 }

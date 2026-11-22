@@ -1,5 +1,5 @@
 // Loopback integration against the prebuilt relay (build/common-relay) with throwaway identities.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { createServer, connect } from 'node:net';
@@ -11,7 +11,12 @@ import { Client, Identity, Journal, Files, Groups, prepareFile, decryptFile, saf
 
 const binary = process.env.COMMON_RELAY_SERVER ?? new URL('../../../build/common-relay', import.meta.url).pathname;
 const PASSWORD = 'integration-access-1';
-const skip = existsSync(binary) ? false : `relay binary not found at ${binary}`;
+const speaksV1 = () => {
+  // common-relay removed v1 (and device-add) on 2026-11-22; this SDK is v1-only.
+  const r = spawnSync(binary, ['device-add'], { encoding: 'utf8' });
+  return !`${r.stdout}${r.stderr}`.includes('unknown command');
+};
+const skip = !existsSync(binary) ? `relay binary not found at ${binary}` : !speaksV1() ? 'server no longer speaks v1 (removed); TypeScript SDK is v1-only' : false;
 
 async function freePort() {
   const server = createServer();

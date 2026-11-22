@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// AccessHeader carries the server-wide access password on every /relay/v1 request.
+// AccessHeader carries the server-wide access password on every /v2/group, /v2/enroll and /v2/files request.
 const AccessHeader = "Relay-Access"
 
 // ValidAccessPassword reports whether p is 8..128 printable ASCII characters (0x21..0x7e).

@@ -72,7 +72,7 @@ func validateAutoTransition(current, entry SignedEntry) (GroupState, error) {
 }
 
 func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/relay/v1/enroll/"), "/auto")
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v2/enroll/"), "/auto")
 	if !objectID.MatchString(id) {
 		w.WriteHeader(404)
 		return
@@ -237,13 +237,6 @@ func (s *Server) autoEnroll(w http.ResponseWriter, r *http.Request) {
 		groupFailure(w, err)
 		return
 	}
-	s.mu.Lock()
-	for _, p := range s.peers {
-		if p.d.App == app && p.d.Group == group {
-			s.event(p, Event{Type: "group.changed", Revision: next.Revision})
-		}
-	}
-	s.mu.Unlock()
 	s.notifyGroupSynced(next, nil)
 	reply(w, entry)
 }

@@ -16,7 +16,7 @@ func (s *Server) publishInvitationLink(w http.ResponseWriter, r *http.Request, d
 		w.WriteHeader(405)
 		return
 	}
-	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/relay/v1/group/invitations/"), "/link")
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v2/group/invitations/"), "/link")
 	if !objectID.MatchString(id) {
 		w.WriteHeader(404)
 		return
@@ -85,7 +85,7 @@ func (s *Server) readInvitationLink(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(405)
 		return
 	}
-	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/relay/v1/enroll/"), "/link")
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v2/enroll/"), "/link")
 	if !objectID.MatchString(id) {
 		w.WriteHeader(404)
 		return

@@ -9,47 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 )
-
-func TestReceiverStreamLimitAndIndependentExpiry(t *testing.T) {
-	f := setup(t)
-	f.add("receiver", "one")
-	b := f.dial("receiver")
-	for i := 0; i < 9; i++ {
-		name := string(rune('a' + i))
-		f.add(name, "one")
-		a := f.dial(name)
-		sendEvent(t, a, Event{Type: "stream.open", ID: RandomID(), To: "receiver", Body: "opaque"})
-		if i < 8 {
-			if e := readEvent(t, b); e.Type != "stream.open" {
-				t.Fatal(e)
-			}
-		} else {
-			if e := readEvent(t, a); e.Code != "capacity" {
-				t.Fatal(e)
-			}
-		}
-	}
-	// Move deadlines into the past; the real heartbeat must collect them without a new open.
-	f.s.mu.Lock()
-	for _, st := range f.s.streams {
-		st.deadline = time.Now().Add(-time.Second)
-	}
-	f.s.mu.Unlock()
-	for i := 0; i < 8; i++ {
-		if e := readEvent(t, b); e.Type != "stream.close" || e.Code != "timeout" {
-			t.Fatal(e)
-		}
-	}
-	f.s.mu.Lock()
-	defer f.s.mu.Unlock()
-	if len(f.s.streams) != 0 {
-		t.Fatal("expired streams retained")
-	}
-}
 
 func createTestFile(t *testing.T, f *fixture) string {
 	t.Helper()
@@ -86,7 +47,7 @@ func TestSlowUploadOnlyLocksItsOwnFile(t *testing.T) {
 	f.add("bob", "one")
 	id := createTestFile(t, f)
 	body := &slowBody{started: make(chan struct{}), release: make(chan struct{})}
-	req := httptest.NewRequest("PUT", "/relay/v1/files/"+id+"/data", body)
+	req := httptest.NewRequest("PUT", "/v2/files/"+id+"/data", body)
 	req.ContentLength = 1
 	req.Header.Set("Authorization", "Bearer "+f.tokens["alice"])
 	req.Header.Set("Upload-Offset", "0")
@@ -174,7 +135,7 @@ func TestSameFileConcurrentUploadCommitAndCollection(t *testing.T) {
 	results := make(chan int, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			req := httptest.NewRequest("PUT", "/relay/v1/files/"+id+"/data", bytes.NewReader([]byte("x")))
+			req := httptest.NewRequest("PUT", "/v2/files/"+id+"/data", bytes.NewReader([]byte("x")))
 			req.Header.Set("Authorization", "Bearer "+f.tokens["alice"])
 			req.Header.Set("Upload-Offset", "0")
 			w := httptest.NewRecorder()
@@ -198,33 +159,5 @@ func TestSameFileConcurrentUploadCommitAndCollection(t *testing.T) {
 	}
 	if _, err := os.Stat(f.s.path(id)); !os.IsNotExist(err) {
 		t.Fatal(err)
-	}
-}
-
-func TestAbsoluteExpiryCannotBeRenewed(t *testing.T) {
-	f := setup(t)
-	f.add("alice", "one")
-	f.add("bob", "one")
-	a := f.dial("alice")
-	id := RandomID()
-	expiry := time.Now().Unix() + 60
-	event := Event{Type: "message", ID: id, To: "bob", Body: "opaque", Offline: true, Expires: expiry}
-	sendEvent(t, a, event)
-	if e := readEvent(t, a); e.Type != "stored" {
-		t.Fatal(e)
-	}
-	sendEvent(t, a, event)
-	if e := readEvent(t, a); e.Type != "stored" {
-		t.Fatal(e)
-	}
-	var got int64
-	f.s.Store.DB.QueryRow("SELECT expires FROM messages WHERE id=?", id).Scan(&got)
-	if got != expiry {
-		t.Fatal(got, expiry)
-	}
-	event.Expires = time.Now().Unix() - 1
-	sendEvent(t, a, event)
-	if e := readEvent(t, a); !strings.Contains(e.Code, "expiry") {
-		t.Fatal(e)
 	}
 }

@@ -207,28 +207,8 @@ func groupFailure(w http.ResponseWriter, err error) {
 	}
 }
 
-// V2GroupHandler serves /v2/group, /v2/group/*, and /v2/enroll/* using the exact signed group
-// ledger and Relay-Access guard, rewriting the path prefix onto the unified group router.
-func (s *Server) V2GroupHandler() http.HandlerFunc {
-	return s.requireAccess(func(w http.ResponseWriter, r *http.Request) {
-		r2 := r.Clone(r.Context())
-		u := *r.URL
-		switch {
-		case u.Path == "/v2/group" || strings.HasPrefix(u.Path, "/v2/group/"):
-			u.Path = "/relay/v1" + strings.TrimPrefix(u.Path, "/v2")
-		case strings.HasPrefix(u.Path, "/v2/enroll/"):
-			u.Path = "/relay/v1" + strings.TrimPrefix(u.Path, "/v2")
-		default:
-			http.NotFound(w, r)
-			return
-		}
-		r2.URL = &u
-		s.groups(w, markV2(r2))
-	})
-}
-
 // SyncExistingGroups replays every active signed group's latest state into OnGroupSynced
-// at startup so existing v1 managed groups can immediately switch to /v2/ws without re-pairing.
+// at startup so every managed group is present in its v2 space.
 func (s *Server) SyncExistingGroups() {
 	if s.OnGroupSynced == nil {
 		return
@@ -290,19 +270,19 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(r.URL.Path, "/enroll/") {
 		s.Usage.record("", r) // enrollment is unauthenticated; the app is unknown here
 	}
-	if r.URL.Path == "/relay/v1/group/exit" {
+	if r.URL.Path == "/v2/group/exit" {
 		s.exitGroup(w, r)
 		return
 	}
-	if r.URL.Path == "/relay/v1/group/create" {
+	if r.URL.Path == "/v2/group/create" {
 		s.createGroup(w, r)
 		return
 	}
-	if r.URL.Path == "/relay/v1/group/bootstrap" {
+	if r.URL.Path == "/v2/group/bootstrap" {
 		s.bootstrap(w, r)
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/relay/v1/enroll/") {
+	if strings.HasPrefix(r.URL.Path, "/v2/enroll/") {
 		if strings.HasSuffix(r.URL.Path, "/link") {
 			s.readInvitationLink(w, r)
 			return
@@ -319,15 +299,15 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", 401)
 		return
 	}
-	if r.URL.Path == "/relay/v1/group" && r.Method == "GET" {
+	if r.URL.Path == "/v2/group" && r.Method == "GET" {
 		s.groupList(w, r, d)
 		return
 	}
-	if r.URL.Path == "/relay/v1/group" && r.Method == "PUT" {
+	if r.URL.Path == "/v2/group" && r.Method == "PUT" {
 		s.changeGroup(w, r, d)
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/relay/v1/group/invitations") {
+	if strings.HasPrefix(r.URL.Path, "/v2/group/invitations") {
 		if strings.HasSuffix(r.URL.Path, "/link") {
 			s.publishInvitationLink(w, r, d)
 			return
@@ -476,21 +456,11 @@ func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	online := []string{}
-	seenOnline := map[string]struct{}{}
-	s.mu.Lock()
-	for _, p := range s.peers {
-		if p.d.App == d.App && p.d.Group == d.Group {
-			if _, ok := seenOnline[p.d.ID]; !ok {
-				seenOnline[p.d.ID] = struct{}{}
-				online = append(online, p.d.ID)
-			}
-		}
-	}
-	s.mu.Unlock()
-	if s.ExtraOnlinePeers != nil {
-		for _, id := range s.ExtraOnlinePeers(d.App, d.Group) {
-			if _, ok := seenOnline[id]; !ok {
-				seenOnline[id] = struct{}{}
+	if s.OnlinePeers != nil {
+		seen := map[string]struct{}{}
+		for _, id := range s.OnlinePeers(d.App, d.Group) {
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
 				online = append(online, id)
 			}
 		}
@@ -518,7 +488,7 @@ func (s *Server) invitation(w http.ResponseWriter, r *http.Request, d Device) {
 		groupFailure(w, ErrDenied)
 		return
 	}
-	path := strings.TrimPrefix(r.URL.Path, "/relay/v1/group/invitations")
+	path := strings.TrimPrefix(r.URL.Path, "/v2/group/invitations")
 	if path == "" && r.Method == "POST" {
 		if !validHex(input.SecretHash, 32) {
 			w.WriteHeader(400)
@@ -605,7 +575,7 @@ func (s *Server) invitation(w http.ResponseWriter, r *http.Request, d Device) {
 	reply(w, map[string]any{"request": req, "approved": approved != ""})
 }
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/relay/v1/enroll/")
+	id := strings.TrimPrefix(r.URL.Path, "/v2/enroll/")
 	if !objectID.MatchString(id) {
 		w.WriteHeader(404)
 		return
@@ -823,18 +793,6 @@ func (s *Server) changeGroup(w http.ResponseWriter, r *http.Request, d Device) {
 		groupFailure(w, err)
 		return
 	}
-	s.mu.Lock()
-	for _, m := range removed {
-		if p := s.peers[key(Device{App: d.App, Group: d.Group, ID: m.Device})]; p != nil {
-			p.cancel()
-		}
-	}
-	for _, p := range s.peers {
-		if p.d.App == d.App && p.d.Group == d.Group {
-			s.event(p, Event{Type: "group.changed", Revision: g.Revision})
-		}
-	}
-	s.mu.Unlock()
 	s.notifyGroupSynced(g, removed)
 	reply(w, e)
 }

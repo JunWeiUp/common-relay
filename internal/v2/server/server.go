@@ -35,7 +35,9 @@ type Server struct {
 	Pipe                *core.PipeHub
 	Plugins             *plugin.Host
 	OnAccessHashChanged func(hexHash string)
-	// V1Usage, when set, adds the legacy v1 server's usage counters to /v2/admin/metrics.
+	// V1Usage, when set, adds the signed group ledger / file plane usage counters
+	// (the code inherited from v1, served on /v2/group, /v2/enroll, /v2/files) to
+	// /v2/admin/metrics under "v1".
 	V1Usage         func() any
 	cfg             Config
 	accessMu        sync.RWMutex

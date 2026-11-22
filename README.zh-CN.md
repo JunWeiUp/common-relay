@@ -5,13 +5,12 @@
 [English](README.md) · 简体中文
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Protocol: v1](https://img.shields.io/badge/Protocol-v1-2563eb.svg)](protocol/README.md)
-[![v2: experimental](https://img.shields.io/badge/v2-experimental-f59e0b.svg)](docs/V2-ARCHITECTURE.md)
+[![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](docs/V2-ARCHITECTURE.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
 Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java/Kotlin、Dart、Python、TypeScript（Node.js）、Go 和 Rust 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
 
-**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。v1 是稳定且完整支持的协议；v2 聚合层（Space、Box、Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件）为实验性：仅在 `serve` 传入 `--v2-admin-hash-file` 时启用，与 v1 并存，接口仍可能调整，详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
+**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。**服务端只提供协议 v2**（`serve` 必须传入 `--v2-admin-hash-file`）：`/v2/ws` 设备管道、`/v2/group` 与 `/v2/enroll` 签名设备组、`/v2/files` 可续传加密文件、Space/Box，以及 Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件。v1 传输与全部 `/relay/v1/*` 路由已移除（见[变更记录](CHANGELOG.md)）；[协议说明](protocol/README.md)中的签名组与文件报文格式在 `/v2` 下保持不变。依赖 `/relay/v1/ws` 的 SDK 功能（离线消息、双向流）和下方 Python 示例仍面向 v1，待迁移。详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
 
 [快速开始](#快速开始) · [客户端 SDK](#客户端-sdk) · [文档](#文档) · [参与贡献](CONTRIBUTING.md#简体中文)
 
@@ -51,7 +50,6 @@ go build -o build/common-relay ./cmd/common-relay
 python3 -m venv .venv
 .venv/bin/python -m pip install -e sdk/python
 
-.venv/bin/python examples/python/messages.py
 .venv/bin/python examples/python/device_groups.py
 ```
 
@@ -59,7 +57,6 @@ python3 -m venv .venv
 
 | 示例 | 演示内容 |
 | --- | --- |
-| [messages.py](examples/python/messages.py) | 在线消息、离线投递与确认、双向加密流 |
 | [device_groups.py](examples/python/device_groups.py) | 创建设备组、手动审批、自动加入、短邀请与私有配置保存 |
 
 预期输出和接入注意事项见[示例说明](examples/README.md)。
@@ -68,7 +65,8 @@ python3 -m venv .venv
 
 ```sh
 printf '%s\n' 'choose-a-long-password' | build/common-relay hash-password > access.sha256
-build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256
+printf '%s\n' 'choose-a-root-admin-secret' | build/common-relay hash-password > v2-admin.sha256
+build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256 --v2-admin-hash-file v2-admin.sha256
 ```
 
 公网部署需要 TLS 反向代理，并使用 **WSS/HTTPS**。使用服务端打包流程发布的 Release 提供 Linux amd64 / arm64 部署包，内含二进制、安装脚本、配置和来源校验记录。仓库提供 [Nginx 配置](deploy/nginx.conf)和 [systemd 单元](deploy/common-relay.service)，安装、备份和升级步骤见[部署指南](docs/DEPLOYMENT.md)。
@@ -77,12 +75,11 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-passwor
 
 | CLI 命令 | 用途 |
 | --- | --- |
-| `serve` | 启动中继服务（必须提供 `--access-password-file`；所有客户端须在 `Relay-Access` 中发送服务器访问密码） |
+| `serve` | 启动中继服务（必须提供 `--access-password-file` 与 `--v2-admin-hash-file`；所有客户端须在 `Relay-Access` 中发送服务器访问密码） |
 | `hash-password` | 从标准输入读取访问密码，输出 `--access-password-file` 所需的 SHA-256 |
 | `check` | 打开存储，检查数据库连接并校验已存储的组记录 |
-| `device-add` | 使用客户端生成的公钥登记静态设备 |
-| `device-revoke` | 撤销静态登记设备 |
-| `group-bootstrap` | 为签名设备组生成初始化凭据 |
+| `group-bootstrap` | 为签名设备组生成初始化凭据（配合 `POST /v2/group/bootstrap`） |
+| `backup` / `schema` | 对运行中的数据目录做一致性快照 / 输出数据库结构版本 |
 
 使用 `<命令> --help` 查看参数。凭据文件使用私有权限、拒绝覆盖已有文件，令牌不输出到终端。签名设备组通过 SDK API 管理成员。
 
@@ -144,8 +141,8 @@ README 和贡献指南提供中英文版本。详细指南目前主要使用中�
 | 文档 | 内容 |
 | --- | --- |
 | [示例](examples/README.md) | 可运行示例与接入说明 |
-| [协议 v1](protocol/README.md) | 消息格式、加密和兼容性 |
-| [V2 架构](docs/V2-ARCHITECTURE.md) | 实验性 v2：Space、Box、边缘插件、管理接口与 v1 迁移 |
+| [协议说明](protocol/README.md) | 加密、签名组与文件报文格式（在 `/v2` 下提供） |
+| [V2 架构](docs/V2-ARCHITECTURE.md) | v2：Space、Box、边缘插件、管理接口与 v1 退役 |
 | [架构](docs/ARCHITECTURE.md) | 模块、存储与资源限制 |
 | [设备组](docs/DEVICE-GROUPS.md) | 信任、成员与邀请 |
 | [安全](SECURITY.md) | 威胁模型与密钥管理 |
@@ -166,10 +163,6 @@ README 和贡献指南提供中英文版本。详细指南目前主要使用中�
 
 基于 [libsodium](https://github.com/jedisct1/libsodium)、[coder/websocket](https://github.com/coder/websocket) 和 [modernc SQLite](https://pkg.go.dev/modernc.org/sqlite) 构建。
 
-## 可选 WebDAV 上传接入
+## Webhook、WebDAV、Drop 与 MCP 接入
 
-只支持「备份到 WebDAV」的应用可以用账号和授权密码直接上传到中继。每个上传的文件加密后投递给固定的接收设备，接收端使用现有 Files 接口；服务器只收不读，不提供下载。默认关闭，与 Webhook 一样桥接端能看到传输中的明文；说明见 [WebDAV 上传接入](docs/WEBDAV.md)。
-
-## 可选 Webhook 接入
-
-普通 JSON 推送可由同一服务转为标准加密文件，无需独立转发 worker。默认关闭，桥接端能看到明文；配置、确认语义和迁移说明见 [通用 Webhook 接入](docs/WEBHOOKS.md)。
+这些入口是 v2 边缘插件，路径为 `/edge/{plugin}/{mount}`，通过 `/v2/admin/plugins` 绑定到 Space，详见 [V2 架构](docs/V2-ARCHITECTURE.md)。桥接端能看到传输中的明文。原 v1 的 `--webhook-config` / `--webdav-config` 接入已移除。

@@ -17,6 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 ACCESS = 'interop-v2-access-1'
 
 
+
+def _server_speaks_v1(binary):
+    """common-relay removed v1 (and device-add) on 2026-11-22; v1-only SDK APIs cannot be exercised."""
+    try:
+        r = subprocess.run([binary, 'device-add'], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return 'unknown command' not in (r.stdout + r.stderr)
+
 class V2ClientIntegration(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -26,6 +35,8 @@ class V2ClientIntegration(unittest.IsolatedAsyncioTestCase):
             binary = str(self.dir / 'common-relay')
             subprocess.run(['go', 'build', '-o', binary, './cmd/common-relay'], cwd=str(ROOT), check=True)
         self.binary = binary
+        if not _server_speaks_v1(binary):
+            self.skipTest('needs device-add provisioning, removed with v1')
         keys = {name: PrivateKey.generate() for name in ('gateway', 'worker')}
         self.ids = {
             name: Identity(

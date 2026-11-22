@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Breaking：移除 Common Relay v1
+
+服务端只提供协议 v2，`serve` 现在必须带 `--v2-admin-hash-file`（缺少时启动即报错）。
+
+- 删除 v1 WebSocket 传输：`/relay/v1/ws`（`common-relay.v1` 子协议）、在线/离线消息与回执、双向流、在线状态事件。
+- 删除全部公开 `/relay/v1/*` 路由：`ws`、`files`、`group`、`enroll`、`dav`（含 `.accounts`）、`webhooks`，现在一律 404。
+- 删除 v1 Webhook / WebDAV 入口及 `--webhook-config`、`--webdav-config` 参数（改用 v2 `webhook`/`webdav` 插件）。
+- 删除 `import-v1` 命令及 `--space`、`--seal-public-key`、`--dry-run` 参数；删除 `device-add`、`device-revoke` 及 `--device`、`--public-key` 参数（静态设备无法登录 v2）。保留 `serve`、`group-bootstrap`、`check`、`backup`、`schema`、`hash-password`。
+- `/healthz` 由主进程直接提供；`deploy/nginx.conf` 只导出 `/v2/ws`、`/v2/files*`、`/v2/group*`、`/v2/enroll/*`、`/v2/admin/`、`/v2/`、`/edge/`；systemd 单元通过 `LoadCredential=v2admin:/etc/common-relay/v2-admin.sha256` 传入 Root Admin 哈希。
+- **不变**：`/v2/group`、`/v2/group/*`、`/v2/enroll/*`（含 `/auto`、`/link`）、`/v2/files`、`/v2/files/*` 的报文、签名账本、`Relay-Access` 校验与行为完全不变；组变更继续投影到 v2 Space（`OnGroupSynced`）。
+- 数据：旧库的 `messages`、`receipts`、`webdav_*`、`webhook_receipts` 表不再读写，原样保留（无破坏性迁移）；配额只计文件。
+- `/v2/admin/metrics` 的 `v1` 段只统计账本/文件调用，`family` 恒为 `v2`，移除 `live_ws`。
+- **SDK 影响**：只支持 v1 的 SDK 接口不能再连接服务端——TypeScript SDK（整体 v1）、Rust `client`/`groups`/`files`、Python 设备组与邀请链接、Dart `RelayClient`。请改用各 SDK 的 v2 客户端（Go `v2client`、Dart `v2_*`、Swift `V2Client`/`V2Pipe`、Java `V2Client`、Rust `v2`）；Go/Java/Swift 的设备组与文件客户端传入 `/v2/ws`、`/v2/files` 地址即可继续使用。这些 SDK 的 v1 集成测试在服务端不再支持 v1 时自动跳过。
+
 ### v2（实验性，需 `--v2-admin-hash-file`）
 
 - **安全**：v1 签名组投影到 v2 时记录来源（`managed_by`），不再合并到同 ID 的管理员空间、其他应用的组或管理员创建的设备；冲突拒绝并计数，投影只吊销自己创建的设备。

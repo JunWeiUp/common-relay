@@ -1,5 +1,5 @@
 [Unit]
-Description=Common Relay v1 encrypted device transport
+Description=Common Relay encrypted device relay (protocol v2)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,9 +8,10 @@ Type=simple
 DynamicUser=yes
 StateDirectory=common-relay
 StateDirectoryMode=0700
-# Server access password hash (root:root 0600); see docs/DEPLOYMENT.md.
+# Server access password and v2 Root Admin secret hashes (root:root 0600); see docs/DEPLOYMENT.md.
 LoadCredential=access:/etc/common-relay/access-password.sha256
-ExecStart=/usr/local/bin/common-relay serve --data /var/lib/common-relay --listen 127.0.0.1:47805 --access-password-file ${CREDENTIALS_DIRECTORY}/access
+LoadCredential=v2admin:/etc/common-relay/v2-admin.sha256
+ExecStart=/usr/local/bin/common-relay serve --data /var/lib/common-relay --listen 127.0.0.1:47805 --access-password-file ${CREDENTIALS_DIRECTORY}/access --v2-admin-hash-file ${CREDENTIALS_DIRECTORY}/v2admin
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes

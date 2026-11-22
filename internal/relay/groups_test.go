@@ -43,6 +43,17 @@ func groupRequest(t *testing.T, f *fixture, method, path, auth string, value any
 }
 func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 	f := setup(t)
+	var synced struct {
+		removed  string
+		revision int
+		members  int
+	}
+	var syncMu sync.Mutex
+	f.s.OnGroupSynced = func(_, _, _ string, members []SyncedGroupMember, removed []string, _ bool, revision int) {
+		syncMu.Lock()
+		defer syncMu.Unlock()
+		synced.revision, synced.members, synced.removed = revision, len(members), strings.Join(removed, ",")
+	}
 	pk, sk, _ := ed25519.GenerateKey(nil)
 	token := RandomID() + RandomID()
 	secret := RandomID() + RandomID()
@@ -53,16 +64,13 @@ func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 		t.Fatal(e)
 	}
 	input := map[string]any{"entry": initial, "token_hash": hashToken(token)}
-	status, _ := groupRequest(t, f, "POST", "/relay/v1/group/bootstrap", "Bootstrap "+secret, input)
+	status, _ := groupRequest(t, f, "POST", "/v2/group/bootstrap", "Bootstrap "+secret, input)
 	if status != 200 {
 		t.Fatalf("bootstrap: %d", status)
 	}
-	status, _ = groupRequest(t, f, "POST", "/relay/v1/group/bootstrap", "Bootstrap "+secret, input)
+	status, _ = groupRequest(t, f, "POST", "/v2/group/bootstrap", "Bootstrap "+secret, input)
 	if status != 200 {
 		t.Fatalf("idempotent bootstrap: %d", status)
-	}
-	if f.s.Store.AddDevice(Device{App: g.App, Group: g.Group, ID: "bypass", PublicKey: m.PublicKey}, RandomID()+RandomID()) == nil {
-		t.Fatal("CLI bypassed signed group")
 	}
 	f.tokens[m.Device] = token
 	type candidate struct {
@@ -73,7 +81,7 @@ func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 	candidates := []candidate{}
 	for _, id := range []string{"phone-a", "phone-b"} {
 		invitationSecret := RandomID() + RandomID()
-		status, data := groupRequest(t, f, "POST", "/relay/v1/group/invitations", "Bearer "+token, map[string]string{"secret_hash": hashToken(invitationSecret)})
+		status, data := groupRequest(t, f, "POST", "/v2/group/invitations", "Bearer "+token, map[string]string{"secret_hash": hashToken(invitationSecret)})
 		if status != 200 {
 			t.Fatal(status)
 		}
@@ -85,7 +93,7 @@ func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 		newToken := RandomID() + RandomID()
 		j := JoinRequest{Version: 1, App: g.App, Group: g.Group, Invitation: invitation.ID, TokenHash: hashToken(newToken), Member: Member{Device: id, Name: id, PublicKey: strings.Repeat("02", 32), SigningKey: hex.EncodeToString(p)}}
 		request := groupSigned(t, j, id, k)
-		status, _ = groupRequest(t, f, "POST", "/relay/v1/enroll/"+invitation.ID, "Invitation "+invitationSecret, request)
+		status, _ = groupRequest(t, f, "POST", "/v2/enroll/"+invitation.ID, "Invitation "+invitationSecret, request)
 		if status != 200 {
 			t.Fatal(status)
 		}
@@ -105,7 +113,7 @@ func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			statuses[i], _ = groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+token, candidates[i].entry)
+			statuses[i], _ = groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, candidates[i].entry)
 		}(i)
 	}
 	wg.Wait()
@@ -125,14 +133,13 @@ func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 	}
 	c := candidates[winner]
 	f.tokens[c.device] = c.token
-	ws := f.dial(c.device)
-	status, _ = groupRequest(t, f, "POST", "/relay/v1/group/invitations", "Bearer "+c.token, map[string]string{"secret_hash": strings.Repeat("ab", 32)})
+	status, _ = groupRequest(t, f, "POST", "/v2/group/invitations", "Bearer "+c.token, map[string]string{"secret_hash": strings.Repeat("ab", 32)})
 	if status != 403 {
 		t.Fatalf("member invited: %d", status)
 	}
 	wrong := c.state
 	wrong.App = "other"
-	status, _ = groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+token, groupSigned(t, wrong, m.Device, sk))
+	status, _ = groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, groupSigned(t, wrong, m.Device, sk))
 	if status != 403 {
 		t.Fatalf("cross-app: %d", status)
 	}
@@ -140,28 +147,68 @@ func TestGroupPermissionsConcurrentApprovalAndRevocation(t *testing.T) {
 	remove.Revision = 3
 	b, _ := c.entry.bytes()
 	remove.Previous = digest(b)
-	status, _ = groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+token, groupSigned(t, remove, m.Device, sk))
+	status, _ = groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, groupSigned(t, remove, m.Device, sk))
 	if status != 200 {
 		t.Fatal(status)
 	}
-	status, _ = groupRequest(t, f, "GET", "/relay/v1/group", "Bearer "+c.token, nil)
+	status, _ = groupRequest(t, f, "GET", "/v2/group", "Bearer "+c.token, nil)
 	if status != 401 {
 		t.Fatalf("revoked token: %d", status)
 	}
-	// The revoked socket must be cancelled without waiting for the 1 s heartbeat.
-	f.s.mu.Lock()
-	peer := f.s.peers[key(Device{App: g.App, Group: g.Group, ID: c.device})]
-	f.s.mu.Unlock()
-	if peer != nil {
-		select {
-		case <-peer.ctx.Done():
-		default:
-			t.Fatal("revoked socket not cancelled")
-		}
+	syncMu.Lock()
+	got := synced
+	syncMu.Unlock()
+	if got.removed != c.device || got.revision != 3 || got.members != 1 {
+		t.Fatalf("v2 sync after removal = %+v", got)
 	}
-	ws.CloseNow()
-	status, _ = groupRequest(t, f, "PUT", "/relay/v1/group", "Bearer "+token, c.entry)
+	status, _ = groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, c.entry)
 	if status != 409 {
 		t.Fatalf("rollback: %d", status)
+	}
+}
+
+// Invitation links and automatic admission are reachable on the /v2 paths only.
+func TestInvitationLinkAndAutoRoutesOverV2(t *testing.T) {
+	f := setup(t)
+	pk, sk, _ := ed25519.GenerateKey(nil)
+	token, secret := RandomID()+RandomID(), RandomID()+RandomID()
+	m := Member{Device: "manager", Name: "Manager", PublicKey: strings.Repeat("01", 32), SigningKey: hex.EncodeToString(pk), Manager: true}
+	g := GroupState{Version: 1, App: "example", Group: "links", Revision: 1, Members: []Member{m}}
+	if err := f.s.Store.GroupBootstrap(g.App, g.Group, secret); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := groupRequest(t, f, "POST", "/v2/group/bootstrap", "Bootstrap "+secret, map[string]any{"entry": groupSigned(t, g, m.Device, sk), "token_hash": hashToken(token)}); status != 200 {
+		t.Fatalf("bootstrap: %d", status)
+	}
+	status, data := groupRequest(t, f, "POST", "/v2/group/invitations", "Bearer "+token, map[string]string{"secret_hash": hashToken(RandomID())})
+	if status != 200 {
+		t.Fatalf("invite: %d", status)
+	}
+	var inv struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(data, &inv)
+	read := RandomID() + RandomID()
+	packet := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 48))
+	if status, body := groupRequest(t, f, "POST", "/v2/group/invitations/"+inv.ID+"/link", "Bearer "+token, map[string]string{"read_hash": hashToken(read), "packet": packet}); status != 200 {
+		t.Fatalf("publish link: %d %s", status, body)
+	}
+	status, data = groupRequest(t, f, "GET", "/v2/enroll/"+inv.ID+"/link", "InvitationLink "+read, nil)
+	var got struct {
+		Packet string `json:"packet"`
+	}
+	if json.Unmarshal(data, &got); status != 200 || got.Packet != packet {
+		t.Fatalf("read link: %d %s", status, data)
+	}
+	// A manual invitation has no admission grant: the auto handler answers, not the mux.
+	status, data = groupRequest(t, f, "GET", "/v2/enroll/"+inv.ID+"/auto", "Claim "+RandomID(), nil)
+	if status != 404 || !strings.Contains(string(data), "not found or expired") {
+		t.Fatalf("auto route: %d %s", status, data)
+	}
+	if status, _ := groupRequest(t, f, "GET", "/relay/v1/enroll/"+inv.ID+"/link", "InvitationLink "+read, nil); status != 404 {
+		t.Fatalf("v1 path still served: %d", status)
+	}
+	if status, _ := groupRequest(t, f, "GET", "/v2/group", "Bearer "+token, nil); status != 200 {
+		t.Fatalf("group list: %d", status)
 	}
 }

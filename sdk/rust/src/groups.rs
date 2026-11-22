@@ -1073,6 +1073,18 @@ mod tests {
             eprintln!("skipped: prebuilt relay unavailable");
             return;
         }
+        // common-relay removed v1 on 2026-11-22; Rust device groups are v1-only.
+        if let Ok(out) = std::process::Command::new(&binary)
+            .arg("device-add")
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stderr).to_string()
+                + &String::from_utf8_lossy(&out.stdout);
+            if text.contains("unknown command") {
+                eprintln!("skipped: server no longer speaks v1");
+                return;
+            }
+        }
         let data = std::env::temp_dir().join(format!("relay-rust-group-{}", random(16).unwrap()));
         std::fs::create_dir(&data).unwrap();
         let credential = data.join("bootstrap.json");

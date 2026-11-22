@@ -34,7 +34,12 @@ func TestGroupsLoopback(t *testing.T) {
 	if err = os.WriteFile(accessFile, []byte(hex.EncodeToString(digest[:])+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(binary, "serve", "--data", t.TempDir(), "--listen", address, "--disk-reserve", "0", "--self-service-apps", "example", "--access-password-file", accessFile)
+	adminDigest := sha256.Sum256([]byte("test-v2-admin-secret"))
+	adminFile := filepath.Join(t.TempDir(), "admin")
+	if err = os.WriteFile(adminFile, []byte(hex.EncodeToString(adminDigest[:])+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "serve", "--data", t.TempDir(), "--listen", address, "--disk-reserve", "0", "--self-service-apps", "example", "--access-password-file", accessFile, "--v2-admin-hash-file", adminFile)
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +62,7 @@ func TestGroupsLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := &GroupConfig{URL: "ws://" + address + "/relay/v1/ws", App: "example", Device: "one", SecretKey: secret, Password: access}
+	config := &GroupConfig{URL: "ws://" + address + "/v2/ws", App: "example", Device: "one", SecretKey: secret, Password: access}
 	g, err := NewGroups(config, true)
 	if err != nil {
 		t.Fatal(err)

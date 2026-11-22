@@ -5,13 +5,12 @@
 English · [简体中文](README.zh-CN.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Protocol: v1](https://img.shields.io/badge/Protocol-v1-2563eb.svg)](protocol/README.md)
-[![v2: experimental](https://img.shields.io/badge/v2-experimental-f59e0b.svg)](docs/V2-ARCHITECTURE.md)
+[![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](docs/V2-ARCHITECTURE.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
 Common Relay is a Go relay server with Swift, Android Java/Kotlin, Dart, Python, TypeScript (Node.js), Go, and Rust client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
 
-**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. Protocol v1 is the stable, fully supported protocol. The v2 aggregation layer (spaces, boxes, `/edge/*` plugins such as Webhook, Drop, WebDAV and MCP) is experimental: it is off unless `serve` gets `--v2-admin-hash-file`, runs side by side with v1, and may still change. See [V2 architecture](docs/V2-ARCHITECTURE.md).
+**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. **The server speaks protocol v2 only** (`serve` requires `--v2-admin-hash-file`): the `/v2/ws` device pipe, signed device groups on `/v2/group` and `/v2/enroll`, resumable encrypted files on `/v2/files`, spaces and boxes, and `/edge/*` plugins (Webhook, Drop, WebDAV, MCP). The v1 transport and every `/relay/v1/*` route were removed (see the [changelog](CHANGELOG.md)); the group ledger and file wire formats in the [protocol notes](protocol/README.md) are unchanged under `/v2`. SDK features that relied on `/relay/v1/ws` (offline messages, streams) and the Python demos below still target v1 and are pending migration. See [V2 architecture](docs/V2-ARCHITECTURE.md).
 
 [Quick start](#quick-start) · [SDKs](#client-sdks) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
 
@@ -51,7 +50,6 @@ go build -o build/common-relay ./cmd/common-relay
 python3 -m venv .venv
 .venv/bin/python -m pip install -e sdk/python
 
-.venv/bin/python examples/python/messages.py
 .venv/bin/python examples/python/device_groups.py
 ```
 
@@ -59,7 +57,6 @@ Each demo starts a temporary loopback server, generates fresh identities, verifi
 
 | Example | What it demonstrates |
 | --- | --- |
-| [messages.py](examples/python/messages.py) | Online messages, offline delivery and acknowledgment, encrypted streams in both directions |
 | [device_groups.py](examples/python/device_groups.py) | Group creation, manual approval, automatic admission, compact invitations, and private configuration storage |
 
 See [example details](examples/README.md) for expected output and integration notes.
@@ -68,7 +65,8 @@ See [example details](examples/README.md) for expected output and integration no
 
 ```sh
 printf '%s\n' 'choose-a-long-password' | build/common-relay hash-password > access.sha256
-build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256
+printf '%s\n' 'choose-a-root-admin-secret' | build/common-relay hash-password > v2-admin.sha256
+build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256 --v2-admin-hash-file v2-admin.sha256
 ```
 
 For public access, place the service behind a TLS reverse proxy and use **WSS/HTTPS**. Releases built with the server packaging workflow include Linux amd64 / arm64 deployment archives with binaries, installation scripts, configuration, and source checksums. The repository includes [Nginx configuration](deploy/nginx.conf) and a [systemd unit](deploy/common-relay.service). Follow the [deployment guide](docs/DEPLOYMENT.md) for installation, backups, and upgrades.
@@ -77,12 +75,11 @@ The demos explicitly allow unencrypted WebSocket transport on loopback. This set
 
 | CLI command | Purpose |
 | --- | --- |
-| `serve` | Run the relay (requires `--access-password-file`; every client must send the server access password in `Relay-Access`) |
+| `serve` | Run the relay (requires `--access-password-file` and `--v2-admin-hash-file`; every client must send the server access password in `Relay-Access`) |
 | `hash-password` | Read the access password from stdin and print the SHA-256 for `--access-password-file` |
 | `check` | Open the store, check database connectivity, and verify stored group records |
-| `device-add` | Register a static device using its client-generated public key |
-| `device-revoke` | Revoke a statically registered device |
-| `group-bootstrap` | Create a bootstrap credential for a signed device group |
+| `group-bootstrap` | Create a bootstrap credential for a signed device group (used with `POST /v2/group/bootstrap`) |
+| `backup` / `schema` | Consistent snapshot of a running data directory / report database schema versions |
 
 Use `<command> --help` for flags. Credential files are private, cannot overwrite existing files, and tokens are not printed to the terminal. Signed groups manage membership through the SDK APIs.
 
@@ -144,8 +141,8 @@ The READMEs and contribution guide are bilingual. Detailed guides currently cont
 | Guide | Contents |
 | --- | --- |
 | [Examples](examples/README.md) | Runnable demos and integration notes |
-| [Protocol v1](protocol/README.md) | Wire format, encryption, and compatibility |
-| [V2 architecture](docs/V2-ARCHITECTURE.md) | Experimental v2 spaces, boxes, edge plugins, admin API and v1 migration (Chinese) |
+| [Protocol notes](protocol/README.md) | Encryption, signed group ledger and file wire formats (served under `/v2`) |
+| [V2 architecture](docs/V2-ARCHITECTURE.md) | v2 spaces, boxes, edge plugins, admin API and the v1 retirement (Chinese) |
 | [Architecture](docs/ARCHITECTURE.md) | Components, storage, and resource limits |
 | [Device groups](docs/DEVICE-GROUPS.md) | Trust, membership, and invitations |
 | [Security](SECURITY.md) | Threat model and key management |
@@ -166,10 +163,6 @@ Bug reports, documentation improvements, examples, and pull requests are welcome
 
 Built with [libsodium](https://github.com/jedisct1/libsodium), [coder/websocket](https://github.com/coder/websocket), and [modernc SQLite](https://pkg.go.dev/modernc.org/sqlite).
 
-## Optional WebDAV upload ingress
+## Webhook, WebDAV, Drop and MCP ingress
 
-Apps that can only "back up to WebDAV" can upload straight to the relay with a username and password. Each uploaded file is encrypted for one pinned receiving device and delivered through the existing Files API; contents are never served back (write-only). Disabled by default and, like webhooks, the server-side bridge sees plaintext in transit; see [WebDAV ingress](docs/WEBDAV.md).
-
-## Optional Webhook ingress
-
-Accept ordinary JSON and deliver it as a standard encrypted file using an explicitly trusted server-side bridge identity. Disabled by default; see [Webhook configuration and trust boundary](docs/WEBHOOKS.md). Existing receiver SDKs use their Files API.
+These are v2 edge plugins served under `/edge/{plugin}/{mount}` and bound to a space through `/v2/admin/plugins`; see [V2 architecture](docs/V2-ARCHITECTURE.md). The bridge sees plaintext in transit. The former v1 `--webhook-config` / `--webdav-config` ingress was removed.
