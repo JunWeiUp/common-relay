@@ -46,7 +46,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 		case "POST":
 			s.createFile(w, r, d)
 		case "GET":
-			rows, err := s.Store.DB.Query("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM v2_ledger_files WHERE app=? AND grp=? AND recipient=? AND state='ready' AND expires>? ORDER BY rowid LIMIT 100", d.App, d.Group, d.ID, time.Now().Unix())
+			rows, err := s.Store.RDB.Query("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM v2_ledger_files WHERE app=? AND grp=? AND recipient=? AND state='ready' AND expires>? ORDER BY rowid LIMIT 100", d.App, d.Group, d.ID, time.Now().Unix())
 			if err != nil {
 				http.Error(w, "storage", 500)
 				return
@@ -86,7 +86,7 @@ func (s *Server) files(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	var f File
-	err = s.Store.DB.QueryRow("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM v2_ledger_files WHERE id=? AND app=? AND grp=?", id, d.App, d.Group).Scan(&f.ID, &f.From, &f.To, &f.Size, &f.Offset, &f.Metadata, &f.Digest, &f.State, &f.Expires)
+	err = s.Store.RDB.QueryRow("SELECT id,sender,recipient,size,offset,metadata,digest,state,expires FROM v2_ledger_files WHERE id=? AND app=? AND grp=?", id, d.App, d.Group).Scan(&f.ID, &f.From, &f.To, &f.Size, &f.Offset, &f.Metadata, &f.Digest, &f.State, &f.Expires)
 	if err != nil || f.Expires <= time.Now().Unix() || (f.From != d.ID && f.To != d.ID) {
 		http.NotFound(w, r)
 		return

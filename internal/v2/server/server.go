@@ -96,7 +96,7 @@ func (s *Server) RegisterPlugin(p plugin.Plugin) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if s.Store.DB.Ping() != nil {
+		if s.Store.DB.Ping() != nil || s.Store.Reader().Ping() != nil {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}

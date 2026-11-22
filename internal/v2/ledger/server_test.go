@@ -37,6 +37,12 @@ func setup(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if trapReadPool {
+		// See TestLedgerTxPathsNeverUseReadPool.
+		realReader := v2.RDB
+		t.Cleanup(func() { realReader.Close() })
+		v2.RDB, store.RDB = v2.DB, v2.DB
+	}
 	s := New(store)
 	s.DiskReserve = 0
 	hub := &fakeHub{}

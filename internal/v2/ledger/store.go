@@ -38,8 +38,12 @@ type Device struct {
 
 // Store is the ledger's view of the v2 store.
 type Store struct {
-	V2                    *core.Store
-	DB                    *sql.DB
+	V2 *core.Store
+	// DB is the shared single writer; every transaction and write uses it.
+	DB *sql.DB
+	// RDB is the v2 store's read-only pool for pure reads outside transactions
+	// (authentication, listings, status). Never use it while holding a tx.
+	RDB                   *sql.DB
 	Dir                   string // data directory (disk-reserve checks)
 	AppQuota, GlobalQuota int64
 }
@@ -52,7 +56,7 @@ func Open(v2 *core.Store) (*Store, error) {
 	if err := os.MkdirAll(FilesDir(v2.Dir), 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{V2: v2, DB: v2.DB, Dir: v2.Dir, AppQuota: 2 << 30, GlobalQuota: 5 << 30}, nil
+	return &Store{V2: v2, DB: v2.DB, RDB: v2.Reader(), Dir: v2.Dir, AppQuota: 2 << 30, GlobalQuota: 5 << 30}, nil
 }
 
 func RandomID() string {
@@ -70,7 +74,7 @@ func hashToken(token string) string {
 // UsedBytes returns the bytes currently reserved by ledger file transfers.
 func (s *Store) UsedBytes() (int64, error) {
 	var n int64
-	err := s.DB.QueryRow(`SELECT COALESCE(SUM(size),0) FROM v2_ledger_files`).Scan(&n)
+	err := s.RDB.QueryRow(`SELECT COALESCE(SUM(size),0) FROM v2_ledger_files`).Scan(&n)
 	return n, err
 }
 
@@ -79,12 +83,12 @@ func (s *Store) Authenticate(token string) (Device, error) {
 	if len(token) < 32 {
 		return d, ErrDenied
 	}
-	err := s.DB.QueryRow("SELECT app,grp,id,public_key FROM v2_ledger_devices WHERE token_hash=? AND revoked=0", hashToken(token)).Scan(&d.App, &d.Group, &d.ID, &d.PublicKey)
+	err := s.RDB.QueryRow("SELECT app,grp,id,public_key FROM v2_ledger_devices WHERE token_hash=? AND revoked=0", hashToken(token)).Scan(&d.App, &d.Group, &d.ID, &d.PublicKey)
 	return d, err
 }
 func (s *Store) Peer(d Device, id string) (Device, error) {
 	var p Device
-	err := s.DB.QueryRow("SELECT app,grp,id,public_key FROM v2_ledger_devices WHERE app=? AND grp=? AND id=? AND revoked=0", d.App, d.Group, id).Scan(&p.App, &p.Group, &p.ID, &p.PublicKey)
+	err := s.RDB.QueryRow("SELECT app,grp,id,public_key FROM v2_ledger_devices WHERE app=? AND grp=? AND id=? AND revoked=0", d.App, d.Group, id).Scan(&p.App, &p.Group, &p.ID, &p.PublicKey)
 	return p, err
 }
 

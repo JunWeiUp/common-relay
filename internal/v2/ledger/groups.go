@@ -311,7 +311,7 @@ func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
 		w.WriteHeader(400)
 		return
 	}
-	rows, err := s.Store.DB.Query("SELECT entry FROM v2_ledger_entries WHERE app=? AND grp=? AND revision>? ORDER BY revision LIMIT 64", d.App, d.Group, after)
+	rows, err := s.Store.RDB.Query("SELECT entry FROM v2_ledger_entries WHERE app=? AND grp=? AND revision>? ORDER BY revision LIMIT 64", d.App, d.Group, after)
 	if err != nil {
 		groupFailure(w, err)
 		return
@@ -334,7 +334,7 @@ func (s *Server) groupList(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	var count int
-	s.Store.DB.QueryRow("SELECT count(*) FROM v2_ledger_entries WHERE app=? AND grp=?", d.App, d.Group).Scan(&count)
+	s.Store.RDB.QueryRow("SELECT count(*) FROM v2_ledger_entries WHERE app=? AND grp=?", d.App, d.Group).Scan(&count)
 	if count == 0 {
 		http.Error(w, "group management not initialized", 404)
 		return

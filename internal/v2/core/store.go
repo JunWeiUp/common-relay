@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +25,19 @@ const (
 )
 
 // Store persists v2 metadata in SQLite WAL and opaque blobs in <dir>/blobs/.
+//
+// It holds two pools on the same database file:
+//   - DB is the single writer connection. Every write, and every read that is
+//     part of a write (inside a *sql.Tx, or a read-then-write sequence that must
+//     see its own uncommitted state), goes through DB or the tx.
+//   - RDB is a read-only pool (mode=ro, query_only) for pure reads. In WAL mode
+//     readers never wait for the writer and always see the latest committed
+//     state, so a read issued after a write commits observes it. Code holding
+//     an open transaction must never query RDB: it would not see the tx's own
+//     writes.
 type Store struct {
 	DB          *sql.DB
+	RDB         *sql.DB
 	Dir         string
 	SpaceQuota  int64
 	GlobalQuota int64
@@ -43,7 +55,12 @@ func OpenStore(dir string) (*Store, error) {
 		return nil, err
 	}
 	dbPath := filepath.Join(dir, "relay_v2.db")
-	db, err := sql.Open("sqlite", dbPath)
+	abs, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	// Per-connection pragmas live in the DSN so they survive a pool reconnect.
+	db, err := sql.Open("sqlite", sqliteDSN(abs, "busy_timeout(5000)", "foreign_keys(1)"))
 	if err != nil {
 		return nil, err
 	}
@@ -173,36 +190,84 @@ CREATE TABLE IF NOT EXISTS v2_settings (
 		return nil, err
 	}
 	_ = os.Chmod(dbPath, 0o600)
+	// The reader is opened after the writer switched the file to WAL, so the
+	// -wal/-shm files exist and read-only connections can use them.
+	rdb, err := sql.Open("sqlite", sqliteDSN(abs, "busy_timeout(5000)", "query_only(1)")+"&mode=ro")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	rdb.SetMaxOpenConns(ReadPoolSize)
+	rdb.SetMaxIdleConns(ReadPoolSize)
+	if err := rdb.Ping(); err != nil {
+		rdb.Close()
+		db.Close()
+		return nil, err
+	}
+	closeAll := func() { rdb.Close(); db.Close() }
 	st := &Store{
 		DB:          db,
+		RDB:         rdb,
 		Dir:         dir,
 		SpaceQuota:  DefaultSpaceQuota,
 		GlobalQuota: DefaultGlobalQuota,
 	}
 	if st.secretKey, err = loadOrCreateSecretKey(filepath.Join(dir, "plugin-secrets.key")); err != nil {
-		db.Close()
+		closeAll()
 		return nil, err
 	}
 	if err := st.sealPendingSecrets(); err != nil {
-		db.Close()
+		closeAll()
 		return nil, err
 	}
 	st.SweepOrphanBlobs()
 	return st, nil
 }
 
+// ReadPoolSize bounds concurrent read-only SQLite connections.
+const ReadPoolSize = 4
+
+// sqliteDSN builds a file: URI (path escaped) with one _pragma per argument.
+func sqliteDSN(absPath string, pragmas ...string) string {
+	q := url.Values{}
+	for _, p := range pragmas {
+		q.Add("_pragma", p)
+	}
+	return (&url.URL{Scheme: "file", Path: absPath, RawQuery: q.Encode()}).String()
+}
+
+// Close closes the read pool first (so the writer, closing last, can checkpoint
+// and remove the WAL), then the writer.
 func (s *Store) Close() error {
-	if s == nil || s.DB == nil {
+	if s == nil {
 		return nil
 	}
-	return s.DB.Close()
+	var err error
+	if s.RDB != nil {
+		err = s.RDB.Close()
+	}
+	if s.DB != nil {
+		if werr := s.DB.Close(); werr != nil {
+			err = werr
+		}
+	}
+	return err
+}
+
+// Reader returns the read-only pool, falling back to the writer for stores
+// built without one.
+func (s *Store) Reader() *sql.DB {
+	if s.RDB != nil {
+		return s.RDB
+	}
+	return s.DB
 }
 
 // GetSetting reads a persisted runtime setting from v2_settings.
 func (s *Store) GetSetting(key string) (string, int64, bool, error) {
 	var val string
 	var updatedAt int64
-	err := s.DB.QueryRow(`SELECT value, updated_at FROM v2_settings WHERE key=?`, key).Scan(&val, &updatedAt)
+	err := s.Reader().QueryRow(`SELECT value, updated_at FROM v2_settings WHERE key=?`, key).Scan(&val, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", 0, false, nil
 	}
@@ -276,7 +341,7 @@ func (s *Store) writeBlob(r io.Reader, maxBytes int64) (blobID string, size int6
 // UsedBytes returns the bytes held by all v2 spaces (O(1) via v2_usage).
 func (s *Store) UsedBytes() (int64, error) {
 	var n int64
-	err := s.DB.QueryRow(`SELECT COALESCE(SUM(bytes),0) FROM v2_usage`).Scan(&n)
+	err := s.Reader().QueryRow(`SELECT COALESCE(SUM(bytes),0) FROM v2_usage`).Scan(&n)
 	return n, err
 }
 
@@ -338,7 +403,7 @@ func (s *Store) AuthenticateDevice(token string) (Device, error) {
 	}
 	var d Device
 	var adm, rev int
-	err := s.DB.QueryRow(
+	err := s.Reader().QueryRow(
 		`SELECT id,name,public_key,is_admin,revoked,created_at FROM v2_devices WHERE token_hash=? AND revoked=0`,
 		HashSecret(token),
 	).Scan(&d.ID, &d.Name, &d.PublicKey, &adm, &rev, &d.CreatedAt)
@@ -366,7 +431,7 @@ func (s *Store) RevokeDevice(id string) error {
 }
 
 func (s *Store) ListDevices() ([]Device, error) {
-	rows, err := s.DB.Query(`SELECT id,name,public_key,is_admin,revoked,created_at FROM v2_devices ORDER BY created_at, id`)
+	rows, err := s.Reader().Query(`SELECT id,name,public_key,is_admin,revoked,created_at FROM v2_devices ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +469,7 @@ func (s *Store) CreateSpace(id, name string, trust TrustLevel) (Space, error) {
 func (s *Store) GetSpace(id string) (Space, error) {
 	var sp Space
 	var tl string
-	err := s.DB.QueryRow(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces WHERE id=?`, id).Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy)
+	err := s.Reader().QueryRow(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces WHERE id=?`, id).Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Space{}, ErrNotFound
 	}
@@ -416,7 +481,7 @@ func (s *Store) GetSpace(id string) (Space, error) {
 }
 
 func (s *Store) ListSpaces() ([]Space, error) {
-	rows, err := s.DB.Query(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces ORDER BY created_at, id`)
+	rows, err := s.Reader().Query(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +501,7 @@ func (s *Store) ListSpaces() ([]Space, error) {
 
 // ListAllSpaceMembers returns active (non-revoked) members grouped by space_id.
 func (s *Store) ListAllSpaceMembers() (map[string][]SpaceMemberView, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.Reader().Query(`
 		SELECT m.space_id, m.device_id, d.name, m.role
 		FROM v2_space_members m
 		JOIN v2_devices d ON d.id = m.device_id
@@ -462,7 +527,7 @@ func (s *Store) ListAllSpaceMembers() (map[string][]SpaceMemberView, error) {
 
 // ListAllBoxesWithStats returns every Box grouped by space_id along with live item/object counts and byte totals.
 func (s *Store) ListAllBoxesWithStats() (map[string][]SpaceBoxView, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.Reader().Query(`
 		SELECT
 			b.space_id,
 			b.name,
@@ -502,7 +567,7 @@ func (s *Store) ListAllBoxesWithStats() (map[string][]SpaceBoxView, error) {
 
 // SpaceUsedBytes returns total stored bytes per space across box items, objects, and offline messages.
 func (s *Store) SpaceUsedBytes() (map[string]int64, error) {
-	rows, err := s.DB.Query(`SELECT space_id, bytes FROM v2_usage WHERE bytes <> 0`)
+	rows, err := s.Reader().Query(`SELECT space_id, bytes FROM v2_usage WHERE bytes <> 0`)
 	if err != nil {
 		return nil, err
 	}
@@ -537,7 +602,7 @@ func (s *Store) SetSpaceMember(spaceID, deviceID string, role MemberRole) (Space
 
 func (s *Store) MemberRole(spaceID, deviceID string) (MemberRole, error) {
 	var role string
-	err := s.DB.QueryRow(`SELECT role FROM v2_space_members WHERE space_id=? AND device_id=?`, spaceID, deviceID).Scan(&role)
+	err := s.Reader().QueryRow(`SELECT role FROM v2_space_members WHERE space_id=? AND device_id=?`, spaceID, deviceID).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrDenied
 	}
@@ -548,7 +613,7 @@ func (s *Store) MemberRole(spaceID, deviceID string) (MemberRole, error) {
 }
 
 func (s *Store) DeviceSpaces(deviceID string) ([]string, error) {
-	rows, err := s.DB.Query(`SELECT space_id FROM v2_space_members WHERE device_id=? ORDER BY space_id`, deviceID)
+	rows, err := s.Reader().Query(`SELECT space_id FROM v2_space_members WHERE device_id=? ORDER BY space_id`, deviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -601,7 +666,7 @@ func (s *Store) PutMessage(m Message) (bool, error) {
 
 func (s *Store) PendingMessages(spaceID, recipient string) ([]Message, error) {
 	now := time.Now().Unix()
-	rows, err := s.DB.Query(
+	rows, err := s.Reader().Query(
 		`SELECT id,space_id,sender,recipient,topic,body,expires_at,created_at FROM v2_messages WHERE space_id=? AND recipient=? AND expires_at>? ORDER BY created_at, id LIMIT 256`,
 		spaceID, recipient, now,
 	)
@@ -634,13 +699,13 @@ func (s *Store) Status(onlinePeers int, plugins []string) (StatusSnapshot, error
 		Plugins:      plugins,
 		BySpaceBytes: map[string]int64{},
 	}
-	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_spaces`).Scan(&st.Spaces)
-	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_devices WHERE revoked=0`).Scan(&st.Devices)
-	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_boxes`).Scan(&st.Boxes)
-	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_box_items`).Scan(&st.PendingItems)
-	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_box_objects`).Scan(&st.StoredObjects)
+	_ = s.Reader().QueryRow(`SELECT count(*) FROM v2_spaces`).Scan(&st.Spaces)
+	_ = s.Reader().QueryRow(`SELECT count(*) FROM v2_devices WHERE revoked=0`).Scan(&st.Devices)
+	_ = s.Reader().QueryRow(`SELECT count(*) FROM v2_boxes`).Scan(&st.Boxes)
+	_ = s.Reader().QueryRow(`SELECT count(*) FROM v2_box_items`).Scan(&st.PendingItems)
+	_ = s.Reader().QueryRow(`SELECT count(*) FROM v2_box_objects`).Scan(&st.StoredObjects)
 
-	rows, err := s.DB.Query(`SELECT space_id, bytes FROM v2_usage WHERE bytes <> 0`)
+	rows, err := s.Reader().Query(`SELECT space_id, bytes FROM v2_usage WHERE bytes <> 0`)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {

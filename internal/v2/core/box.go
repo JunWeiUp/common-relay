@@ -64,7 +64,7 @@ func (s *Store) EnsureBox(b Box) (Box, error) {
 func (s *Store) GetBox(spaceID, name string) (Box, error) {
 	var b Box
 	var mode string
-	err := s.DB.QueryRow(
+	err := s.Reader().QueryRow(
 		`SELECT space_id,name,mode,max_bytes,keep_versions,ttl_sec,next_seq FROM v2_boxes WHERE space_id=? AND name=?`,
 		spaceID, name,
 	).Scan(&b.SpaceID, &b.Name, &mode, &b.MaxBytes, &b.KeepVersions, &b.TTLSec, &b.NextSeq)
@@ -79,7 +79,7 @@ func (s *Store) GetBox(spaceID, name string) (Box, error) {
 }
 
 func (s *Store) ListBoxes(spaceID string) ([]Box, error) {
-	rows, err := s.DB.Query(
+	rows, err := s.Reader().Query(
 		`SELECT space_id,name,mode,max_bytes,keep_versions,ttl_sec,next_seq FROM v2_boxes WHERE space_id=? ORDER BY name`,
 		spaceID,
 	)
@@ -181,7 +181,7 @@ func (s *Store) ListBoxItems(spaceID, boxName string, afterSeq int64, limit int)
 		limit = 100
 	}
 	now := time.Now().Unix()
-	rows, err := s.DB.Query(
+	rows, err := s.Reader().Query(
 		`SELECT id,space_id,box_name,seq,sender,size,sha256,content_type,meta_json,expires_at,created_at
 		 FROM v2_box_items
 		 WHERE space_id=? AND box_name=? AND seq>? AND (expires_at=0 OR expires_at>?)
@@ -206,7 +206,7 @@ func (s *Store) ListBoxItems(spaceID, boxName string, afterSeq int64, limit int)
 func (s *Store) OpenBoxItem(spaceID, boxName, itemID string) (*os.File, BoxItem, error) {
 	var it BoxItem
 	now := time.Now().Unix()
-	err := s.DB.QueryRow(
+	err := s.Reader().QueryRow(
 		`SELECT id,space_id,box_name,seq,sender,size,sha256,content_type,meta_json,expires_at,created_at
 		 FROM v2_box_items WHERE id=? AND space_id=? AND box_name=?`,
 		itemID, spaceID, boxName,
@@ -367,13 +367,13 @@ func (s *Store) OpenBoxObject(spaceID, boxName, key string, version int64) (*os.
 	var o BoxObject
 	var err error
 	if version <= 0 {
-		err = s.DB.QueryRow(
+		err = s.Reader().QueryRow(
 			`SELECT space_id,box_name,obj_key,version,etag,size,content_type,meta_json,blob_id,created_at
 			 FROM v2_box_objects WHERE space_id=? AND box_name=? AND obj_key=? ORDER BY version DESC LIMIT 1`,
 			spaceID, boxName, key,
 		).Scan(&o.SpaceID, &o.BoxName, &o.Key, &o.Version, &o.ETag, &o.Size, &o.ContentType, &o.MetaJSON, &o.BlobID, &o.CreatedAt)
 	} else {
-		err = s.DB.QueryRow(
+		err = s.Reader().QueryRow(
 			`SELECT space_id,box_name,obj_key,version,etag,size,content_type,meta_json,blob_id,created_at
 			 FROM v2_box_objects WHERE space_id=? AND box_name=? AND obj_key=? AND version=?`,
 			spaceID, boxName, key, version,
@@ -395,7 +395,7 @@ func (s *Store) OpenBoxObject(spaceID, boxName, key string, version int64) (*os.
 // ListBoxObjects returns the latest version of every key matching prefix (empty = all).
 func (s *Store) ListBoxObjects(spaceID, boxName, prefix string) ([]BoxObject, error) {
 	prefix = strings.Trim(prefix, "/")
-	rows, err := s.DB.Query(
+	rows, err := s.Reader().Query(
 		`SELECT o.space_id,o.box_name,o.obj_key,o.version,o.etag,o.size,o.content_type,o.meta_json,o.blob_id,o.created_at
 		 FROM v2_box_objects o
 		 INNER JOIN (
@@ -425,7 +425,7 @@ func (s *Store) ListBoxObjects(spaceID, boxName, prefix string) ([]BoxObject, er
 
 func (s *Store) ListObjectVersions(spaceID, boxName, key string) ([]BoxObject, error) {
 	key = strings.Trim(key, "/")
-	rows, err := s.DB.Query(
+	rows, err := s.Reader().Query(
 		`SELECT space_id,box_name,obj_key,version,etag,size,content_type,meta_json,blob_id,created_at
 		 FROM v2_box_objects WHERE space_id=? AND box_name=? AND obj_key=? ORDER BY version DESC`,
 		spaceID, boxName, key,

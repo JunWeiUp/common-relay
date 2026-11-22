@@ -466,7 +466,7 @@ func scanBinding(row rowScanner) (core.PluginBinding, bool, error) {
 // GetBinding returns the public view of a binding regardless of enabled state
 // (admin use).
 func (h *Host) GetBinding(pluginID, mount string) (core.PluginBinding, error) {
-	b, ok, err := scanBinding(h.store.DB.QueryRow(bindingSelect+` WHERE plugin_id=? AND mount=?`, pluginID, mount))
+	b, ok, err := scanBinding(h.store.Reader().QueryRow(bindingSelect+` WHERE plugin_id=? AND mount=?`, pluginID, mount))
 	if err != nil {
 		return core.PluginBinding{}, err
 	}
@@ -483,7 +483,7 @@ func (h *Host) GetBinding(pluginID, mount string) (core.PluginBinding, error) {
 // LookupBinding resolves an enabled binding for edge traffic. Its ConfigJSON is
 // the merged (public + decrypted secret) configuration.
 func (h *Host) LookupBinding(pluginID, mount string) (core.PluginBinding, core.Space, error) {
-	b, ok, err := scanBinding(h.store.DB.QueryRow(bindingSelect+` WHERE plugin_id=? AND mount=?`, pluginID, mount))
+	b, ok, err := scanBinding(h.store.Reader().QueryRow(bindingSelect+` WHERE plugin_id=? AND mount=?`, pluginID, mount))
 	if err != nil {
 		return core.PluginBinding{}, core.Space{}, err
 	}
@@ -519,9 +519,9 @@ func (h *Host) ListBindings(pluginID string) ([]core.PluginBinding, error) {
 	var rows *sql.Rows
 	var err error
 	if pluginID == "" {
-		rows, err = h.store.DB.Query(bindingSelect + ` ORDER BY plugin_id, mount`)
+		rows, err = h.store.Reader().Query(bindingSelect + ` ORDER BY plugin_id, mount`)
 	} else {
-		rows, err = h.store.DB.Query(bindingSelect+` WHERE plugin_id=? ORDER BY mount`, pluginID)
+		rows, err = h.store.Reader().Query(bindingSelect+` WHERE plugin_id=? ORDER BY mount`, pluginID)
 	}
 	if err != nil {
 		return nil, err
@@ -619,7 +619,7 @@ func (h *Host) upsertAccount(bindingID, scopeKey, username, stored, mode, metaJS
 
 func (h *Host) AuthAccount(bindingID, username, plainSecret string) (core.PluginAccount, error) {
 	var a core.PluginAccount
-	err := h.store.DB.QueryRow(
+	err := h.store.Reader().QueryRow(
 		`SELECT binding_id,scope_key,username,secret_hash,mode,meta_json,updated_at
 		 FROM v2_plugin_accounts WHERE binding_id=? AND username=?`,
 		bindingID, username,
@@ -643,7 +643,7 @@ func (h *Host) AuthAccount(bindingID, username, plainSecret string) (core.Plugin
 }
 
 func (h *Host) ListAccounts(bindingID string) ([]core.PluginAccount, error) {
-	rows, err := h.store.DB.Query(
+	rows, err := h.store.Reader().Query(
 		`SELECT binding_id,scope_key,username,secret_hash,mode,meta_json,updated_at
 		 FROM v2_plugin_accounts WHERE binding_id=? ORDER BY scope_key`,
 		bindingID,

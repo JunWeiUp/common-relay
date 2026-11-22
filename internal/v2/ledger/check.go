@@ -27,7 +27,7 @@ type CheckReport struct {
 // without gaps and that every entry links to the digest of its predecessor.
 func (s *Store) Check() (CheckReport, error) {
 	rep := CheckReport{Problems: []Problem{}}
-	rows, err := s.DB.Query("SELECT app,grp,revision,entry FROM v2_ledger_entries ORDER BY app,grp,revision")
+	rows, err := s.RDB.Query("SELECT app,grp,revision,entry FROM v2_ledger_entries ORDER BY app,grp,revision")
 	if err != nil {
 		return rep, err
 	}
@@ -89,8 +89,8 @@ func (s *Store) Check() (CheckReport, error) {
 		return rep, err
 	}
 	rows.Close()
-	_ = s.DB.QueryRow(`SELECT count(*), COALESCE(SUM(revoked=0),0) FROM v2_ledger_devices`).Scan(&rep.Devices, &rep.ActiveDevices)
-	_ = s.DB.QueryRow(`SELECT count(*) FROM v2_ledger_files`).Scan(&rep.Files)
+	_ = s.RDB.QueryRow(`SELECT count(*), COALESCE(SUM(revoked=0),0) FROM v2_ledger_devices`).Scan(&rep.Devices, &rep.ActiveDevices)
+	_ = s.RDB.QueryRow(`SELECT count(*) FROM v2_ledger_files`).Scan(&rep.Files)
 	rep.Imported = s.imported()
 	return rep, nil
 }
