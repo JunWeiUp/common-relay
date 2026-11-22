@@ -29,9 +29,9 @@ public class LifecycleTest {
         RelayClient client = new RelayClient(new OkHttpClient(), crypto, new RelayClient.Listener() {
             public void onReady() {} public void onClosed(Throwable e) {} public void onEvent(JSONObject e) {}
         });
-        Constructor<RelayClient.Stream> constructor = RelayClient.Stream.class.getDeclaredConstructor(RelayClient.class, String.class, String.class, Crypto.SecretStream.class);
+        Constructor<RelayClient.Stream> constructor = RelayClient.Stream.class.getDeclaredConstructor(RelayClient.class, String.class, String.class, Crypto.SecretStream.class, boolean.class);
         constructor.setAccessible(true);
-        RelayClient.Stream stream = constructor.newInstance(client, "peer", "01".repeat(16), new Crypto.SecretStream());
+        RelayClient.Stream stream = constructor.newInstance(client, "peer", "01".repeat(16), new Crypto.SecretStream(), false);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             stream.close(); stream.close();

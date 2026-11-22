@@ -76,6 +76,7 @@ class Client:
         if u.scheme != 'wss' and not (allow_local_test and u.scheme == 'ws' and u.hostname in ('127.0.0.1', 'localhost')):
             raise ValueError('WSS required')
         self.url, self.token, self.identity = url, token, identity
+        self._is_v2 = u.path == '/v2/ws' or u.path.startswith('/v2/ws/')
         self._access = access_headers(password)
         self.clock = clock
         self.scope = json.dumps([identity.app, identity.group, identity.device])
@@ -86,13 +87,21 @@ class Client:
         self.ws, self.reader = None, None
 
     async def __aenter__(self):
-        self.ws = await connect(self.url, additional_headers={'Authorization': 'Bearer '+self.token, **self._access}, subprotocols=['common-relay.v1'], compression=None, max_size=270336, max_queue=16, ping_interval=20, ping_timeout=20)
+        kwargs = dict(additional_headers={'Authorization': 'Bearer '+self.token, **self._access}, compression=None, max_size=270336, max_queue=16, ping_interval=20, ping_timeout=20)
+        if not self._is_v2:
+            kwargs['subprotocols'] = ['common-relay.v1']
+        self.ws = await connect(self.url, **kwargs)
         welcome = json.loads(await asyncio.wait_for(self.ws.recv(), 10))
         expected = self.identity
-        own = welcome.get('identity', {})
-        if welcome.get('version') != 1 or (own.get('app'),own.get('group'),own.get('device'),own.get('public_key')) != (expected.app,expected.group,expected.device,expected.public_key):
-            await self.ws.close()
-            raise RelayError('Server identity does not match local credentials')
+        if self._is_v2:
+            if welcome.get('type') != 'hello' or welcome.get('from') != expected.device:
+                await self.ws.close()
+                raise RelayError('Server identity does not match local credentials')
+        else:
+            own = welcome.get('identity', {})
+            if welcome.get('version') != 1 or (own.get('app'),own.get('group'),own.get('device'),own.get('public_key')) != (expected.app,expected.group,expected.device,expected.public_key):
+                await self.ws.close()
+                raise RelayError('Server identity does not match local credentials')
         self.reader = asyncio.create_task(self._read())
         if self.journal:
             self.cleaner = asyncio.create_task(self._cleanup_loop())
@@ -143,13 +152,18 @@ class Client:
             self.pending.pop(object_id, None)
 
     async def peers(self):
+        if self._is_v2:
+            return (await self.request({'type': 'presence', 'space': self.identity.group})).get('peers') or []
         return (await self.request({'type': 'peers'}))['devices']
 
     async def send_online(self, recipient, data):
         """Queue an online frame; completion is not a server/device/business receipt."""
         object_id = uuid.uuid4().hex
         body = self.identity.seal(recipient, 'message', object_id, {'data': base64.b64encode(data).decode()})
-        await self.send_event({'type': 'message', 'id': object_id, 'to': recipient, 'body': body, 'offline': False})
+        if self._is_v2:
+            await self.send_event({'type': 'msg', 'space': self.identity.group, 'id': object_id, 'to': recipient, 'topic': 'msg', 'body': body, 'offline': False})
+        else:
+            await self.send_event({'type': 'message', 'id': object_id, 'to': recipient, 'body': body, 'offline': False})
 
     async def message(self, recipient, data, *, offline=False, object_id=None, ttl=86400):
         object_id = object_id or uuid.uuid4().hex
@@ -161,11 +175,23 @@ class Client:
                 lambda expiry: self.identity.seal(recipient, 'message', object_id, {'data': base64.b64encode(data).decode(), 'expires': expiry}))
             if body is None:
                 return {'type': 'received', 'id': object_id}
-            ttl = expires-int(self.clock())
+            ttl = max(1, expires-int(self.clock()))
         else:
             body = self.identity.seal(recipient, 'message', object_id, {'data': base64.b64encode(data).decode()})
-        result = await self.request({'type': 'message', 'id': object_id, 'to': recipient, 'body': body, 'offline': offline, 'ttl': ttl, 'expires': expires})
-        if offline and result['type'] == 'received':
+        if self._is_v2:
+            req = {'type': 'msg', 'space': self.identity.group, 'id': object_id, 'to': recipient, 'topic': 'msg', 'body': body, 'offline': offline}
+            if offline:
+                req['ttl'] = ttl
+            result = await self.request(req)
+            if result.get('type') == 'ack':
+                ev = result.get('event')
+                if ev == 'stored':
+                    result = {'type': 'stored', 'id': object_id}
+                elif ev == 'forwarded':
+                    result = {'type': 'delivered', 'id': object_id}
+        else:
+            result = await self.request({'type': 'message', 'id': object_id, 'to': recipient, 'body': body, 'offline': offline, 'ttl': ttl, 'expires': expires})
+        if offline and result.get('type') == 'received':
             self.journal.complete(object_id)
         return result
 
@@ -176,7 +202,10 @@ class Client:
         if self.journal:
             self.journal.acknowledge(event['from'], event['id'])
         if event.get('offline'):
-            await self.request({'type': 'ack', 'id': event['id'], 'from': event['from']})
+            if self._is_v2:
+                await self.send_event({'type': 'ack', 'space': self.identity.group, 'id': event['id'], 'from': event['from']})
+            else:
+                await self.request({'type': 'ack', 'id': event['id'], 'from': event['from']})
 
     async def open_stream(self, recipient):
         object_id = uuid.uuid4().hex
@@ -241,7 +270,15 @@ class Client:
                     if pending and not pending.done():
                         pending.set_exception(RelayError('Stream closed'))
                     continue
-                if e['type'] not in ('message','stream.open') and object_id in self.pending:
+                if e['type'] == 'received':
+                    if self.journal and object_id:
+                        self.journal.complete(object_id)
+                    if object_id in self.pending:
+                        pending = self.pending[object_id]
+                        if not pending.done():
+                            pending.set_result(e)
+                    continue
+                if e['type'] not in ('message','msg','stream.open') and object_id in self.pending:
                     pending = self.pending[object_id]
                     if not pending.done():
                         if e['type']=='error':
@@ -249,15 +286,20 @@ class Client:
                         else:
                             pending.set_result(e)
                     continue
-                if e['type']=='message':
+                if e['type']==('msg' if self._is_v2 else 'message'):
                     if e.get('offline') and self.journal is None:
                         raise RelayError('Persistent state required for offline reception')
                     value=self.identity.open(e['from'],'message',object_id,e['body'])
                     if ('expires' in value and value['expires'] <= int(self.clock())) or (self.journal and self.journal.contains(e['from'], object_id)):
                         if e.get('offline'):
-                            await self.send_event({'type':'ack','id':object_id,'from':e['from']})
+                            if self._is_v2:
+                                await self.send_event({'type':'ack','space':self.identity.group,'id':object_id,'from':e['from']})
+                            else:
+                                await self.send_event({'type':'ack','id':object_id,'from':e['from']})
                         continue
                     e['data']=base64.b64decode(value['data'],validate=True)
+                    if self._is_v2:
+                        e['type']='message'
                 if e['type'] in ('message','stream.open','peer.up','peer.down','group.changed'):
                     self.events.put_nowait(e)
         finally:

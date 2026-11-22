@@ -5,6 +5,7 @@ import okio.ByteString;
 import org.json.*;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -27,6 +28,7 @@ public final class RelayClient implements AutoCloseable {
     private final Map<String,CompletableFuture<JSONObject>> pending=new ConcurrentHashMap<>();
     private final Map<String,Stream> streams=new ConcurrentHashMap<>();
     private final AtomicBoolean closed=new AtomicBoolean();
+    private volatile boolean v2=false;
     private WebSocket socket;
     private final RelayJournal journal;
     private ScheduledExecutorService cleaner;
@@ -43,11 +45,13 @@ public final class RelayClient implements AutoCloseable {
         java.net.URI uri=java.net.URI.create(url);
         boolean local=allowLocalTest&&"ws".equals(uri.getScheme())&&"127.0.0.1".equals(uri.getHost());
         if((!"wss".equals(uri.getScheme())&&!local)||token.length()<32)throw new IllegalArgumentException("WSS and device credential required");
+        v2="/v2/ws".equals(uri.getPath());
         if(journal!=null){cleaner=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"relay-cleanup");t.setDaemon(true);return t;});cleaner.scheduleAtFixedRate(()->{try{cleanup();}catch(Exception e){fail(e);}},1,1,TimeUnit.HOURS);}
-        Request.Builder upgrade=new Request.Builder().url(url).header("Authorization","Bearer "+token).header("Sec-WebSocket-Protocol","common-relay.v1");
+        Request.Builder upgrade=new Request.Builder().url(url).header("Authorization","Bearer "+token);
+        if(!v2)upgrade.header("Sec-WebSocket-Protocol","common-relay.v1");
         if(password!=null)upgrade.header(RelayAccess.HEADER,password);
         socket=http.newWebSocket(upgrade.build(),new WebSocketListener(){
-            @Override public void onOpen(WebSocket ws,Response response){if(!"common-relay.v1".equals(response.header("Sec-WebSocket-Protocol")))fail(new IOException("Protocol mismatch"));}
+            @Override public void onOpen(WebSocket ws,Response response){if(!v2&&!"common-relay.v1".equals(response.header("Sec-WebSocket-Protocol")))fail(new IOException("Protocol mismatch"));}
             @Override public void onMessage(WebSocket ws,String text){try{dispatch(new JSONObject(text));}catch(Exception e){fail(e);}}
             @Override public void onMessage(WebSocket ws,ByteString bytes){try{binary(bytes.toByteArray());}catch(Exception e){fail(e);}}
             @Override public void onFailure(WebSocket ws,Throwable error,Response response){fail(error);}
@@ -88,20 +92,48 @@ public final class RelayClient implements AutoCloseable {
         return request(new JSONObject().put("type","ack").put("id",event.getString("id")).put("from",event.getString("from")));
     }
     public CompletableFuture<Stream> openStream(String peer)throws Exception{
-        String id=UUID.randomUUID().toString().replace("-","");Stream stream=new Stream(peer,id,new Crypto.SecretStream());streams.put(id,stream);
-        return request(new JSONObject().put("type","stream.open").put("id",id).put("to",peer).put("body",crypto.seal(peer,"stream.open",id,stream.encryptor.descriptor()))).thenApply(event->{try{stream.initializeDecryptor(crypto.open(peer,"stream.accept",id,event.getString("body")));return stream;}catch(Exception e){stream.close();throw new CompletionException(e);}}).whenComplete((v,e)->{if(e!=null)stream.close();});
+        String id=v2?Crypto.hex(Crypto.random(8)):UUID.randomUUID().toString().replace("-","");
+        Stream stream=new Stream(peer,id,new Crypto.SecretStream(),v2);streams.put(id,stream);
+        JSONObject ev=new JSONObject().put("type","stream.open").put("id",id).put("to",peer).put("body",crypto.seal(peer,"stream.open",id,stream.encryptor.descriptor()));
+        if(v2){ev.put("space",crypto.group).put("topic","stream");}
+        return request(ev).thenApply(event->{try{stream.initializeDecryptor(crypto.open(peer,"stream.accept",id,event.getString("body")));return stream;}catch(Exception e){stream.close();throw new CompletionException(e);}}).whenComplete((v,e)->{if(e!=null)stream.close();});
     }
     public CompletableFuture<Stream> acceptStream(JSONObject event)throws Exception{
-        String id=event.getString("id"),peer=event.getString("from");Stream stream=new Stream(peer,id,new Crypto.SecretStream());stream.initializeDecryptor(crypto.open(peer,"stream.open",id,event.getString("body")));streams.put(id,stream);
-        return request(new JSONObject().put("type","stream.accept").put("id",id).put("body",crypto.seal(peer,"stream.accept",id,stream.encryptor.descriptor()))).thenApply(v->stream).whenComplete((v,e)->{if(e!=null)stream.close();});
+        String id=event.getString("id"),peer=event.getString("from");
+        Stream stream=new Stream(peer,id,new Crypto.SecretStream(),v2);stream.initializeDecryptor(crypto.open(peer,"stream.open",id,event.getString("body")));streams.put(id,stream);
+        JSONObject ev=new JSONObject().put("type","stream.accept").put("id",id).put("body",crypto.seal(peer,"stream.accept",id,stream.encryptor.descriptor()));
+        if(v2){
+            ev.put("space",crypto.group);
+            try{send(ev);}catch(Exception e){stream.close();throw e;}
+            return CompletableFuture.completedFuture(stream);
+        }
+        return request(ev).thenApply(v->stream).whenComplete((v,e)->{if(e!=null)stream.close();});
     }
-    public void rejectStream(JSONObject event)throws Exception{send(new JSONObject().put("type","stream.close").put("id",event.getString("id")));}
+    public void rejectStream(JSONObject event)throws Exception{
+        JSONObject ev=new JSONObject().put("type","stream.close").put("id",event.getString("id"));
+        if(v2)ev.put("space",crypto.group);
+        send(ev);
+    }
     private void dispatch(JSONObject event)throws Exception{
         String type=event.getString("type"),id=event.optString("id");
+        if(v2&&type.equals("hello")){if(!crypto.device.equals(event.optString("from")))throw new IOException("Identity mismatch");listener.onReady();return;}
         if(type.equals("welcome")){JSONObject d=event.getJSONObject("identity");if(event.getInt("version")!=1||!d.getString("app").equals(crypto.app)||!d.getString("group").equals(crypto.group)||!d.getString("device").equals(crypto.device)||!d.getString("public_key").equals(crypto.publicKey()))throw new IOException("Identity mismatch");listener.onReady();return;}
+        if(v2&&type.equals("msg")){
+            if("stream.credit".equals(event.optString("topic"))){
+                String body=event.optString("body");int sep=body.indexOf(':');
+                if(sep>0){Stream s=streams.get(body.substring(0,sep));if(s!=null&&s.peer.equals(event.optString("from"))){s.credit(Long.parseLong(body.substring(sep+1)));}}
+            }
+            return;
+        }
+        if(v2&&(type.equals("presence")||type.equals("pong")||type.equals("ack")||type.equals("box.changed"))){
+            CompletableFuture<JSONObject> p=id.isEmpty()?null:pending.remove(id);
+            if(p!=null)p.complete(event);
+            return;
+        }
         if(type.equals("stream.credit")){Stream s=streams.get(id);if(s!=null)s.credit(event.getLong("sequence"));return;}
         if(type.equals("stream.close")){Stream s=streams.remove(id);if(s!=null)s.abort();CompletableFuture<JSONObject> p=pending.remove(id);if(p!=null)p.completeExceptionally(new IOException("Stream closed"));return;}
-        if(!type.equals("message")&&!type.equals("stream.open")){CompletableFuture<JSONObject> p=pending.remove(id);if(p!=null){if(type.equals("error"))p.completeExceptionally(new IOException(event.optString("code")));else p.complete(event);return;}}
+        if(!type.equals("message")&&!type.equals("stream.open")&&!type.equals("group.changed")&&!type.equals("peer.up")&&!type.equals("peer.down")){CompletableFuture<JSONObject> p=pending.remove(id);if(p!=null){if(type.equals("error"))p.completeExceptionally(new IOException(event.optString("code")));else p.complete(event);return;}}
+        if(v2&&type.equals("group.changed")&&!event.has("revision")&&event.has("seq")){event.put("revision",event.optInt("seq"));}
         if(type.equals("message")){
             if(event.optBoolean("offline")&&journal==null)throw new IOException("Persistent state required for offline reception");
             String from=event.getString("from");JSONObject value=crypto.open(from,"message",id,event.getString("body"));
@@ -110,19 +142,29 @@ public final class RelayClient implements AutoCloseable {
         }
         if(type.equals("message")||type.equals("stream.open")||type.equals("peer.up")||type.equals("peer.down")||type.equals("group.changed"))listener.onEvent(event);
     }
-    private void binary(byte[] data)throws Exception{if(data.length<26||data.length>65561||data[0]!=1)throw new IOException("Invalid frame");ByteBuffer b=ByteBuffer.wrap(data);b.get();byte[] id=new byte[16];b.get(id);long seq=b.getLong();Stream s=streams.get(Crypto.hex(id));if(s==null)return;if(!s.queue.offer(new Record(seq,Arrays.copyOfRange(data,25,data.length)))){s.close();}}
+    private void binary(byte[] data)throws Exception{
+        if(v2){
+            if(data.length<33||data.length>65552)throw new IOException("Invalid frame");
+            String sid=new String(data,0,16,StandardCharsets.US_ASCII);
+            Stream s=streams.get(sid);if(s==null)return;
+            if(!s.queue.offer(new Record(0,Arrays.copyOfRange(data,16,data.length)))){s.close();}
+            return;
+        }
+        if(data.length<26||data.length>65561||data[0]!=1)throw new IOException("Invalid frame");ByteBuffer b=ByteBuffer.wrap(data);b.get();byte[] id=new byte[16];b.get(id);long seq=b.getLong();Stream s=streams.get(Crypto.hex(id));if(s==null)return;if(!s.queue.offer(new Record(seq,Arrays.copyOfRange(data,25,data.length)))){s.close();}
+    }
     private void fail(Throwable error){if(!closed.compareAndSet(false,true))return;if(cleaner!=null)cleaner.shutdownNow();if(socket!=null)socket.cancel();for(Stream s:streams.values())s.abort();streams.clear();for(CompletableFuture<JSONObject> f:pending.values())f.completeExceptionally(error);pending.clear();listener.onClosed(error);}
     @Override public void close(){fail(new IOException("Client stopped"));}
     private static final class Record { final long sequence;final byte[] data;Record(long sequence,byte[] data){this.sequence=sequence;this.data=data;} }
     public final class Stream implements AutoCloseable {
         public final String peer,id;
+        private final boolean isV2;
         private final Crypto.SecretStream encryptor;
         private volatile Crypto.SecretStream decryptor;
-        private final BlockingQueue<Record> queue=new ArrayBlockingQueue<>(16);
-        private final Semaphore window=new Semaphore(8);
+        private final BlockingQueue<Record> queue=new ArrayBlockingQueue<>(32);
+        private final Semaphore window;
         private final AtomicBoolean stopped=new AtomicBoolean();
         private volatile long tx=0,rx=0,ack=0;
-        private Stream(String peer,String id,Crypto.SecretStream enc){this.peer=peer;this.id=id;this.encryptor=enc;}
+        private Stream(String peer,String id,Crypto.SecretStream enc,boolean isV2){this.peer=peer;this.id=id;this.encryptor=enc;this.isV2=isV2;this.window=new Semaphore(isV2?16:8);}
         private void initializeDecryptor(JSONObject descriptor)throws Exception {
             Crypto.SecretStream value=new Crypto.SecretStream(descriptor);
             if(stopped.get()){value.close();throw new IOException("Stream closed");}
@@ -131,12 +173,40 @@ public final class RelayClient implements AutoCloseable {
         }
         public synchronized void send(byte[] data,boolean last)throws Exception{
             if(stopped.get())throw new IOException("Stream closed");
-            for(int offset=0;offset<Math.max(1,data.length);offset+=65519){if(!window.tryAcquire(30,TimeUnit.SECONDS)||stopped.get())throw new IOException("Stream closed or stalled");byte[] part=Arrays.copyOfRange(data,offset,Math.min(data.length,offset+65519));byte[] cipher=encryptor.push(part,crypto.aad(crypto.device,peer,"stream",id,tx),last&&offset+65519>=data.length);ByteBuffer b=ByteBuffer.allocate(25+cipher.length).put((byte)1).put(Crypto.unhex(id)).putLong(tx).put(cipher);tx++;if(!socket.send(ByteString.of(b.array())))throw new IOException("Transport closed");}
+            for(int offset=0;offset<Math.max(1,data.length);offset+=65519){
+                if(!window.tryAcquire(30,TimeUnit.SECONDS)||stopped.get())throw new IOException("Stream closed or stalled");
+                byte[] part=Arrays.copyOfRange(data,offset,Math.min(data.length,offset+65519));
+                byte[] cipher=encryptor.push(part,crypto.aad(crypto.device,peer,"stream",id,tx),last&&offset+65519>=data.length);
+                byte[] out;
+                if(isV2){
+                    byte[] sidBytes=id.getBytes(StandardCharsets.US_ASCII);
+                    out=new byte[16+cipher.length];
+                    System.arraycopy(sidBytes,0,out,0,16);
+                    System.arraycopy(cipher,0,out,16,cipher.length);
+                }else{
+                    out=ByteBuffer.allocate(25+cipher.length).put((byte)1).put(Crypto.unhex(id)).putLong(tx).put(cipher).array();
+                }
+                tx++;
+                if(!socket.send(ByteString.of(out)))throw new IOException("Transport closed");
+            }
         }
-        public byte[] receive()throws Exception{if(stopped.get())throw new IOException("Stream interrupted");Record r=queue.take();if(r.sequence<0||stopped.get())throw new IOException("Stream interrupted");if(r.sequence!=rx||decryptor==null)throw new IOException("Invalid sequence");byte[] plain=decryptor.pull(r.data,crypto.aad(peer,crypto.device,"stream",id,rx));rx++;RelayClient.this.send(new JSONObject().put("type","stream.credit").put("id",id).put("sequence",rx));return plain;}
+        public byte[] receive()throws Exception{
+            if(stopped.get())throw new IOException("Stream interrupted");
+            Record r=queue.take();
+            if(r.sequence<0||stopped.get())throw new IOException("Stream interrupted");
+            if((!isV2&&r.sequence!=rx)||decryptor==null)throw new IOException("Invalid sequence");
+            byte[] plain=decryptor.pull(r.data,crypto.aad(peer,crypto.device,"stream",id,rx));
+            rx++;
+            if(isV2){
+                RelayClient.this.send(new JSONObject().put("type","msg").put("space",crypto.group).put("to",peer).put("topic","stream.credit").put("body",id+":"+rx));
+            }else{
+                RelayClient.this.send(new JSONObject().put("type","stream.credit").put("id",id).put("sequence",rx));
+            }
+            return plain;
+        }
         public boolean receivedFinal(){return decryptor!=null&&decryptor.finished;}
         private void credit(long sequence)throws IOException{if(sequence<ack||sequence>tx)throw new IOException("Invalid credit");window.release((int)(sequence-ack));ack=sequence;}
-        private void abort(){if(!stopped.compareAndSet(false,true))return;window.release(8);queue.clear();queue.offer(new Record(-1,null));encryptor.close();if(decryptor!=null)decryptor.close();}
-        @Override public void close(){abort();streams.remove(id,this);try{RelayClient.this.send(new JSONObject().put("type","stream.close").put("id",id));}catch(Exception ignored){}}
+        private void abort(){if(!stopped.compareAndSet(false,true))return;window.release(16);queue.clear();queue.offer(new Record(-1,null));encryptor.close();if(decryptor!=null)decryptor.close();}
+        @Override public void close(){abort();streams.remove(id,this);try{JSONObject ev=new JSONObject().put("type","stream.close").put("id",id);if(isV2)ev.put("space",crypto.group);RelayClient.this.send(ev);}catch(Exception ignored){}}
     }
 }
