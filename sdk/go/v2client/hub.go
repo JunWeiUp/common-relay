@@ -3,6 +3,7 @@ package v2client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -46,7 +47,15 @@ type Hub struct {
 	lastErr   string
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+
+	// Keepalive is how often the hub pings the relay (0 = DefaultHubKeepalive).
+	// Without traffic, reverse proxies close idle WebSockets; a missing pong also
+	// detects a dead connection long before TCP would.
+	Keepalive time.Duration
 }
+
+// DefaultHubKeepalive stays well under common proxy idle timeouts (60–120s).
+const DefaultHubKeepalive = 30 * time.Second
 
 func NewHub(c *Client) *Hub {
 	return &Hub{
@@ -151,8 +160,43 @@ func (h *Hub) runOnce(ctx context.Context) error {
 	// Catch up every subscribed queue/ephemeral Box right after connecting.
 	h.drainAll(ctx)
 
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+	pingErr := make(chan error, 1)
+	go func() {
+		every := h.Keepalive
+		if every <= 0 {
+			every = DefaultHubKeepalive
+		}
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-connCtx.Done():
+				return
+			case <-t.C:
+				pctx, pcancel := context.WithTimeout(connCtx, every/2+5*time.Second)
+				err := conn.Ping(pctx)
+				pcancel()
+				if err != nil && connCtx.Err() == nil {
+					pingErr <- err
+					connCancel() // unblock Read and reconnect
+					return
+				}
+			}
+		}
+	}()
+
 	for {
-		kind, data, err := conn.Read(ctx)
+		kind, data, err := conn.Read(connCtx)
+		if err != nil {
+			select {
+			case perr := <-pingErr:
+				return errors.New("keepalive: " + perr.Error())
+			default:
+			}
+			return err
+		}
 		if err != nil {
 			return err
 		}

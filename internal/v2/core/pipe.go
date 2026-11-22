@@ -85,7 +85,15 @@ type PipeHub struct {
 	// OriginPatterns optionally allowlists browser Origins for /v2/ws (host patterns,
 	// e.g. "console.example.com"). Requests without an Origin header are always allowed.
 	OriginPatterns []string
+
+	// Keepalive is how often the server pings each /v2/ws peer (0 = DefaultPipeKeepalive).
+	// Reverse proxies drop idle WebSockets (nginx proxy_read_timeout); a ping/pong
+	// round trip keeps both directions busy and reaps dead peers.
+	Keepalive time.Duration
 }
+
+// DefaultPipeKeepalive stays well under common proxy idle timeouts (60–120s).
+const DefaultPipeKeepalive = 30 * time.Second
 
 func NewPipeHub(store *Store) *PipeHub {
 	h := &PipeHub{
@@ -346,6 +354,31 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 				wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
 				err := conn.Write(wctx, pkt.kind, pkt.data)
 				wcancel()
+				if err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	// Keepalive goroutine: a peer that stops answering pings is disconnected so its
+	// presence and streams are released instead of lingering until TCP times out.
+	go func() {
+		every := h.Keepalive
+		if every <= 0 {
+			every = DefaultPipeKeepalive
+		}
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				pctx, pcancel := context.WithTimeout(ctx, every/2+5*time.Second)
+				err := conn.Ping(pctx)
+				pcancel()
 				if err != nil {
 					cancel()
 					return

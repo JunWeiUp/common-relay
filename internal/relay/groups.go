@@ -206,6 +206,7 @@ func groupFailure(w http.ResponseWriter, err error) {
 		http.Error(w, "membership conflict; refresh and retry", 409)
 	}
 }
+
 // V2GroupHandler serves /v2/group, /v2/group/*, and /v2/enroll/* using the exact signed group
 // ledger and Relay-Access guard, rewriting the path prefix onto the unified group router.
 func (s *Server) V2GroupHandler() http.HandlerFunc {
