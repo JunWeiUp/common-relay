@@ -21,7 +21,10 @@ pub use access::{Options, ACCESS_HEADER};
 pub use crypto::new_message_id;
 pub use crypto::{generate_key_pair, Identity};
 pub use files::{decrypt_file, prepare_file, safe_file_name, FileDescriptor, FileInfo, RelayFiles};
-pub use groups::{advance_group, group_signing_key, unpack_group_entry, Groups};
+pub use groups::{
+    advance_group, group_signing_key, now as unix_now, unpack_group_entry, GroupApi, GroupHttp,
+    Groups,
+};
 pub use journal::Journal;
 pub use payload::{validate_payload, PayloadKind};
 pub use pipe::{Pipe, OFFLINE_TTL};

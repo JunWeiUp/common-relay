@@ -1,1009 +1,1231 @@
-//! Authenticated device group management.
-use crate::access::{checked_access_password, ACCESS_HEADER};
-use crate::{validate_payload, Error, PayloadKind, Result};
+//! Authenticated device groups: the signed membership chain and the durable group state
+//! machine every client uses (create, invite, join, approve, rename, remove, exit).
+//!
+//! Every retryable step is saved through `save` before its HTTP mutation, so a lost reply or
+//! a restart resumes the same signed entry instead of signing a new one. Transport is
+//! injected via [`GroupApi`]; [`GroupHttp`] is the blocking HTTPS implementation. Domain
+//! failures are [`Error::Relay`] codes (`ManagerRequired`, `ApprovalPending`,
+//! `ApprovalConflict`, `AnotherJoinPending`, `VerificationCodeMismatch`, `LastManager`);
+//! relay HTTP statuses are [`Error::Http`]; malformed data is [`Error::Invalid`].
+use crate::access::{
+    checked_access_password, valid_access_password, validate_endpoint, ACCESS_HEADER,
+};
+use crate::{invitation_links, validate_payload, Error, Options, PayloadKind, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-fn invalid() -> Error {
+fn bad() -> Error {
     Error::Invalid("invalid group data")
 }
-fn field<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
-    v.get(k).and_then(Value::as_str).ok_or_else(invalid)
+fn code(name: &str) -> Error {
+    Error::Relay(name.to_owned())
 }
-fn number(v: &Value, k: &str) -> Result<u64> {
-    v.get(k).and_then(Value::as_u64).ok_or_else(invalid)
+fn relay_code(name: &str) -> Error {
+    code(name)
 }
-fn boolean(v: &Value, k: &str) -> bool {
-    v.get(k).and_then(Value::as_bool).unwrap_or(false)
+fn invalid<T>() -> Result<T> {
+    Err(bad())
 }
-fn bytes32(s: &str) -> Result<[u8; 32]> {
-    hex::decode(s)
-        .map_err(|_| invalid())?
-        .try_into()
-        .map_err(|_| invalid())
+fn hex(bytes: &[u8]) -> String {
+    hex::encode(bytes)
 }
-fn hash(b: &[u8]) -> String {
-    hex::encode(Sha256::digest(b))
+fn unhex(s: &str) -> Result<Vec<u8>> {
+    hex::decode(s).map_err(|_| bad())
 }
-fn random(n: usize) -> Result<String> {
-    let mut b = vec![0; n];
-    getrandom::getrandom(&mut b).map_err(|_| invalid())?;
-    Ok(hex::encode(b))
+fn digest(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
-/// Derive the Ed25519 signing key from a device's X25519 secret.
-pub fn group_signing_key(secret: &str) -> Result<SigningKey> {
-    let mut h = Sha256::new();
-    h.update(b"common-relay/group-signing/v1\0");
-    h.update(bytes32(secret)?);
-    Ok(SigningKey::from_bytes(&h.finalize().into()))
+fn text<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
+    v.get(k).and_then(Value::as_str).ok_or_else(bad)
 }
-fn raw(e: &Value) -> Result<Vec<u8>> {
-    STANDARD.decode(field(e, "payload")?).map_err(|_| invalid())
+fn key32(bytes: &[u8]) -> Result<[u8; 32]> {
+    bytes.try_into().map_err(|_| bad())
+}
+/// Raw signed payload bytes of an entry.
+fn payload(entry: &Value) -> Result<Vec<u8>> {
+    STANDARD.decode(text(entry, "payload")?).map_err(|_| bad())
 }
 /// Decode a signed payload only after strict byte-level validation.
-pub fn unpack_group_entry(e: &Value) -> Result<Value> {
-    let b = raw(e)?;
+pub fn unpack_group_entry(entry: &Value) -> Result<Value> {
+    let bytes = payload(entry)?;
     if ![PayloadKind::State, PayloadKind::Request, PayloadKind::Grant]
         .into_iter()
-        .any(|k| validate_payload(&b, k))
+        .any(|k| validate_payload(&bytes, k))
     {
-        return Err(invalid());
+        return invalid();
     }
-    serde_json::from_slice(&b).map_err(|_| invalid())
+    serde_json::from_slice(&bytes).map_err(|_| bad())
 }
-fn sign(v: &Value, secret: &str, device: &str) -> Result<Value> {
-    let b = serde_json::to_vec(v).map_err(|_| invalid())?;
-    Ok(
-        json!({"payload":STANDARD.encode(&b),"signature":hex::encode(group_signing_key(secret)?.sign(&b).to_bytes()),"signer":device}),
+fn unpack(entry: &Value) -> Result<Value> {
+    unpack_group_entry(entry)
+}
+/// Derive the Ed25519 signing key from a device's X25519 secret (hex).
+pub fn group_signing_key(secret: &str) -> Result<SigningKey> {
+    signing(&unhex(secret)?).map(|(_, key)| key)
+}
+/// `(public signing key bytes, signing key)` for a 32-byte device secret.
+fn signing(secret: &[u8]) -> Result<([u8; 32], SigningKey)> {
+    let secret = key32(secret)?;
+    let mut h = Sha256::new();
+    h.update(b"common-relay/group-signing/v1\0");
+    h.update(secret);
+    let key = SigningKey::from_bytes(&h.finalize().into());
+    Ok((key.verifying_key().to_bytes(), key))
+}
+/// X25519 envelope public key (hex) of a 32-byte device secret.
+fn envelope_key(secret: &[u8]) -> Result<String> {
+    let secret = x25519_dalek::StaticSecret::from(key32(secret)?);
+    Ok(hex(x25519_dalek::PublicKey::from(&secret).as_bytes()))
+}
+fn access_password(p: &str) -> Result<&str> {
+    if valid_access_password(p) {
+        Ok(p)
+    } else {
+        Err(Error::Invalid(
+            "access password must be 8-128 printable ASCII characters without spaces",
+        ))
+    }
+}
+/// The server access password stored in a group config, if any.
+fn configured_password(c: &Value) -> Result<Option<&str>> {
+    match c.get("password") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(p)) if p.is_empty() => Ok(None),
+        Some(Value::String(p)) => checked_access_password(Some(p)),
+        Some(_) => invalid(),
+    }
+}
+fn endpoint(raw: &str, local: bool) -> Result<url::Url> {
+    validate_endpoint(
+        raw,
+        &Options {
+            allow_local_test: local,
+            password: None,
+        },
     )
+    .ok_or_else(bad)
 }
-fn verify(e: &Value, key: &str) -> Result<()> {
-    let key = VerifyingKey::from_bytes(&bytes32(key)?).map_err(|_| invalid())?;
-    let sig = hex::decode(field(e, "signature")?).map_err(|_| invalid())?;
-    let sig = Signature::from_slice(&sig).map_err(|_| invalid())?;
-    key.verify(&raw(e)?, &sig).map_err(|_| invalid())
+fn key32_24(bytes: &[u8]) -> Result<[u8; 24]> {
+    bytes.try_into().map_err(|_| bad())
 }
-fn members(v: &Value) -> Result<&Vec<Value>> {
-    v.get("members")
-        .and_then(Value::as_array)
-        .ok_or_else(invalid)
+fn random_bytes(n: usize) -> Result<Vec<u8>> {
+    let mut bytes = vec![0u8; n];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|_| Error::Storage("system randomness unavailable"))?;
+    Ok(bytes)
 }
-fn validate_state(v: &Value, app: &str, group: &str) -> Result<()> {
-    let m = members(v)?;
-    let closed = boolean(v, "closed");
-    if number(v, "version")? != 1
-        || field(v, "app")? != app
-        || field(v, "group")? != group
-        || m.len() > 32
-        || (closed && !m.is_empty())
-        || (!closed && m.is_empty())
-    {
-        return Err(invalid());
+fn random() -> Result<String> {
+    Ok(hex(&random_bytes(32)?))
+}
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+fn name(s: &str) -> Result<&str> {
+    let s = s.trim();
+    if s.is_empty() || s.len() > 128 {
+        return invalid();
     }
-    let mut ids = HashSet::new();
-    for x in m {
-        if !ids.insert(field(x, "device")?) {
-            return Err(invalid());
+    Ok(s)
+}
+/// Unix seconds from an integer or fractional JSON number (older clients sent floats).
+fn seconds(v: &Value) -> u64 {
+    v.as_u64()
+        .or_else(|| v.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
+        .unwrap_or(0)
+}
+fn erase(v: &mut Value, key: &str) {
+    if let Some(o) = v.as_object_mut() {
+        o.remove(key);
+    }
+}
+
+pub(crate) fn canonical(v: &Value) -> Vec<u8> {
+    fn write(v: &Value, out: &mut String) {
+        match v {
+            Value::Object(m) => {
+                out.push('{');
+                let sorted: BTreeMap<_, _> = m.iter().collect();
+                for (i, (k, v)) in sorted.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&Value::String((*k).clone()).to_string());
+                    out.push(':');
+                    write(v, out);
+                }
+                out.push('}');
+            }
+            Value::Array(a) => {
+                out.push('[');
+                for (i, v) in a.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write(v, out);
+                }
+                out.push(']');
+            }
+            _ => out.push_str(&v.to_string()),
         }
     }
-    if !closed && !m.iter().any(|x| boolean(x, "manager")) {
-        return Err(invalid());
+    let mut out = String::new();
+    write(v, &mut out);
+    out.into_bytes()
+}
+fn verify(entry: &Value, key: &str) -> Result<()> {
+    let key: [u8; 32] = unhex(key)?.try_into().map_err(|_| bad())?;
+    let pk = VerifyingKey::from_bytes(&key).map_err(|_| bad())?;
+    let sig: [u8; 64] = unhex(text(entry, "signature")?)?
+        .try_into()
+        .map_err(|_| bad())?;
+    pk.verify_strict(
+        &payload(entry)?,
+        &ed25519_dalek::Signature::from_bytes(&sig),
+    )
+    .map_err(|_| bad())
+}
+fn sign_value(value: &Value, secret: &[u8], device: &str) -> Result<Value> {
+    let (_, key) = signing(secret)?;
+    let bytes = canonical(value);
+    Ok(
+        json!({"payload":STANDARD.encode(&bytes),"signature":hex(&key.sign(&bytes).to_bytes()),"signer":device}),
+    )
+}
+fn members(v: &Value) -> Result<&Vec<Value>> {
+    v["members"].as_array().ok_or_else(bad)
+}
+fn valid_state(v: &Value) -> Result<()> {
+    let ms = members(v)?;
+    let closed = v["closed"] == true;
+    let ids: BTreeSet<_> = ms.iter().map(|m| m["device"].as_str()).collect();
+    if v["version"] != 1
+        || ms.len() > 32
+        || ids.len() != ms.len()
+        || (closed && !ms.is_empty())
+        || (!closed && !ms.iter().any(|m| m["manager"] == true))
+    {
+        return invalid();
     }
     Ok(())
 }
-fn hex_len(s: &str, len: usize) -> bool {
-    s.len() == len
-        && s.bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-fn grant(e: &Value, owner: &Value, state: &Value) -> Result<Value> {
-    if !e.get("authorization").is_none_or(Value::is_null)
-        || !boolean(owner, "manager")
-        || field(e, "signer")? != field(owner, "device")?
-    {
-        return Err(invalid());
-    }
-    verify(e, field(owner, "signing_key")?)?;
-    let g = unpack_group_entry(e)?;
-    if number(&g, "version")? != 1
-        || field(&g, "purpose")? != "common-relay/admission/v1"
-        || field(&g, "mode")? != "auto"
-        || field(&g, "app")? != field(state, "app")?
-        || field(&g, "group")? != field(state, "group")?
-        || number(&g, "anchor_revision")? == 0
-        || number(&g, "anchor_revision")? > number(state, "revision")?
-        || number(&g, "expires")? == 0
-    {
-        return Err(invalid());
-    }
-    for (k, n) in [
-        ("invitation", 32),
-        ("secret_hash", 64),
-        ("delegate_key", 64),
-        ("anchor_hash", 64),
-    ] {
-        if !hex_len(field(&g, k)?, n) {
-            return Err(invalid());
-        }
-    }
-    Ok(g)
-}
-/// Verify a signed transition against the previous authenticated entry.
-pub fn advance_group(current: &Value, entry: &Value) -> Result<()> {
-    let old = unpack_group_entry(current)?;
-    let new = unpack_group_entry(entry)?;
-    validate_state(&new, field(&old, "app")?, field(&old, "group")?)?;
-    let actor = members(&old)?
+fn advance(old_entry: &Value, entry: &Value) -> Result<Value> {
+    let old = unpack(old_entry)?;
+    let next = unpack(entry)?;
+    valid_state(&next)?;
+    let before = members(&old)?;
+    let after = members(&next)?;
+    let actor = before
         .iter()
         .find(|m| m["device"] == entry["signer"])
-        .ok_or_else(invalid)?;
-    if boolean(&old, "closed")
-        || old.get("name").and_then(Value::as_str).unwrap_or("")
-            != new.get("name").and_then(Value::as_str).unwrap_or("")
-        || number(&new, "revision")? != number(&old, "revision")? + 1
-        || field(&new, "previous")? != hash(&raw(current)?)
+        .ok_or_else(bad)?;
+    if old["closed"] == true
+        || old["app"] != next["app"]
+        || old["group"] != next["group"]
+        || old["name"].as_str().unwrap_or("") != next["name"].as_str().unwrap_or("")
+        || next["revision"].as_u64() != old["revision"].as_u64().and_then(|n| n.checked_add(1))
+        || next["previous"] != digest(&payload(old_entry)?)
     {
-        return Err(invalid());
+        return invalid();
     }
-    let before: HashMap<_, _> = members(&old)?
+    let added: Vec<_> = after
         .iter()
-        .map(|m| (m["device"].as_str().unwrap_or(""), m))
+        .filter(|m| !before.iter().any(|b| b["device"] == m["device"]))
         .collect();
-    let after: HashMap<_, _> = members(&new)?
+    let removed: Vec<_> = before
         .iter()
-        .map(|m| (m["device"].as_str().unwrap_or(""), m))
+        .filter(|m| !after.iter().any(|b| b["device"] == m["device"]))
         .collect();
-    if let Some(auth) = entry.get("authorization").filter(|a| !a.is_null()) {
-        let g = grant(auth, actor, &old)?;
-        verify(entry, field(&g, "delegate_key")?)?;
-        let added: Vec<_> = after
-            .iter()
-            .filter(|(k, _)| !before.contains_key(*k))
-            .collect();
-        if boolean(&new, "closed")
-            || field(&new, "invitation")? != field(&g, "invitation")?
-            || !hex_len(field(&new, "request_hash")?, 64)
-            || added.len() != 1
-            || boolean(added[0].1, "manager")
-            || after.len() != before.len() + 1
-            || before.iter().any(|(k, v)| after.get(k) != Some(v))
-            || (number(&old, "revision")? == number(&g, "anchor_revision")?
-                && hash(&raw(current)?) != field(&g, "anchor_hash")?)
+    if let Some(auth) = entry.get("authorization") {
+        let grant = unpack(auth)?;
+        if auth.get("authorization").is_some()
+            || actor["manager"] != true
+            || auth["signer"] != actor["device"]
         {
-            return Err(invalid());
+            return invalid();
         }
-        return Ok(());
-    }
-    verify(entry, field(actor, "signing_key")?)?;
-    let mut upgrades = HashSet::new();
-    let mut renamed = HashSet::new();
-    for (k, a) in &before {
-        if let Some(b) = after.get(k) {
-            if a != b {
-                let mut same = (*a).clone();
-                same["name"] = b["name"].clone();
-                if &same == *b {
-                    renamed.insert(*k);
-                } else if a["signing_key"] == ""
-                    && b["signing_key"].as_str().is_some_and(|s| !s.is_empty())
-                    && a["public_key"] == b["public_key"]
-                {
-                    upgrades.insert(*k);
-                } else {
-                    return Err(invalid());
-                }
+        verify(auth, text(actor, "signing_key")?)?;
+        if grant["version"] != 1
+            || grant["purpose"] != "common-relay/admission/v1"
+            || grant["mode"] != "auto"
+            || grant["app"] != old["app"]
+            || grant["group"] != old["group"]
+            || grant["anchor_revision"].as_u64().unwrap_or(0) < 1
+            || grant["anchor_revision"].as_u64() > old["revision"].as_u64()
+            || grant["expires"].as_u64().unwrap_or(0) == 0
+        {
+            return invalid();
+        }
+        for (k, n) in [
+            ("invitation", 16),
+            ("secret_hash", 32),
+            ("delegate_key", 32),
+            ("anchor_hash", 32),
+        ] {
+            if unhex(text(&grant, k)?)?.len() != n {
+                return invalid();
+            }
+        }
+        verify(entry, text(&grant, "delegate_key")?)?;
+        if next["closed"] == true
+            || next["invitation"] != grant["invitation"]
+            || unhex(text(&next, "request_hash")?)?.len() != 32
+            || after.len() != before.len() + 1
+            || added.len() != 1
+            || added[0]["manager"] != false
+            || !before.iter().all(|m| after.contains(m))
+        {
+            return invalid();
+        }
+        if old["revision"] == grant["anchor_revision"]
+            && grant["anchor_hash"] != digest(&payload(old_entry)?)
+        {
+            return invalid();
+        }
+    } else {
+        verify(entry, text(actor, "signing_key")?)?;
+        let changed: Vec<_> = after
+            .iter()
+            .filter(|m| before.iter().any(|b| b["device"] == m["device"] && b != *m))
+            .collect();
+        if !changed.is_empty() {
+            if changed.len() != 1 || !added.is_empty() || !removed.is_empty() {
+                return invalid();
+            }
+            let m = changed[0];
+            let mut prior = before
+                .iter()
+                .find(|b| b["device"] == m["device"])
+                .ok_or_else(bad)?
+                .clone();
+            // Only the display name may change in place; keys (including a missing
+            // signing_key) can never be filled in or rotated without re-admission.
+            prior["name"] = m["name"].clone();
+            if prior != *m
+                || !(actor["manager"] == true || m["device"] == actor["device"])
+                || next["invitation"] != ""
+                || next["request_hash"] != ""
+            {
+                return invalid();
+            }
+        } else {
+            let empty = next["invitation"] == "" && next["request_hash"] == "";
+            let add = actor["manager"] == true
+                && added.len() == 1
+                && removed.is_empty()
+                && next["invitation"] != ""
+                && next["request_hash"] != "";
+            let remove = removed.len() == 1
+                && added.is_empty()
+                && empty
+                && (actor["manager"] == true || removed[0]["device"] == actor["device"]);
+            let close =
+                next["closed"] == true && actor["manager"] == true && after.is_empty() && empty;
+            if !(add || remove || close) {
+                return invalid();
             }
         }
     }
-    let added = after.keys().filter(|k| !before.contains_key(*k)).count() + upgrades.len();
-    let removed: Vec<_> = before.keys().filter(|k| !after.contains_key(*k)).collect();
-    let empty = field(&new, "invitation")?.is_empty() && field(&new, "request_hash")?.is_empty();
-    if !renamed.is_empty() {
-        if renamed.len() != 1
-            || added != 0
-            || !removed.is_empty()
-            || !empty
-            || !(boolean(actor, "manager") || renamed.contains(field(entry, "signer")?))
-        {
-            return Err(invalid());
-        }
-        return Ok(());
-    }
-    if (boolean(&new, "closed") && boolean(actor, "manager") && after.is_empty() && empty)
-        || (boolean(actor, "manager")
-            && added == 1
-            && removed.is_empty()
-            && !field(&new, "invitation")?.is_empty()
-            && !field(&new, "request_hash")?.is_empty())
-        || (removed.len() == 1
-            && added == 0
-            && empty
-            && (boolean(actor, "manager") || *removed[0] == field(entry, "signer")?))
-    {
-        Ok(())
-    } else {
-        Err(invalid())
-    }
+    Ok(entry.clone())
 }
 
-fn member(c: &Value, name: &str) -> Result<Value> {
-    let secret = bytes32(field(c, "secret_key")?)?;
-    let public = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(secret));
-    Ok(
-        json!({"device":field(c,"device")?,"name":name,"public_key":hex::encode(public.as_bytes()),"signing_key":hex::encode(group_signing_key(field(c,"secret_key")?)?.verifying_key().as_bytes()),"manager":false}),
-    )
+/// Verify a signed transition against the previous authenticated entry.
+pub fn advance_group(current: &Value, entry: &Value) -> Result<()> {
+    advance(current, entry).map(|_| ())
 }
-fn now() -> Result<u64> {
-    Ok(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| invalid())?
-        .as_secs())
-}
-/// Group operations mutate `config`; persist it after every operation, including errors.
-pub struct Groups {
-    pub config: Value,
-    access: Option<String>,
-    base: String,
-    local: bool,
-    http: reqwest::Client,
-}
-impl Groups {
-    /// `config["password"]` (optional) is the server access password sent as `Relay-Access`
-    /// on every group/enroll request; it is never copied into invitations or links.
-    pub fn new(config: Value, allow_local_test: bool) -> Result<Self> {
-        let access = match config.get("password") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(p)) => checked_access_password(Some(p))?.map(str::to_owned),
-            Some(_) => return Err(Error::Invalid("access password must be a string")),
-        };
-        let u = url::Url::parse(field(&config, "url")?).map_err(|_| invalid())?;
-        if !u.username().is_empty()
-            || u.password().is_some()
-            || u.query().is_some()
-            || u.fragment().is_some()
-            || u.path() != "/v2/ws"
-            || !(u.scheme() == "wss"
-                || (allow_local_test && u.scheme() == "ws" && u.host_str() == Some("127.0.0.1")))
-        {
-            return Err(invalid());
-        }
-        let mut base = u.clone();
-        base.set_scheme(if u.scheme() == "wss" { "https" } else { "http" })
-            .map_err(|_| invalid())?;
-        base.set_path("/v2");
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|_| invalid())?;
-        Ok(Self {
-            config,
-            access,
-            base: base.to_string().trim_end_matches('/').to_owned(),
-            local: allow_local_test,
-            http,
-        })
-    }
-    pub(crate) async fn call(
+
+pub trait GroupApi {
+    fn call(
         &self,
-        method: reqwest::Method,
+        c: &Value,
+        method: &str,
         path: &str,
-        value: Option<&Value>,
+        body: Option<Value>,
         auth: Option<String>,
-    ) -> Result<Value> {
-        let token = self
-            .config
-            .get("token")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let mut req = self
-            .http
-            .request(method, format!("{}{path}", self.base))
-            .header(
-                "Authorization",
-                auth.unwrap_or_else(|| format!("Bearer {token}")),
-            );
-        if let Some(p) = &self.access {
-            let mut value = reqwest::header::HeaderValue::from_str(p).map_err(|_| invalid())?;
-            value.set_sensitive(true);
-            req = req.header(ACCESS_HEADER, value);
-        }
-        if let Some(v) = value {
-            req = req.json(v);
-        }
-        let mut res = req.send().await.map_err(|e| Error::Relay(e.to_string()))?;
-        if res.status() != reqwest::StatusCode::OK {
-            return Err(Error::Http(res.status().as_u16()));
-        }
-        let mut data = Vec::new();
-        while let Some(chunk) = res.chunk().await.map_err(|e| Error::Relay(e.to_string()))? {
-            data.extend_from_slice(&chunk);
-            if data.len() > 3 * 1024 * 1024 {
-                return Err(invalid());
-            }
-        }
-        serde_json::from_slice(&data).map_err(|_| invalid())
+    ) -> Result<Value>;
+}
+pub struct Groups<'a, A: GroupApi> {
+    pub config: Value,
+    pub api: A,
+    pub save: &'a mut dyn FnMut(&Value) -> Result<()>,
+    pub local: bool,
+}
+impl<A: GroupApi> Groups<'_, A> {
+    fn persist(&mut self) -> Result<()> {
+        (self.save)(&self.config)
     }
-    fn accept(&mut self, e: &Value) -> Result<()> {
-        let s = unpack_group_entry(e)?;
-        let device = field(&self.config, "device")?;
-        let mut peers = serde_json::Map::new();
-        for m in members(&s)? {
-            if field(m, "device")? != device {
-                peers.insert(field(m, "device")?.to_owned(), m["public_key"].clone());
-            }
-        }
-        let public = member(&self.config, device)?["public_key"].clone();
-        self.config["group_entry"] = e.clone();
-        self.config["trusted_peers"] = Value::Object(peers);
-        self.config["public_key"] = public;
-        Ok(())
+    fn call(&self, m: &str, p: &str, b: Option<Value>, a: Option<String>) -> Result<Value> {
+        self.api.call(&self.config, m, p, b, a)
     }
-    fn ensure_token(&mut self) -> Result<()> {
-        if self.config.get("token").is_none() {
-            self.config["token"] = json!(random(32)?);
-        }
-        Ok(())
-    }
-    fn remove_key(&mut self, k: &str) {
-        if let Some(m) = self.config.as_object_mut() {
-            m.remove(k);
-        }
-    }
-    pub async fn refresh(&mut self) -> Result<Value> {
-        let mut current = self
-            .config
-            .get("group_entry")
-            .filter(|v| !v.is_null())
-            .cloned()
-            .ok_or_else(invalid)?;
-        loop {
-            let revision = number(&unpack_group_entry(&current)?, "revision")?;
-            let r = self
-                .call(
-                    reqwest::Method::GET,
-                    &format!("/group?after={revision}"),
-                    None,
-                    None,
-                )
-                .await?;
-            let entries = r["entries"].as_array().ok_or_else(invalid)?;
-            for e in entries {
-                advance_group(&current, e)?;
-                current = e.clone();
-            }
-            self.accept(&current)?;
-            if entries.is_empty()
-                || number(&unpack_group_entry(&current)?, "revision")? >= number(&r, "revision")?
-            {
-                return Ok(json!({"state":unpack_group_entry(&current)?,"online":r["online"]}));
-            }
-        }
-    }
-    pub fn prepare_create(&mut self, group_name: &str, device_name: &str) -> Result<()> {
-        if self.config.get("group_entry").is_some_and(|v| !v.is_null())
-            || self
-                .config
-                .get("pending_join")
-                .is_some_and(|v| !v.is_null())
-        {
-            return Err(invalid());
-        }
-        if self
-            .config
-            .get("pending_create")
-            .is_some_and(|v| !v.is_null())
-        {
-            return Ok(());
-        }
-        let g = group_name.trim();
-        let d = device_name.trim();
-        if g.is_empty()
-            || g.len() > 128
-            || d.is_empty()
-            || d.len() > 128
-            || self
-                .config
-                .get("group")
-                .and_then(Value::as_str)
-                .is_some_and(|x| !x.is_empty())
-        {
-            return Err(invalid());
-        }
-        self.config["group"] = json!(format!("g-{}", random(16)?));
-        self.ensure_token()?;
-        let mut own = member(&self.config, d)?;
-        own["manager"] = json!(true);
-        let state = json!({"version":1,"app":self.config["app"],"group":self.config["group"],"name":g,"revision":1,"previous":"","members":[own],"invitation":"","request_hash":""});
-        self.config["pending_create"] = sign(
-            &state,
-            field(&self.config, "secret_key")?,
-            field(&self.config, "device")?,
-        )?;
-        Ok(())
-    }
-    pub async fn create(&mut self) -> Result<()> {
-        let e = self
-            .config
-            .get("pending_create")
-            .cloned()
-            .ok_or_else(invalid)?;
-        self.call(
-            reqwest::Method::POST,
-            "/group/create",
-            Some(&json!({"entry":e,"token_hash":hash(field(&self.config,"token")?.as_bytes())})),
-            None,
+    fn sign(&self, v: &Value) -> Result<Value> {
+        sign_value(
+            v,
+            &unhex(text(&self.config, "secret_key")?)?,
+            text(&self.config, "device")?,
         )
-        .await?;
-        self.accept(&e)?;
-        self.remove_key("pending_create");
+    }
+    pub fn member(&self, n: &str) -> Result<Value> {
+        let raw = unhex(text(&self.config, "secret_key")?)?;
+        let (pk, _) = signing(&raw)?;
+        Ok(
+            json!({"device":self.config["device"],"name":n,"public_key":envelope_key(&raw)?,"signing_key":hex(&pk),"manager":false}),
+        )
+    }
+    fn state(&self) -> Result<Value> {
+        unpack(&self.config["group_entry"])
+    }
+    fn accept(&mut self, e: Value) -> Result<()> {
+        let state = unpack(&e)?;
+        valid_state(&state)?;
+        if state["app"] != self.config["app"] || state["group"] != self.config["group"] {
+            return invalid();
+        }
+        let mut peers = serde_json::Map::new();
+        for m in state["members"].as_array().ok_or_else(bad)? {
+            if m["device"] != self.config["device"] {
+                peers.insert(text(m, "device")?.into(), m["public_key"].clone());
+            }
+        }
+        self.config["group_entry"] = e;
+        self.config["trusted_peers"] = Value::Object(peers);
+        self.config["public_key"] = self.member("")?["public_key"].clone();
         Ok(())
     }
-    pub async fn bootstrap(&mut self, code: &Value, name: &str) -> Result<()> {
-        if code["app"] != self.config["app"] || code["group"] != self.config["group"] {
-            return Err(invalid());
+    pub fn refresh(&mut self) -> Result<Value> {
+        let mut current = self.config["group_entry"].clone();
+        for _ in 0..4096 {
+            let old = unpack(&current)?;
+            let reply = self.call(
+                "GET",
+                &format!("/group?after={}", old["revision"]),
+                None,
+                None,
+            )?;
+            let entries = reply["entries"].as_array().ok_or_else(bad)?;
+            let online = reply["online"].clone();
+            for e in entries {
+                current = advance(&current, e)?;
+                // Record the exact signed approval observed on the verified chain,
+                // even when later changes are returned in the same history page.
+                if self.config["pending_approval"]["entry"] == *e {
+                    self.config["pending_approval"]["committed"] = json!(true);
+                }
+                // Local only: the relay keeps a spent invitation until it expires so the
+                // joiner can replay its commit after a lost reply; it cannot be reused.
+                self.retire_used_invitation(&unpack(e)?);
+            }
+            let revision = unpack(&current)?["revision"].as_u64().ok_or_else(bad)?;
+            if entries.is_empty() || revision >= reply["revision"].as_u64().ok_or_else(bad)? {
+                self.accept(current)?;
+                self.persist()?;
+                return Ok(json!({"state":self.state()?,"online":online}));
+            }
+            if revision <= old["revision"].as_u64().unwrap_or(0) {
+                return invalid();
+            }
         }
-        self.ensure_token()?;
-        let mut own = member(&self.config, name)?;
-        own["manager"] = json!(true);
-        let mut ms = vec![own];
-        if let Some(peers) = self.config.get("trusted_peers").and_then(Value::as_object) {
-            for (k, v) in peers {
-                if k != field(&self.config, "device")? {
-                    ms.push(json!({"device":k,"name":k,"public_key":v,"signing_key":"","manager":false}));
+        invalid()
+    }
+    /// A device has joined with our issued invitation (its id is on a verified committed
+    /// entry): the invitation is spent, so return to the normal state without the user
+    /// cancelling it. An approval in progress finishes via `approve`.
+    fn retire_used_invitation(&mut self, state: &Value) {
+        let Some(issued) = self.config["issued_invitation"]["id"].as_str() else {
+            return;
+        };
+        if issued.is_empty()
+            || state["invitation"] != issued
+            || self.config["pending_approval"].is_object()
+        {
+            return;
+        }
+        for key in ["issued_invitation", "pending_link", "join_request"] {
+            erase(&mut self.config, key);
+        }
+    }
+    pub fn create(&mut self, title: &str, device_name: &str) -> Result<()> {
+        if self.config.get("group_entry").is_some() || self.config.get("pending_join").is_some() {
+            return invalid();
+        }
+        if self.config.get("pending_create").is_none() {
+            if self.config.get("group").is_some() {
+                return invalid();
+            }
+            let title = name(title)?;
+            let device_name = name(device_name)?;
+            self.config["group"] = json!(format!("g-{}", &random()?[..32]));
+            self.config["token"] = json!(random()?);
+            let mut own = self.member(device_name)?;
+            own["manager"] = json!(true);
+            self.config["pending_create"]=self.sign(&json!({"version":1,"app":self.config["app"],"group":self.config["group"],"name":title,"revision":1,"previous":"","members":[own],"invitation":"","request_hash":""}))?;
+            self.persist()?;
+        }
+        let e = self.config["pending_create"].clone();
+        self.call(
+            "POST",
+            "/group/create",
+            Some(json!({"entry":e,"token_hash":digest(text(&self.config,"token")?.as_bytes())})),
+            None,
+        )?;
+        self.accept(e)?;
+        erase(&mut self.config, "pending_create");
+        self.persist()
+    }
+    /// Creates the group from an admin-issued bootstrap code (`common-relay group-bootstrap`)
+    /// instead of self-service; members pinned in `trusted_peers` join without signing keys.
+    pub fn bootstrap(&mut self, code: &Value, device_name: &str) -> Result<()> {
+        if self.config.get("group_entry").is_some()
+            || code["app"] != self.config["app"]
+            || code["group"] != self.config["group"]
+        {
+            return invalid();
+        }
+        if self.config.get("pending_bootstrap").is_none() {
+            if self
+                .config
+                .get("token")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                self.config["token"] = json!(random()?);
+            }
+            let mut own = self.member(name(device_name)?)?;
+            own["manager"] = json!(true);
+            let device = self.config["device"].clone();
+            let mut members = vec![own];
+            for (k, v) in self.config["trusted_peers"]
+                .as_object()
+                .into_iter()
+                .flatten()
+            {
+                if *k != device {
+                    members.push(json!({"device":k,"name":k,"public_key":v,"signing_key":"","manager":false}));
                 }
             }
+            self.config["pending_bootstrap"] = self.sign(&json!({"version":1,"app":code["app"],"group":code["group"],"revision":1,"previous":"","members":members,"invitation":"","request_hash":""}))?;
+            self.persist()?;
         }
-        let state = json!({"version":1,"app":code["app"],"group":code["group"],"revision":1,"previous":"","members":ms,"invitation":"","request_hash":""});
-        let e = sign(
-            &state,
-            field(&self.config, "secret_key")?,
-            field(&self.config, "device")?,
-        )?;
+        let e = self.config["pending_bootstrap"].clone();
         self.call(
-            reqwest::Method::POST,
+            "POST",
             "/group/bootstrap",
-            Some(&json!({"entry":e,"token_hash":hash(field(&self.config,"token")?.as_bytes())})),
-            Some(format!("Bootstrap {}", field(code, "bootstrap")?)),
-        )
-        .await?;
-        self.accept(&e)
+            Some(json!({"entry":e,"token_hash":digest(text(&self.config,"token")?.as_bytes())})),
+            Some(format!("Bootstrap {}", text(code, "bootstrap")?)),
+        )?;
+        self.accept(e)?;
+        erase(&mut self.config, "pending_bootstrap");
+        self.persist()
     }
-    pub async fn invite(&mut self, mode: &str, compact: bool) -> Result<Value> {
-        if mode != "manual" && mode != "auto" {
-            return Err(invalid());
-        }
-        self.refresh().await?;
-        let current = self.config["group_entry"].clone();
-        let s = unpack_group_entry(&current)?;
-        let own = members(&s)?
+    fn manager(&self) -> Result<Value> {
+        let state = self.state()?;
+        let own = state["members"]
+            .as_array()
+            .ok_or_else(bad)?
             .iter()
             .find(|m| m["device"] == self.config["device"])
-            .ok_or_else(invalid)?
-            .clone();
-        if !boolean(&own, "manager") {
-            return Err(invalid());
+            .ok_or_else(bad)?;
+        if own["manager"] != true {
+            return Err(code("ManagerRequired"));
         }
-        let secret = random(32)?;
-        let mut data = json!({"secret_hash":hash(secret.as_bytes())});
-        let mut extra = None;
+        Ok(own.clone())
+    }
+    pub fn invite(&mut self, mode: &str) -> Result<String> {
+        if self.config["pending_approval"].is_object() {
+            return Err(code("ApprovalPending"));
+        }
+        if mode != "auto" && mode != "manual" {
+            return invalid();
+        }
+        self.refresh()?;
+        let own = self.manager()?;
+        if self.config["issued_invitation"]["expires"]
+            .as_u64()
+            .unwrap_or(0)
+            > now()
+        {
+            return self.publish();
+        }
+        let secret = random()?;
+        let mut body = json!({"secret_hash":digest(secret.as_bytes())});
+        let mut inv = json!({});
         if mode == "auto" {
-            let delegate = random(32)?;
-            let g = json!({"version":1,"purpose":"common-relay/admission/v1","mode":"auto","app":s["app"],"group":s["group"],"invitation":random(16)?,"expires":now()?+600,"secret_hash":data["secret_hash"],"delegate_key":hex::encode(group_signing_key(&delegate)?.verifying_key().as_bytes()),"anchor_revision":s["revision"],"anchor_hash":hash(&raw(&current)?)});
-            let e = sign(
-                &g,
-                field(&self.config, "secret_key")?,
-                field(&self.config, "device")?,
-            )?;
-            data["mode"] = json!(mode);
-            data["grant"] = e.clone();
-            extra = Some((e, delegate));
+            let delegate = random()?;
+            let (key, _) = signing(&unhex(&delegate)?)?;
+            let grant=self.sign(&json!({"version":1,"purpose":"common-relay/admission/v1","mode":"auto","app":self.config["app"],"group":self.config["group"],"invitation":&random()?[..32],"expires":now()+600,"secret_hash":body["secret_hash"],"delegate_key":hex(&key),"anchor_revision":self.state()?["revision"],"anchor_hash":digest(&payload(&self.config["group_entry"])?) }))?;
+            body["mode"] = json!(mode);
+            body["grant"] = grant.clone();
+            inv["grant"] = grant;
+            inv["delegate_secret"] = json!(delegate);
         }
-        let r = self
-            .call(
-                reqwest::Method::POST,
-                "/group/invitations",
-                Some(&data),
-                None,
-            )
-            .await?;
-        if let Some((e, _)) = &extra {
-            let g = unpack_group_entry(e)?;
-            if r["mode"] != "auto" || r["id"] != g["invitation"] || r["expires"] != g["expires"] {
-                return Err(invalid());
+        let result = self.call("POST", "/group/invitations", Some(body), None)?;
+        if mode == "auto" {
+            let grant = unpack(&inv["grant"])?;
+            if result["mode"] != mode
+                || result["id"] != grant["invitation"]
+                || result["expires"] != grant["expires"]
+            {
+                return invalid();
             }
         }
-        let mut inv = json!({"version":1,"mode":mode,"url":self.config["url"],"app":self.config["app"],"group":self.config["group"],"id":r["id"],"expires":r["expires"],"secret":secret,"manager":own});
-        if let Some((e, d)) = extra {
-            inv["grant"] = e;
-            inv["delegate_secret"] = json!(d);
+        if unhex(text(&result, "id")?)?.len() != 16
+            || result["expires"].as_u64().unwrap_or(0) <= now()
+        {
+            return invalid();
         }
-        if compact {
-            let mut key = [0u8; 32];
-            let mut nonce = [0u8; 24];
-            getrandom::getrandom(&mut key).map_err(|_| invalid())?;
-            getrandom::getrandom(&mut nonce).map_err(|_| invalid())?;
-            let packet = crate::invitation_links::seal(&inv, &key, &nonce)?;
-            let token = crate::invitation_links::read_token(&key);
-            self.call(
-                reqwest::Method::POST,
-                &format!("/group/invitations/{}/link", field(&inv, "id")?),
-                Some(&json!({"read_hash":hash(token.as_bytes()),"packet":packet})),
-                None,
-            )
-            .await?;
-            inv["short_link"] = json!(crate::invitation_links::make_link(
-                &inv,
-                &key,
-                self.access.as_deref()
-            )?);
-        }
-        Ok(inv)
+        for (k,v) in json!({"version":1,"mode":mode,"url":self.config["url"],"app":self.config["app"],"group":self.config["group"],"id":result["id"],"expires":result["expires"],"secret":secret,"manager":own}).as_object().unwrap(){inv[k]=v.clone();}
+        self.config["issued_invitation"] = inv;
+        erase(&mut self.config, "join_request");
+        self.persist()?;
+        self.publish()
     }
-    pub async fn resolve_invitation(&self, text: &str) -> Result<Value> {
-        let (url, id, key, link_password) =
-            crate::invitation_links::parse_link(text.trim(), self.local)?;
-        // Prefer the link's password; otherwise send ours only to our own relay. A link for
-        // another relay cannot be joined anyway (join requires the same url) and must not learn it.
-        let password = match &link_password {
-            Some(p) => Some(p.as_str()),
-            None if self.config.get("url").and_then(Value::as_str) == Some(url.as_str()) => {
-                self.access.as_deref()
+    /// Publishes (or returns) the short link for the issued invitation; idempotent.
+    pub fn publish(&mut self) -> Result<String> {
+        let inv = &self.config["issued_invitation"];
+        if let Some(link) = inv["short_link"].as_str() {
+            return Ok(link.into());
+        }
+        // Keep packet/key stable across response loss and retries.
+        if self.config.get("pending_link").is_none() {
+            let key = random_bytes(32)?;
+            let nonce = random_bytes(24)?;
+            self.config["pending_link"] = json!({"key":STANDARD.encode(&key),"packet":invitation_links::seal(inv,&key32(&key)?,&key32_24(&nonce)?)?});
+            self.persist()?;
+        }
+        let key = STANDARD
+            .decode(text(&self.config["pending_link"], "key")?)
+            .map_err(|_| bad())?;
+        let id = text(&self.config["issued_invitation"], "id")?;
+        self.call("POST",&format!("/group/invitations/{id}/link"),Some(json!({"read_hash":digest(invitation_links::read_token(&key32(&key)?).as_bytes()),"packet":self.config["pending_link"]["packet"]})),None)?;
+        let mut inv = self.config["issued_invitation"].clone();
+        if self.local {
+            let original = text(&inv, "url")?.to_owned();
+            inv["url"] = json!(original.replacen("ws:", "wss:", 1));
+        }
+        let link =
+            invitation_links::make_link(&inv, &key32(&key)?, configured_password(&self.config)?)?;
+        self.config["issued_invitation"]["short_link"] = json!(link);
+        erase(&mut self.config, "pending_link");
+        self.persist()?;
+        Ok(link)
+    }
+    /// Resolves a short link. The access password comes from the link, else the user's typed
+    /// password, else our own password only for our own relay; an explicit one is returned
+    /// in the invitation so `join` can keep it.
+    pub fn resolve(&self, link: &str, typed: Option<&str>) -> Result<Value> {
+        self.resolve_with(link, typed, None)
+    }
+    /// Like [`Self::resolve`]; an explicit `override_password` (the user corrected it) wins
+    /// over the link's password, and an empty override is rejected before any request.
+    pub fn resolve_with(
+        &self,
+        link: &str,
+        typed: Option<&str>,
+        override_password: Option<&str>,
+    ) -> Result<Value> {
+        let (mut url, id, key, mut link_password) =
+            invitation_links::parse_link(link.trim(), false)?;
+        if let Some(p) = override_password {
+            link_password = Some(access_password(p)?.to_owned());
+        }
+        if self.local && url::Url::parse(&url).map_err(|_| bad())?.host_str() == Some("127.0.0.1") {
+            url = url.replacen("wss:", "ws:", 1);
+        }
+        let explicit = match (link_password, typed) {
+            (Some(p), _) => Some(p),
+            (None, Some(p)) => Some(access_password(p)?.to_owned()),
+            (None, None) => None,
+        };
+        let password = match &explicit {
+            Some(p) => Some(p.clone()),
+            None if self.config["url"] == url => {
+                configured_password(&self.config)?.map(str::to_owned)
             }
             None => None,
         };
-        let mut endpoint_config = json!({ "url": url });
-        if let Some(p) = password {
-            endpoint_config["password"] = json!(p);
+        let result = self.api.call(
+            &json!({"url":url,"password":password}),
+            "GET",
+            &format!("/enroll/{id}/link"),
+            None,
+            Some(format!(
+                "InvitationLink {}",
+                invitation_links::read_token(&key32(&key)?)
+            )),
+        )?;
+        if result["version"] != 1 {
+            return invalid();
         }
-        let endpoint = Groups::new(endpoint_config, self.local)?;
-        let r = endpoint
-            .call(
-                reqwest::Method::GET,
-                &format!("/enroll/{id}/link"),
-                None,
-                Some(format!(
-                    "InvitationLink {}",
-                    crate::invitation_links::read_token(&key)
-                )),
-            )
-            .await?;
-        if number(&r, "version")? != 1 {
-            return Err(invalid());
-        }
-        let mut inv = crate::invitation_links::open_packet(field(&r, "packet")?, &key)?;
-        if number(&inv, "version")? != 1
-            || field(&inv, "url")? != url
-            || field(&inv, "id")? != id
+        let mut inv = invitation_links::open_packet(text(&result, "packet")?, &key32(&key)?)?;
+        if inv["version"] != 1
+            || inv["url"] != url
+            || inv["id"] != id
             || inv["app"] != self.config["app"]
-            || number(&inv, "expires")? <= now()?
+            || seconds(&inv["expires"]) <= now()
         {
-            return Err(invalid());
+            return invalid();
         }
-        if let Some(p) = link_password {
+        if let Some(p) = explicit {
             inv["password"] = json!(p);
         }
         Ok(inv)
     }
-    pub async fn pending(&self, inv: &Value) -> Result<Value> {
-        let r = self
-            .call(
-                reqwest::Method::GET,
-                &format!("/group/invitations/{}", field(inv, "id")?),
-                None,
-                None,
-            )
-            .await?;
-        let e = r["request"].clone();
-        if !e.is_null() {
-            let j = unpack_group_entry(&e)?;
-            verify(&e, field(&j["member"], "signing_key")?)?;
-            if j["invitation"] != inv["id"]
-                || j["app"] != self.config["app"]
-                || j["group"] != self.config["group"]
-                || e["signer"] != j["member"]["device"]
-            {
-                return Err(invalid());
-            }
-        }
-        Ok(e)
-    }
-    fn invitation_grant(&self, inv: &Value) -> Result<Value> {
-        let g = unpack_group_entry(&inv["grant"])?;
-        grant(
-            &inv["grant"],
-            &inv["manager"],
-            &json!({"app":self.config["app"],"group":self.config["group"],"revision":g["anchor_revision"]}),
-        )?;
-        if g["invitation"] != inv["id"]
+    fn grant(&self, inv: &Value) -> Result<Value> {
+        let e = &inv["grant"];
+        let m = &inv["manager"];
+        let g = unpack(e)?;
+        verify(e, text(m, "signing_key")?)?;
+        if e.get("authorization").is_some()
+            || m["manager"] != true
+            || e["signer"] != m["device"]
+            || g["version"] != 1
+            || g["purpose"] != "common-relay/admission/v1"
+            || g["mode"] != "auto"
+            || g["app"] != inv["app"]
+            || g["group"] != inv["group"]
+            || g["invitation"] != inv["id"]
             || g["expires"] != inv["expires"]
-            || field(&g, "secret_hash")? != hash(field(inv, "secret")?.as_bytes())
-            || field(&g, "delegate_key")?
-                != hex::encode(
-                    group_signing_key(field(inv, "delegate_secret")?)?
-                        .verifying_key()
-                        .as_bytes(),
-                )
+            || g["secret_hash"] != digest(text(inv, "secret")?.as_bytes())
+            || g["anchor_revision"].as_u64().unwrap_or(0) < 1
+            || unhex(text(&g, "anchor_hash")?)?.len() != 32
         {
-            return Err(invalid());
+            return invalid();
+        }
+        let (key, _) = signing(&unhex(text(inv, "delegate_secret")?)?)?;
+        if g["delegate_key"] != hex(&key) {
+            return invalid();
         }
         Ok(g)
     }
-    pub async fn join(&mut self, inv: &Value, name: &str) -> Result<()> {
-        if number(inv, "version")? != 1
-            || number(inv, "expires")? <= now()?
-            || ["url", "app", "group"]
-                .iter()
-                .any(|k| inv[*k] != self.config[*k])
+    pub fn join(&mut self, inv: Value, n: &str) -> Result<bool> {
+        if self.config.get("group_entry").is_some() || self.config.get("pending_create").is_some() {
+            return invalid();
+        }
+        if inv["version"] != 1
+            || inv["app"] != self.config["app"]
+            || seconds(&inv["expires"]) <= now()
         {
-            return Err(invalid());
+            return invalid();
         }
-        let mode = inv.get("mode").and_then(Value::as_str).unwrap_or("manual");
-        if mode != "manual" && mode != "auto" {
-            return Err(invalid());
+        endpoint(text(&inv, "url")?, self.local)?;
+        if inv["mode"] == "auto" {
+            self.grant(&inv)?;
+        } else if inv["mode"] != "manual" && !inv["mode"].is_null() {
+            return invalid();
         }
-        if mode == "auto" {
-            self.invitation_grant(inv)?;
-        }
-        match inv.get("password") {
-            None | Some(Value::Null) => {}
-            // A password carried by the scanned link becomes this device's relay access password.
-            Some(Value::String(p)) => {
-                let p = checked_access_password(Some(p))?
-                    .unwrap_or_default()
-                    .to_owned();
-                self.config["password"] = json!(p);
-                self.access = Some(p);
+        if self.config.get("pending_join").is_some() {
+            if self.config["pending_join"]["invitation"] != inv {
+                return Err(code("AnotherJoinPending"));
             }
-            Some(_) => return Err(Error::Invalid("access password must be a string")),
-        }
-        self.ensure_token()?;
-        let j = json!({"version":1,"app":self.config["app"],"group":self.config["group"],"invitation":inv["id"],"member":member(&self.config,name)?,"token_hash":hash(field(&self.config,"token")?.as_bytes())});
-        let e = if self.config["pending_join"]["invitation"]["id"] == inv["id"] {
-            self.config["pending_join"]["request"].clone()
         } else {
-            sign(
-                &j,
-                field(&self.config, "secret_key")?,
-                field(&self.config, "device")?,
-            )?
-        };
-        self.config["pending_join"] = json!({"invitation":inv,"request":e});
+            self.config["url"] = inv["url"].clone();
+            self.config["group"] = inv["group"].clone();
+            if let Some(p) = inv.get("password").and_then(Value::as_str) {
+                self.config["password"] = json!(access_password(p)?);
+            }
+            self.config["token"] = json!(random()?);
+            let req=self.sign(&json!({"version":1,"app":self.config["app"],"group":self.config["group"],"invitation":inv["id"],"member":self.member(name(n)?)?,"token_hash":digest(text(&self.config,"token")?.as_bytes())}))?;
+            self.config["pending_join"] = json!({"invitation":inv,"request":req});
+            self.persist()?;
+        }
         self.call(
-            reqwest::Method::POST,
-            &format!("/enroll/{}", field(inv, "id")?),
-            Some(&e),
-            Some(format!("Invitation {}", field(inv, "secret")?)),
-        )
-        .await?;
-        Ok(())
-    }
-    pub async fn finish_join(&mut self) -> Result<bool> {
-        let p = self
-            .config
-            .get("pending_join")
-            .cloned()
-            .ok_or_else(invalid)?;
-        let inv = &p["invitation"];
-        let req = unpack_group_entry(&p["request"])?;
-        if inv.get("mode").and_then(Value::as_str) == Some("auto") {
-            return self.finish_auto(&p).await;
-        }
-        let r = self
-            .call(
-                reqwest::Method::GET,
-                &format!("/enroll/{}", field(inv, "id")?),
-                None,
-                Some(format!("Claim {}", field(&self.config, "token")?)),
-            )
-            .await?;
-        let e = &r["entry"];
-        if e.is_null() {
-            return Ok(false);
-        }
-        if e.get("authorization").is_some_and(|v| !v.is_null()) {
-            return Err(invalid());
-        }
-        verify(e, field(&inv["manager"], "signing_key")?)?;
-        let g = unpack_group_entry(e)?;
-        validate_state(
-            &g,
-            field(&self.config, "app")?,
-            field(&self.config, "group")?,
+            "POST",
+            &format!("/enroll/{}", text(&inv, "id")?),
+            Some(self.config["pending_join"]["request"].clone()),
+            Some(format!("Invitation {}", text(&inv, "secret")?)),
         )?;
-        let own = members(&g)?
-            .iter()
-            .find(|m| m["device"] == self.config["device"])
-            .ok_or_else(invalid)?;
-        let mut expected = req["member"].clone();
-        expected["manager"] = own["manager"].clone();
-        if e["signer"] != inv["manager"]["device"]
-            || g["invitation"] != inv["id"]
-            || field(&g, "request_hash")? != hash(&raw(&p["request"])?)
-            || *own != expected
-        {
-            return Err(invalid());
-        }
-        self.accept(e)?;
-        self.remove_key("pending_join");
-        Ok(true)
+        self.finish_join()
     }
-    async fn finish_auto(&mut self, p: &Value) -> Result<bool> {
-        let inv = &p["invitation"];
-        let grant = self.invitation_grant(inv)?;
-        let req = unpack_group_entry(&p["request"])?;
-        let mut current: Option<Value> = None;
-        let mut after = number(&grant, "anchor_revision")? - 1;
-        let result = loop {
-            let r = self
-                .call(
-                    reqwest::Method::GET,
-                    &format!("/enroll/{}/auto?after={after}", field(inv, "id")?),
+    /// Completes a pending join; `true` once this device is a member. Idempotent: an
+    /// already completed join (e.g. automatic admission inside `join`) returns `true`.
+    pub fn finish_join(&mut self) -> Result<bool> {
+        if self.config.get("pending_join").is_none() && self.config.get("group_entry").is_some() {
+            return Ok(true);
+        }
+        let pending = self.config["pending_join"].clone();
+        let inv = &pending["invitation"];
+        let request = &pending["request"];
+        let req = unpack(request)?;
+        let id = text(inv, "id")?;
+        let auth = Some(format!("Claim {}", text(&self.config, "token")?));
+        let e = if inv["mode"] == "auto" {
+            let grant = self.grant(inv)?;
+            let anchor = grant["anchor_revision"].as_u64().ok_or_else(bad)?;
+            let mut after = anchor - 1;
+            let mut current: Option<Value> = None;
+            let mut result = json!({});
+            for _ in 0..4096 {
+                result = self.call(
+                    "GET",
+                    &format!("/enroll/{id}/auto?after={after}"),
                     None,
-                    Some(format!("Claim {}", field(&self.config, "token")?)),
-                )
-                .await?;
-            let rev = number(&r, "revision")?;
-            if rev < number(&grant, "anchor_revision")? || rev > 4096 {
-                return Err(invalid());
-            }
-            let entries = r["entries"].as_array().ok_or_else(invalid)?;
-            if entries.is_empty() {
-                return Err(invalid());
-            }
-            for e in entries {
-                if let Some(c) = &current {
-                    advance_group(c, e)?;
-                } else {
-                    let state = unpack_group_entry(e)?;
-                    if hash(&raw(e)?) != field(&grant, "anchor_hash")?
-                        || number(&state, "revision")? != number(&grant, "anchor_revision")?
-                    {
-                        return Err(invalid());
-                    }
-                    validate_state(
-                        &state,
-                        field(&self.config, "app")?,
-                        field(&self.config, "group")?,
-                    )?;
+                    auth.clone(),
+                )?;
+                let entries = result["entries"].as_array().ok_or_else(bad)?;
+                let latest = result["revision"].as_u64().ok_or_else(bad)?;
+                if entries.is_empty() || latest < anchor || latest > 4096 {
+                    return invalid();
                 }
-                current = Some(e.clone());
+                for e in entries {
+                    current = Some(if let Some(old) = current {
+                        advance(&old, e)?
+                    } else {
+                        let state = unpack(e)?;
+                        if state["app"] != inv["app"]
+                            || state["group"] != inv["group"]
+                            || digest(&payload(e)?) != grant["anchor_hash"]
+                            || state["revision"] != anchor
+                        {
+                            return invalid();
+                        }
+                        e.clone()
+                    });
+                }
+                let revision = unpack(current.as_ref().ok_or_else(bad)?)?["revision"]
+                    .as_u64()
+                    .ok_or_else(bad)?;
+                if revision <= after || revision > latest {
+                    return invalid();
+                }
+                after = revision;
+                if after == latest {
+                    break;
+                }
             }
-            let revision = number(
-                &unpack_group_entry(current.as_ref().ok_or_else(invalid)?)?,
-                "revision",
-            )?;
-            if revision <= after || revision > rev {
-                return Err(invalid());
+            let current = current.ok_or_else(bad)?;
+            if result["entry"].is_object() {
+                if result["entry"] != current {
+                    return invalid();
+                }
+                current
+            } else {
+                let mut state = unpack(&current)?;
+                state["members"]
+                    .as_array_mut()
+                    .ok_or_else(bad)?
+                    .push(req["member"].clone());
+                state["revision"] = json!(after + 1);
+                state["previous"] = json!(digest(&payload(&current)?));
+                state["invitation"] = inv["id"].clone();
+                state["request_hash"] = json!(digest(&payload(request)?));
+                let mut e = sign_value(
+                    &state,
+                    &unhex(text(inv, "delegate_secret")?)?,
+                    text(&inv["manager"], "device")?,
+                )?;
+                e["authorization"] = inv["grant"].clone();
+                advance(&current, &e)?;
+                self.config["pending_join"]["auto_entry"] = e.clone();
+                self.persist()?;
+                let reply =
+                    self.call("POST", &format!("/enroll/{id}/auto"), Some(e.clone()), auth)?;
+                if reply != e {
+                    return invalid();
+                }
+                e
             }
-            after = revision;
-            if after == rev {
-                break r;
-            }
-        };
-        let current = current.ok_or_else(invalid)?;
-        let e = if !result["entry"].is_null() {
-            if current != result["entry"] {
-                return Err(invalid());
-            }
-            current
         } else {
-            let mut g = unpack_group_entry(&current)?;
-            g["members"]
-                .as_array_mut()
-                .ok_or_else(invalid)?
-                .push(req["member"].clone());
-            g["revision"] = json!(number(&g, "revision")? + 1);
-            g["previous"] = json!(hash(&raw(&current)?));
-            g["invitation"] = inv["id"].clone();
-            g["request_hash"] = json!(hash(&raw(&p["request"])?));
-            let mut e = sign(
-                &g,
-                field(inv, "delegate_secret")?,
-                field(&inv["manager"], "device")?,
-            )?;
-            e["authorization"] = inv["grant"].clone();
-            advance_group(&current, &e)?;
-            self.config["pending_join"]["auto_entry"] = e.clone();
-            let r = self
-                .call(
-                    reqwest::Method::POST,
-                    &format!("/enroll/{}/auto", field(inv, "id")?),
-                    Some(&e),
-                    Some(format!("Claim {}", field(&self.config, "token")?)),
-                )
-                .await?;
-            if r != e {
-                return Err(invalid());
+            let result = self.call("GET", &format!("/enroll/{id}"), None, auth)?;
+            if result["entry"].is_null() {
+                return Ok(false);
             }
+            let e = result["entry"].clone();
+            if e.get("authorization").is_some() {
+                return invalid();
+            }
+            verify(&e, text(&inv["manager"], "signing_key")?)?;
             e
         };
-        let g = unpack_group_entry(&e)?;
-        let own = members(&g)?
+        let state = unpack(&e)?;
+        let own = state["members"]
+            .as_array()
+            .ok_or_else(bad)?
             .iter()
             .find(|m| m["device"] == self.config["device"])
-            .ok_or_else(invalid)?;
-        if e["authorization"] != inv["grant"]
-            || g["invitation"] != inv["id"]
-            || field(&g, "request_hash")? != hash(&raw(&p["request"])?)
-            || *own != req["member"]
-        {
-            return Err(invalid());
+            .ok_or_else(bad)?;
+        let mut expected = req["member"].clone();
+        if inv["mode"] != "auto" {
+            expected["manager"] = own["manager"].clone();
         }
-        self.accept(&e)?;
-        self.remove_key("pending_join");
+        if state["app"] != self.config["app"]
+            || state["group"] != self.config["group"]
+            || state["closed"] == true
+            || e["signer"] != inv["manager"]["device"]
+            || state["invitation"] != inv["id"]
+            || state["request_hash"] != digest(&payload(request)?)
+            || *own != expected
+            || (inv["mode"] == "auto" && e["authorization"] != inv["grant"])
+        {
+            return invalid();
+        }
+        self.accept(e)?;
+        erase(&mut self.config, "pending_join");
+        self.persist()?;
         Ok(true)
     }
-    async fn change(&mut self, mut g: Value) -> Result<()> {
-        let old = self.config["group_entry"].clone();
-        g["revision"] = json!(number(&g, "revision")? + 1);
-        g["previous"] = json!(hash(&raw(&old)?));
-        let e = sign(
-            &g,
-            field(&self.config, "secret_key")?,
-            field(&self.config, "device")?,
+    pub fn pending(&mut self) -> Result<()> {
+        if self.config["pending_approval"].is_object() {
+            return Ok(());
+        }
+        let inv = &self.config["issued_invitation"];
+        if inv["mode"] == "auto" {
+            return invalid();
+        }
+        let result = self.call(
+            "GET",
+            &format!("/group/invitations/{}", text(inv, "id")?),
+            None,
+            None,
         )?;
-        advance_group(&old, &e)?;
-        self.call(reqwest::Method::PUT, "/group", Some(&e), None)
-            .await?;
-        self.accept(&e)
-    }
-    pub async fn approve(&mut self, inv: &Value, request: &Value, manager: bool) -> Result<()> {
-        self.refresh().await?;
-        let j = unpack_group_entry(request)?;
-        verify(request, field(&j["member"], "signing_key")?)?;
-        if j["invitation"] != inv["id"]
-            || j["app"] != self.config["app"]
-            || j["group"] != self.config["group"]
-        {
-            return Err(invalid());
+        if result["request"].is_null() {
+            erase(&mut self.config, "join_request");
+        } else {
+            let e = &result["request"];
+            let req = unpack(e)?;
+            if req["app"] != self.config["app"]
+                || req["group"] != self.config["group"]
+                || req["invitation"] != inv["id"]
+                || e["signer"] != req["member"]["device"]
+            {
+                return invalid();
+            }
+            verify(e, text(&req["member"], "signing_key")?)?;
+            self.config["join_request"] = e.clone();
         }
-        let mut g = unpack_group_entry(&self.config["group_entry"])?;
-        let mut m = j["member"].clone();
+        self.persist()
+    }
+    pub fn code(&self) -> Result<String> {
+        let req = if self.config["pending_join"].is_object() {
+            &self.config["pending_join"]["request"]
+        } else {
+            &self.config["join_request"]
+        };
+        let h = digest(&payload(req)?)[..12].to_uppercase();
+        Ok(format!("{}-{}-{}", &h[..4], &h[4..8], &h[8..12]))
+    }
+    fn change(&mut self, mut state: Value) -> Result<()> {
+        let old = &self.config["group_entry"];
+        state["revision"] = json!(state["revision"].as_u64().ok_or_else(bad)? + 1);
+        state["previous"] = json!(digest(&payload(old)?));
+        let e = self.sign(&state)?;
+        advance(old, &e)?;
+        self.call("PUT", "/group", Some(e.clone()), None)?;
+        self.accept(e)?;
+        self.persist()
+    }
+    pub fn approve(&mut self, code: &str, manager: bool) -> Result<()> {
+        if code != self.code()? {
+            return Err(relay_code("VerificationCodeMismatch"));
+        }
+        if self.config["pending_approval"].is_object() {
+            if self.config["pending_approval"]["manager"] != manager {
+                return invalid();
+            }
+            return self.finish_approval();
+        }
+        self.refresh()?;
+        self.manager()?;
+        let req = unpack(&self.config["join_request"])?;
+        let inv = &self.config["issued_invitation"];
+        if seconds(&inv["expires"]) <= now() || req["invitation"] != inv["id"] {
+            return invalid();
+        }
+        verify(
+            &self.config["join_request"],
+            text(&req["member"], "signing_key")?,
+        )?;
+        let mut m = req["member"].clone();
         m["manager"] = json!(manager);
-        let ms = g["members"].as_array_mut().ok_or_else(invalid)?;
-        ms.retain(|v| v["device"] != m["device"]);
-        ms.push(m);
-        g["invitation"] = inv["id"].clone();
-        g["request_hash"] = json!(hash(&raw(request)?));
-        self.change(g).await
+        let mut state = self.state()?;
+        let members = state["members"].as_array_mut().ok_or_else(bad)?;
+        members.retain(|v| v["device"] != m["device"]);
+        members.push(m);
+        state["invitation"] = inv["id"].clone();
+        state["request_hash"] = json!(digest(&payload(&self.config["join_request"])?));
+        state["revision"] = json!(state["revision"].as_u64().ok_or_else(bad)? + 1);
+        state["previous"] = json!(digest(&payload(&self.config["group_entry"])?));
+        let entry = self.sign(&state)?;
+        advance(&self.config["group_entry"], &entry)?;
+        self.config["pending_approval"] =
+            json!({"entry":entry,"manager":manager,"committed":false});
+        self.persist()?; // Persist the exact user-confirmed request before PUT.
+        self.finish_approval()
     }
-    pub async fn remove(&mut self, device: &str) -> Result<()> {
-        if field(&self.config, "device")? == device {
-            return Err(invalid());
+    fn finish_approval(&mut self) -> Result<()> {
+        let entry = self.config["pending_approval"]["entry"].clone();
+        self.refresh()?;
+        if self.config["pending_approval"]["committed"] != true {
+            let candidate = unpack(&entry)?;
+            let current = self.state()?;
+            if current["revision"].as_u64().ok_or_else(bad)?
+                >= candidate["revision"].as_u64().ok_or_else(bad)?
+            {
+                // A different signed entry occupies this revision. Never rebase
+                // an old confirmation onto another request or changed identity.
+                return Err(code("ApprovalConflict"));
+            }
+            advance(&self.config["group_entry"], &entry)?;
+            self.call("PUT", "/group", Some(entry.clone()), None)?;
+            self.accept(entry.clone())?;
+            self.config["pending_approval"]["committed"] = json!(true);
+            self.persist()?;
         }
-        self.refresh().await?;
-        let mut g = unpack_group_entry(&self.config["group_entry"])?;
-        g["members"]
-            .as_array_mut()
-            .ok_or_else(invalid)?
-            .retain(|m| m["device"] != device);
-        g["invitation"] = json!("");
-        g["request_hash"] = json!("");
-        self.change(g).await
+        // A separate access transaction may resume after this membership commit.
+        self.config["approval_receipt"] = entry;
+        erase(&mut self.config, "pending_approval");
+        erase(&mut self.config, "issued_invitation");
+        erase(&mut self.config, "join_request");
+        self.persist()
     }
-    pub async fn rename(&mut self, device: &str, name: &str) -> Result<()> {
-        let name = name.trim();
-        if name.is_empty() || name.len() > 128 {
-            return Err(invalid());
+    pub fn cancel(&mut self) -> Result<()> {
+        if self.config["pending_approval"].is_object() {
+            self.refresh()?;
+            if self.config["pending_approval"]["committed"] == true {
+                // Membership is already committed. Complete its local receipt;
+                // the access intent has been cancelled separately by the caller.
+                self.finish_approval()?;
+            } else {
+                let candidate = unpack(&self.config["pending_approval"]["entry"])?;
+                if self.state()?["revision"].as_u64().ok_or_else(bad)?
+                    < candidate["revision"].as_u64().ok_or_else(bad)?
+                {
+                    return Err(code("ApprovalPending"));
+                }
+                // A verified different entry has occupied the candidate's slot.
+                erase(&mut self.config, "pending_approval");
+                self.persist()?;
+            }
         }
-        self.refresh().await?;
-        let mut g = unpack_group_entry(&self.config["group_entry"])?;
-        let m = g["members"]
+        if self.config["issued_invitation"].is_null() {
+            return Ok(());
+        }
+        self.call(
+            "DELETE",
+            &format!(
+                "/group/invitations/{}",
+                text(&self.config["issued_invitation"], "id")?
+            ),
+            None,
+            None,
+        )?;
+        for k in ["issued_invitation", "pending_link", "join_request"] {
+            erase(&mut self.config, k);
+        }
+        self.persist()
+    }
+    pub fn rename(&mut self, device: &str, n: &str) -> Result<()> {
+        let n = name(n)?;
+        self.refresh()?;
+        let mut state = self.state()?;
+        let m = state["members"]
             .as_array_mut()
-            .ok_or_else(invalid)?
+            .ok_or_else(bad)?
             .iter_mut()
             .find(|m| m["device"] == device)
-            .ok_or_else(invalid)?;
-        if m["name"] == name {
+            .ok_or_else(bad)?;
+        if m["name"] == n {
             return Ok(());
         }
-        m["name"] = json!(name);
-        g["invitation"] = json!("");
-        g["request_hash"] = json!("");
-        self.change(g).await
+        m["name"] = json!(n);
+        state["invitation"] = json!("");
+        state["request_hash"] = json!("");
+        self.change(state)
     }
-    /// Offline check against the locally verified state that `prepare_exit(disband)` would be
-    /// accepted: e.g. the last manager cannot leave other members behind (disband instead),
-    /// and only a manager can disband. Lets an app clear local state before notifying the relay.
-    pub fn check_exit(&self, disband: bool) -> Result<()> {
-        self.exit_entry(disband).map(|_| ())
-    }
-    pub async fn prepare_exit(&mut self, disband: bool) -> Result<()> {
-        if self
-            .config
-            .get("pending_exit")
-            .is_some_and(|v| !v.is_null())
-        {
-            return Ok(());
+    pub fn remove(&mut self, device: &str) -> Result<()> {
+        if self.config["device"] == device {
+            return invalid();
         }
-        self.refresh().await?;
-        let e = self.exit_entry(disband)?;
-        self.config["pending_exit"] = e;
-        Ok(())
+        self.refresh()?;
+        self.manager()?;
+        let mut state = self.state()?;
+        state["members"]
+            .as_array_mut()
+            .ok_or_else(bad)?
+            .retain(|m| m["device"] != device);
+        state["invitation"] = json!("");
+        state["request_hash"] = json!("");
+        self.change(state)
     }
+    /// The signed exit (or disband) entry for the current verified state, checked against
+    /// the chain rules. Fails when the exit is not allowed (e.g. the last manager leaving
+    /// other members behind, or a non-manager disbanding).
     fn exit_entry(&self, disband: bool) -> Result<Value> {
-        let old = self.config["group_entry"].clone();
-        let mut g = unpack_group_entry(&old)?;
-        let own = members(&g)?
-            .iter()
-            .find(|m| m["device"] == self.config["device"])
-            .ok_or_else(invalid)?;
-        if disband && !boolean(own, "manager") {
-            return Err(Error::Invalid("only a manager can disband the group"));
-        }
-        let ms = g["members"].as_array_mut().ok_or_else(invalid)?;
+        let mut state = self.state()?;
         if disband {
-            ms.clear();
-        } else {
-            ms.retain(|m| m["device"] != self.config["device"]);
+            self.manager()?;
         }
-        if ms.is_empty() {
-            g["closed"] = json!(true);
-        } else if !ms.iter().any(|m| boolean(m, "manager")) {
-            return Err(Error::Invalid(
-                "last manager cannot leave other members; disband instead",
-            ));
+        let own = self.config["device"].clone();
+        let members = state["members"].as_array_mut().ok_or_else(bad)?;
+        members.retain(|m| !disband && m["device"] != own);
+        if members.is_empty() {
+            state["closed"] = json!(true);
+        } else if !members.iter().any(|m| m["manager"] == true) {
+            return Err(code("LastManager"));
         }
-        g["invitation"] = json!("");
-        g["request_hash"] = json!("");
-        g["revision"] = json!(number(&g, "revision")? + 1);
-        g["previous"] = json!(hash(&raw(&old)?));
-        let e = sign(
-            &g,
-            field(&self.config, "secret_key")?,
-            field(&self.config, "device")?,
-        )?;
-        advance_group(&old, &e)?;
+        state["invitation"] = json!("");
+        state["request_hash"] = json!("");
+        state["revision"] = json!(state["revision"].as_u64().ok_or_else(bad)? + 1);
+        state["previous"] = json!(digest(&payload(&self.config["group_entry"])?));
+        let e = self.sign(&state)?;
+        advance(&self.config["group_entry"], &e)?;
         Ok(e)
     }
-    pub async fn exit(&mut self) -> Result<()> {
-        let e = self
-            .config
-            .get("pending_exit")
-            .cloned()
-            .ok_or_else(invalid)?;
-        if let Err(err) = self
-            .call(reqwest::Method::POST, "/group/exit", Some(&e), None)
-            .await
-        {
-            if err == Error::Http(409) {
-                self.remove_key("pending_exit");
-            }
-            return Err(err);
+    /// Offline pre-check so a client can clear local state first (owner policy) only when the
+    /// signed exit it will send afterwards is valid. Uses the locally verified state.
+    pub fn check_exit(&self, disband: bool) -> Result<()> {
+        if self.config["exit_completed"] == true || self.config.get("group_entry").is_none() {
+            return Ok(());
         }
-        self.accept(&e)?;
-        self.remove_key("pending_exit");
+        self.exit_entry(disband).map(|_| ())
+    }
+    pub fn exit(&mut self, disband: bool) -> Result<()> {
+        if self.config["exit_completed"] == true {
+            return Ok(());
+        }
+        if self.config.get("pending_exit").is_some() {
+            if self.config["exit_disband"] != disband {
+                return invalid();
+            }
+        } else {
+            self.refresh()?;
+            let e = self.exit_entry(disband)?;
+            self.config["pending_exit"] = e;
+            self.config["exit_disband"] = json!(disband);
+            self.persist()?;
+        }
+        let e = self.config["pending_exit"].clone();
+        match self.call("POST", "/group/exit", Some(e.clone()), None) {
+            Ok(_) => {}
+            Err(e) => {
+                if matches!(e, Error::Http(409)) {
+                    erase(&mut self.config, "pending_exit");
+                    self.persist()?;
+                }
+                return Err(e);
+            }
+        }
+        self.accept(e)?;
+        erase(&mut self.config, "pending_exit");
+        self.config["exit_completed"] = json!(true);
+        self.persist()
+    }
+}
+
+const LIMIT: usize = 3 * 1024 * 1024;
+
+pub struct GroupHttp {
+    /// Allow `ws://127.0.0.1` relays (tests only).
+    pub local: bool,
+}
+
+pub(crate) fn client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|_| Error::Connection("relay request failed"))
+}
+
+/// `https://host/relay/v1` (or `/v2`) for a relay WebSocket endpoint.
+pub(crate) fn base(url: &str, local: bool) -> Result<String> {
+    let mut url = endpoint(url, local)?;
+    url.set_scheme(if url.scheme() == "wss" {
+        "https"
+    } else {
+        "http"
+    })
+    .map_err(|_| bad())?;
+    let prefix = if url.path() == "/v2/ws" {
+        "/v2"
+    } else {
+        "/relay/v1"
+    };
+    Ok(format!(
+        "{}://{}{}",
+        url.scheme(),
+        &url[url::Position::BeforeHost..url::Position::AfterPort],
+        prefix
+    ))
+}
+
+pub(crate) fn read_limited(
+    response: reqwest::blocking::Response,
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    response
+        .take(LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Error::Connection("relay request failed"))?;
+    if bytes.len() > LIMIT {
+        return invalid();
+    }
+    Ok(bytes)
+}
+
+impl GroupHttp {
+    /// Checks a group config's endpoint and access password without any request.
+    pub fn check(&self, c: &Value) -> Result<()> {
+        base(text(c, "url")?, self.local)?;
+        configured_password(c)?;
         Ok(())
     }
-    /// Leave the group, persisting pending_exit before transmission.
-    pub async fn leave(&mut self) -> Result<()> {
-        self.prepare_exit(false).await?;
-        self.exit().await
-    }
-    /// Disband a group as a manager.
-    pub async fn disband(&mut self) -> Result<()> {
-        self.prepare_exit(true).await?;
-        self.exit().await
-    }
-    pub async fn cancel(&self, inv: &Value) -> Result<Value> {
-        self.call(
-            reqwest::Method::DELETE,
-            &format!("/group/invitations/{}", field(inv, "id")?),
-            None,
-            None,
-        )
-        .await
+}
+
+impl GroupApi for GroupHttp {
+    fn call(
+        &self,
+        c: &Value,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        auth: Option<String>,
+    ) -> Result<Value> {
+        let base = base(text(c, "url")?, self.local)?;
+        if !path.starts_with('/') || path.contains('#') || path.contains("..") {
+            return invalid();
+        }
+        let mut request = client()?
+            .request(method.parse().map_err(|_| bad())?, format!("{base}{path}"))
+            .header(
+                "Authorization",
+                auth.unwrap_or_else(|| format!("Bearer {}", c["token"].as_str().unwrap_or(""))),
+            );
+        if let Some(password) = configured_password(c)? {
+            request = request.header(ACCESS_HEADER, password);
+        }
+        if let Some(body) = body {
+            request = request
+                .header("Content-Type", "application/json")
+                .body(canonical(&body));
+        }
+        let response = request
+            .send()
+            .map_err(|_| Error::Connection("relay request failed"))?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(Error::Http(status));
+        }
+        let value: Value = serde_json::from_slice(&read_limited(response)?).map_err(|_| bad())?;
+        if !value.is_object() {
+            return invalid();
+        }
+        Ok(value)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    fn field<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
+        text(v, k)
+    }
     #[test]
     fn group_vectors() {
         let v: Value =
@@ -1015,7 +1237,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            member(&v["config"], "Mac").unwrap()["signing_key"],
+            json!(hex(&signing(
+                &unhex(field(&v["config"], "secret_key").unwrap()).unwrap()
+            )
+            .unwrap()
+            .0)),
             v["manager"]["signing_key"]
         );
         for (a, b) in [
@@ -1087,7 +1313,7 @@ mod tests {
         assert!(!links.is_empty());
         for l in links {
             let (base, next) = (l["base"].as_str().unwrap(), l["next"].as_str().unwrap());
-            let payload = raw(&entry(next)).unwrap();
+            let payload = super::payload(&entry(next)).unwrap();
             let payload: Value = serde_json::from_slice(&payload).unwrap();
             assert_eq!(
                 payload["previous"].as_str().unwrap(),
@@ -1096,20 +1322,104 @@ mod tests {
             );
         }
     }
-    #[tokio::test]
-    async fn https_uses_bundled_tls_provider() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
-        let g = Groups::new(json!({"url":format!("wss://{address}/v2/ws")}), false).unwrap();
-        assert!(matches!(
-            g.call(reqwest::Method::GET, "/group", None, None).await,
-            Err(Error::Relay(_))
-        ));
-        task.abort();
+    /// In-memory relay: accepts writes and serves the verified chain back.
+    #[derive(Default)]
+    struct MemoryRelay {
+        entries: std::cell::RefCell<Vec<Value>>,
+        calls: std::cell::RefCell<Vec<String>>,
     }
-    #[tokio::test]
-    async fn local_server_group_lifecycle() {
+    impl GroupApi for &MemoryRelay {
+        fn call(
+            &self,
+            _c: &Value,
+            method: &str,
+            path: &str,
+            body: Option<Value>,
+            _a: Option<String>,
+        ) -> Result<Value> {
+            self.calls.borrow_mut().push(format!("{method} {path}"));
+            let mut entries = self.entries.borrow_mut();
+            match (method, path.split('?').next().unwrap_or("")) {
+                ("POST", "/group/create") => entries.push(body.unwrap()["entry"].clone()),
+                ("PUT", "/group") | ("POST", "/group/exit") => entries.push(body.unwrap()),
+                ("GET", "/group") => {
+                    let after: usize = path.rsplit('=').next().unwrap().parse().unwrap();
+                    let newer: Vec<Value> = entries.iter().skip(after).cloned().collect();
+                    return Ok(json!({"entries": newer, "revision": entries.len(), "online": []}));
+                }
+                _ => return Err(Error::Http(404)),
+            }
+            Ok(json!({}))
+        }
+    }
+
+    #[test]
+    fn drafts_are_saved_before_the_request_that_commits_them() {
+        let relay = MemoryRelay::default();
+        let mut saved = Vec::new();
+        let mut save = |c: &Value| {
+            saved.push(c.clone());
+            Ok(())
+        };
+        let mut groups = Groups {
+            config: json!({"app":"example","url":"wss://relay.example/v2/ws","device":"mac","secret_key":random().unwrap()}),
+            api: &relay,
+            save: &mut save,
+            local: false,
+        };
+        groups.create("Home", "Mac").unwrap();
+        assert!(groups.config["pending_create"].is_null());
+        groups.rename("mac", "MacBook").unwrap();
+        assert_eq!(
+            unpack(&groups.config["group_entry"]).unwrap()["members"][0]["name"],
+            "MacBook"
+        );
+        assert!(groups.create("Again", "Mac").is_err(), "already enrolled");
+        assert!(
+            groups.finish_join().unwrap(),
+            "a member's finish_join is a no-op"
+        );
+        groups.exit(true).unwrap();
+        assert_eq!(groups.config["exit_completed"], true);
+        let closed = unpack(&groups.config["group_entry"]).unwrap();
+        assert_eq!(closed["closed"], true);
+        assert_eq!(closed["revision"], 3);
+        assert_eq!(relay.calls.borrow()[0], "POST /group/create");
+        drop(groups);
+        assert!(saved[0]["pending_create"].is_object());
+    }
+
+    fn keep(_: &Value) -> Result<()> {
+        Ok(())
+    }
+    #[test]
+    fn https_uses_bundled_tls_provider_and_never_follows_redirects() {
+        use std::io::{Read, Write};
+        let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let tls_addr = tls.local_addr().unwrap();
+        std::thread::spawn(move || while tls.accept().is_ok() {});
+        let c = json!({"url":format!("wss://{tls_addr}/v2/ws"),"token":"test-only"});
+        assert!(GroupHttp { local: false }
+            .call(&c, "GET", "/group", None, None)
+            .is_err());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0; 4096];
+            let _ = socket.read(&mut buf).unwrap();
+            socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/stolen\r\nContent-Length: 0\r\n\r\n").unwrap();
+        });
+        let c = json!({"url":format!("ws://{addr}/v2/ws"),"token":"test-only"});
+        assert!(matches!(
+            GroupHttp { local: true }.call(&c, "GET", "/group", None, None),
+            Err(Error::Http(302))
+        ));
+        server.join().unwrap();
+    }
+    #[test]
+    fn local_server_group_lifecycle() {
         struct Server(std::process::Child, std::path::PathBuf);
         impl Drop for Server {
             fn drop(&mut self) {
@@ -1124,7 +1434,7 @@ mod tests {
             eprintln!("skipped: prebuilt relay unavailable");
             return;
         }
-        let data = std::env::temp_dir().join(format!("relay-rust-group-{}", random(16).unwrap()));
+        let data = std::env::temp_dir().join(format!("relay-rust-group-{}", random().unwrap()));
         std::fs::create_dir(&data).unwrap();
         let credential = data.join("bootstrap.json");
         let password = "{{SECRET_ovfdztxk}}";
@@ -1175,60 +1485,59 @@ mod tests {
         let _server = Server(proc, data);
         let mut ready = false;
         for _ in 0..100 {
-            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            if std::net::TcpStream::connect(addr).is_ok() {
                 ready = true;
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            std::thread::sleep(std::time::Duration::from_millis(30));
         }
         assert!(ready);
         let url = format!("ws://{addr}/v2/ws");
-        let config = |device: &str| json!({"url":url,"password":password,"app":"example","device":device,"secret_key":random(32).unwrap(),"trusted_peers":{}});
+        let config = |device: &str| json!({"url":url,"password":password,"app":"example","device":device,"secret_key":random().unwrap()});
+        let groups = |config: Value| Groups {
+            config,
+            api: GroupHttp { local: true },
+            save: Box::leak(Box::new(keep)),
+            local: true,
+        };
         let mut initial = config("bootstrap-manager");
         initial["group"] = json!("bootstrap-test");
-        let mut boot = Groups::new(initial, true).unwrap();
-        boot.bootstrap(&code, "Bootstrap").await.unwrap();
-        boot.refresh().await.unwrap();
-        let mut a = Groups::new(config("creator"), true).unwrap();
-        a.prepare_create("Devices", "Creator").unwrap();
-        a.create().await.unwrap();
-        let inv = a.invite("auto", true).await.unwrap();
-        assert!(inv["short_link"].as_str().unwrap().contains('.'));
-        assert!(inv.get("password").is_none());
+        let mut boot = groups(initial);
+        boot.bootstrap(&code, "Bootstrap").unwrap();
+        boot.refresh().unwrap();
+        let mut a = groups(config("creator"));
+        a.create("Devices", "Creator").unwrap();
+        let link = a.invite("auto").unwrap();
+        assert!(link.contains('.'), "the link carries the access password");
         // A fresh device without a configured password learns it from the scanned link.
         let mut c = config("phone");
         c.as_object_mut().unwrap().remove("password");
-        c["group"] = a.config["group"].clone();
-        let mut b = Groups::new(c, true).unwrap();
-        let resolved = b
-            .resolve_invitation(inv["short_link"].as_str().unwrap())
-            .await
-            .unwrap();
+        let mut b = groups(c);
+        let resolved = b.resolve(&link, None).unwrap();
         assert_eq!(resolved["password"], password);
-        b.join(&resolved, "Phone").await.unwrap();
+        assert!(b.join(resolved, "Phone").unwrap());
         assert_eq!(b.config["password"], password);
-        assert!(b.finish_join().await.unwrap());
-        a.refresh().await.unwrap();
-        // Manual admission: the manager approves the signed join request.
-        let manual = a.invite("manual", true).await.unwrap();
-        let mut c = config("tablet");
-        c["group"] = a.config["group"].clone();
-        let mut t = Groups::new(c, true).unwrap();
-        let resolved = t
-            .resolve_invitation(manual["short_link"].as_str().unwrap())
-            .await
-            .unwrap();
-        t.join(&resolved, "Tablet").await.unwrap();
-        assert!(!t.finish_join().await.unwrap());
-        let request = a.pending(&manual).await.unwrap();
-        a.approve(&manual, &request, false).await.unwrap();
-        assert!(t.finish_join().await.unwrap());
+        a.refresh().unwrap();
+        assert!(
+            a.config.get("issued_invitation").is_none(),
+            "a spent invitation retires"
+        );
+        // Manual admission: both sides compare the code, then the manager approves.
+        let manual = a.invite("manual").unwrap();
+        let mut t = groups(config("tablet"));
+        let resolved = t.resolve(&manual, None).unwrap();
+        assert!(!t.join(resolved, "Tablet").unwrap());
+        a.pending().unwrap();
+        assert_eq!(a.code().unwrap(), t.code().unwrap());
+        let code = a.code().unwrap();
+        a.approve(&code, false).unwrap();
+        assert!(t.finish_join().unwrap());
         // Group members exchange an end-to-end encrypted file over /v2/files.
         let options = crate::Options {
             allow_local_test: true,
             password: Some(password.into()),
         };
-        let identity = |g: &Groups| {
+        let identity = |g: &Groups<GroupHttp>| {
             crate::Identity::new(
                 "example",
                 g.config["group"].as_str().unwrap(),
@@ -1241,8 +1550,12 @@ mod tests {
             )
             .unwrap()
         };
-        a.refresh().await.unwrap();
+        a.refresh().unwrap();
         let (ia, it) = (identity(&a), identity(&t));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let files_a = crate::RelayFiles::for_relay_endpoint(
             &url,
             a.config["token"].as_str().unwrap(),
@@ -1255,7 +1568,7 @@ mod tests {
             options,
         )
         .unwrap();
-        let dir = std::env::temp_dir().join(format!("relay-rust-files-{}", random(16).unwrap()));
+        let dir = std::env::temp_dir().join(format!("relay-rust-files-{}", random().unwrap()));
         std::fs::create_dir(&dir).unwrap();
         let source = dir.join("source.bin");
         std::fs::write(&source, b"v2 file payload ".repeat(4096)).unwrap();
@@ -1268,11 +1581,15 @@ mod tests {
             json!({"name":"source.bin"}),
         )
         .unwrap();
-        files_a.upload(&descriptor, &staged).await.unwrap();
-        let inbox = files_t.inbox().await.unwrap();
+        runtime
+            .block_on(files_a.upload(&descriptor, &staged))
+            .unwrap();
+        let inbox = runtime.block_on(files_t.inbox()).unwrap();
         assert_eq!(inbox.len(), 1);
         let downloaded = dir.join("download.enc");
-        files_t.download(&inbox[0], &downloaded).await.unwrap();
+        runtime
+            .block_on(files_t.download(&inbox[0], &downloaded))
+            .unwrap();
         let output = dir.join("out.bin");
         let meta = crate::decrypt_file(&it, "creator", &inbox[0], &downloaded, &output).unwrap();
         assert_eq!(meta["name"], "source.bin");
@@ -1280,49 +1597,18 @@ mod tests {
             std::fs::read(&output).unwrap(),
             std::fs::read(&source).unwrap()
         );
-        files_t.delete(&inbox[0].id).await.unwrap();
-        assert!(files_t.inbox().await.unwrap().is_empty());
+        runtime.block_on(files_t.delete(&inbox[0].id)).unwrap();
+        assert!(runtime.block_on(files_t.inbox()).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
-        t.prepare_exit(false).await.unwrap();
-        t.exit().await.unwrap();
-        a.refresh().await.unwrap();
-        b.rename("phone", "Renamed").await.unwrap();
-        a.refresh().await.unwrap();
-        b.prepare_exit(false).await.unwrap();
-        b.exit().await.unwrap();
-        a.refresh().await.unwrap();
-        a.prepare_exit(true).await.unwrap();
-        a.exit().await.unwrap();
-    }
-    #[tokio::test]
-    async fn http_does_not_follow_redirects() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let destination = target.local_addr().unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = [0; 4096];
-            let _ = socket.read(&mut buf).await.unwrap();
-            socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{destination}/stolen\r\nContent-Length: 0\r\n\r\n").as_bytes()).await.unwrap();
-        });
-        let g = Groups::new(
-            json!({"url":format!("ws://{addr}/v2/ws"),"token":"test-only"}),
-            true,
-        )
-        .unwrap();
-        assert_eq!(
-            g.call(reqwest::Method::GET, "/group", None, None)
-                .await
-                .unwrap_err(),
-            Error::Http(302)
-        );
-        task.await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), target.accept())
-                .await
-                .is_err()
-        );
+        t.exit(false).unwrap();
+        a.refresh().unwrap();
+        b.rename("phone", "Renamed").unwrap();
+        a.refresh().unwrap();
+        // The last manager cannot leave members behind; it can disband.
+        assert!(matches!(a.check_exit(false), Err(Error::Relay(c)) if c == "LastManager"));
+        b.exit(false).unwrap();
+        a.refresh().unwrap();
+        a.exit(true).unwrap();
+        assert_eq!(a.config["exit_completed"], true);
     }
 }

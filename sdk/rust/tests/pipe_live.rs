@@ -1,7 +1,9 @@
 //! `/v2/ws` message client against a real loopback relay (`COMMON_RELAY_BINARY`, default
 //! `build/common-relay`; build it with `go build -o build/common-relay ./cmd/common-relay`).
 //! Skipped when the binary is missing. Test identities only, in a temporary directory.
-use common_relay::{generate_key_pair, policy, Error, Groups, Identity, Journal, Options, Pipe};
+use common_relay::{
+    generate_key_pair, policy, Error, GroupHttp, Groups, Identity, Journal, Options, Pipe,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -96,27 +98,29 @@ fn options() -> Options {
     }
 }
 
+fn groups(config: Value) -> Groups<'static, GroupHttp> {
+    Groups {
+        config,
+        api: GroupHttp { local: true },
+        save: Box::leak(Box::new(|_: &Value| Ok(()))),
+        local: true,
+    }
+}
+
 /// Two devices enrolled through the signed group flow; returns their configs.
-async fn enroll(url: &str) -> (Value, Value) {
+fn enroll(url: &str) -> (Value, Value) {
     let device = |name: &str| {
-        let (secret, public) = generate_key_pair().unwrap();
-        json!({"url":url,"password":ACCESS,"app":"example","device":name,"secret_key":secret,"public_key":public,"trusted_peers":{}})
+        let (secret, _public) = generate_key_pair().unwrap();
+        json!({"url":url,"password":ACCESS,"app":"example","device":name,"secret_key":secret})
     };
-    let mut owner = Groups::new(device("mac"), true).unwrap();
-    owner.prepare_create("Test", "mac").unwrap();
-    owner.create().await.unwrap();
-    let mut peer_config = device("phone");
-    peer_config["group"] = owner.config["group"].clone();
-    let mut peer = Groups::new(peer_config, true).unwrap();
-    let invitation = owner.invite("auto", true).await.unwrap();
-    let resolved = peer
-        .resolve_invitation(invitation["short_link"].as_str().unwrap())
-        .await
-        .unwrap();
-    peer.join(&resolved, "phone").await.unwrap();
-    assert!(peer.finish_join().await.unwrap());
-    owner.refresh().await.unwrap();
-    peer.refresh().await.unwrap();
+    let mut owner = groups(device("mac"));
+    owner.create("Test", "mac").unwrap();
+    let mut peer = groups(device("phone"));
+    let link = owner.invite("auto").unwrap();
+    let resolved = peer.resolve(&link, None).unwrap();
+    assert!(peer.join(resolved, "phone").unwrap());
+    owner.refresh().unwrap();
+    peer.refresh().unwrap();
     (owner.config.clone(), peer.config.clone())
 }
 
@@ -170,22 +174,22 @@ async fn messages_offline_delivery_undecryptable_and_rejected_credentials() {
         eprintln!("COMMON_RELAY_BINARY not built; skipping");
         return;
     };
-    let (mac, phone) = enroll(&relay.url).await;
+    let url = relay.url.clone();
+    let (mac, phone) = tokio::task::spawn_blocking(move || enroll(&url))
+        .await
+        .unwrap();
     // Offline exit checks against the verified roster: the last manager cannot abandon a
     // member (disband instead) and only a manager can disband.
-    let (owner, member) = (
-        Groups::new(mac.clone(), true).unwrap(),
-        Groups::new(phone.clone(), true).unwrap(),
-    );
+    let (owner, member) = (groups(mac.clone()), groups(phone.clone()));
     assert_eq!(
         owner.check_exit(false).unwrap_err(),
-        Error::Invalid("last manager cannot leave other members; disband instead")
+        Error::Relay("LastManager".into())
     );
     assert!(owner.check_exit(true).is_ok());
     assert!(member.check_exit(false).is_ok());
     assert_eq!(
         member.check_exit(true).unwrap_err(),
-        Error::Invalid("only a manager can disband the group")
+        Error::Relay("ManagerRequired".into())
     );
     let journals = relay.dir.join("journals");
     let a = connect(&relay, &mac, true, &journals.join("a")).await;

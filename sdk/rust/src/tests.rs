@@ -400,13 +400,11 @@ async fn access_password_validated_and_redacted() {
             Err(Error::Invalid(_))
         ));
         let config = serde_json::json!({"url": "ws://127.0.0.1:9/v2/ws", "password": bad});
-        assert!(crate::Groups::new(config, true).is_err());
+        assert!(crate::GroupHttp { local: true }.check(&config).is_err());
     }
-    assert!(crate::Groups::new(
-        serde_json::json!({"url": "ws://127.0.0.1:9/v2/ws", "password": 5}),
-        true
-    )
-    .is_err());
+    assert!(crate::GroupHttp { local: true }
+        .check(&serde_json::json!({"url": "ws://127.0.0.1:9/v2/ws", "password": 5}))
+        .is_err());
     let options = Options {
         allow_local_test: true,
         password: Some(RELAY_PASSWORD.to_owned()),
@@ -444,22 +442,30 @@ async fn capture_http() -> (String, tokio::task::JoinHandle<String>) {
 
 #[tokio::test]
 async fn groups_send_access_header_only_when_configured() {
+    let call = |c: serde_json::Value| {
+        tokio::task::spawn_blocking(move || {
+            crate::GroupApi::call(
+                &crate::GroupHttp { local: true },
+                &c,
+                "GET",
+                "/group",
+                None,
+                None,
+            )
+        })
+    };
     let (url, task) = capture_http().await;
-    let g = crate::Groups::new(
-        serde_json::json!({"url": url, "password": RELAY_PASSWORD}),
-        true,
-    )
-    .unwrap();
-    g.call(reqwest::Method::GET, "/group", None, None)
+    call(serde_json::json!({"url": url, "password": RELAY_PASSWORD}))
         .await
+        .unwrap()
         .unwrap();
     let request = task.await.unwrap();
     assert!(request.contains(&format!("relay-access: {}", RELAY_PASSWORD.to_lowercase())));
 
     let (url, task) = capture_http().await;
-    let g = crate::Groups::new(serde_json::json!({"url": url}), true).unwrap();
-    g.call(reqwest::Method::GET, "/group", None, None)
+    call(serde_json::json!({"url": url}))
         .await
+        .unwrap()
         .unwrap();
     assert!(!task.await.unwrap().contains("relay-access"));
 }
@@ -485,7 +491,9 @@ fn retired_v1_endpoints_rejected() {
         "wss://relay.example.com/",
     ] {
         assert!(
-            crate::Groups::new(serde_json::json!({ "url": url }), false).is_err(),
+            crate::GroupHttp { local: false }
+                .check(&serde_json::json!({ "url": url }))
+                .is_err(),
             "{url}"
         );
         assert!(crate::RelayFiles::for_relay_endpoint(url, &token(), Options::default()).is_err());
@@ -496,9 +504,7 @@ fn retired_v1_endpoints_rejected() {
         Options::default()
     )
     .is_err());
-    assert!(crate::Groups::new(
-        serde_json::json!({"url": "wss://relay.example.com/v2/ws"}),
-        false
-    )
-    .is_ok());
+    assert!(crate::GroupHttp { local: false }
+        .check(&serde_json::json!({"url": "wss://relay.example.com/v2/ws"}))
+        .is_ok());
 }

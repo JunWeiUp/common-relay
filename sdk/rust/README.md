@@ -30,14 +30,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ## 设备组
 
-`Groups::new(config, allow_local_test)` 使用与 Go/Python/Dart 相同的 JSON 配置（`app`、`group`、`device`、`secret_key`、`trusted_peers`、`url`（`wss://host/v2/ws`）、`password`、`token` 及 `pending_*` 状态）。每次调用后，应用必须把 `groups.config` 持久化到私有存储。
+`Groups { config, api, save, local }` 是持久化的设备组状态机，使用与 Go/Python/Dart 相同的 JSON 配置（`app`、`group`、`device`、`secret_key`、`trusted_peers`、`url`（`wss://host/v2/ws`）、`password`、`token` 及 `pending_*` 状态）。`save` 回调在每个可重试步骤**发出请求之前**持久化已签名草稿，回复丢失或重启后会继续同一条签名记录，而不是重新签名；`api` 是 `GroupApi` 传输（`GroupHttp` 为阻塞 HTTPS 实现，可注入测试或自定义传输）。调用是阻塞的，请放在后台线程（或 `spawn_blocking`）。
 
-- 创建/初始化：`prepare_create(group_name, device_name)` 先生成并保存已签名草稿，再 `create()`（服务器须以 `--self-service-apps` 为该应用开启）；运维初始化用 `bootstrap(code, name)`（`common-relay group-bootstrap`）。
-- 邀请：`invite(mode, compact)`（`"manual"` / `"auto"`，`compact` 时返回 `common-relay://host/v2/i/...` 短链接）、`resolve_invitation(link)`、`pending`、`approve(invitation, request, manager)`、`cancel`。
-- 取消：丢弃组操作的 future（或 `tokio::time::timeout`）即中止进行中的 HTTP 请求。
-- 加入：`join(invitation, name)` 后由应用驱动 `finish_join()`；auto 模式由扫码方验证授权链后自行签署入组，邀请端可离线。
-- 成员变更：`refresh`、`remove`、`rename`、`prepare_exit(disband)` + `exit()`（`leave()` / `disband()` 为便捷封装）。`check_exit(disband)` 离线校验退出是否合法（最后一位管理员不能撇下其他成员，只有管理员能解散），便于先清本地再尽力通知服务器。
-- HTTP 失败统一为 `Error::Http(status)`。
+- 创建/初始化：`create(group_name, device_name)`（服务器须以 `--self-service-apps` 为该应用开启）；运维初始化用 `bootstrap(code, name)`（`common-relay group-bootstrap`）。
+- 邀请：`invite(mode)`（`"manual"` / `"auto"`）返回 `common-relay://host/v2/i/...` 短链接（可再次调用 `publish()` 取回）；已有效的邀请会复用，被用于入组后在下一次 `refresh` 自动退役。手动模式：`pending()` 拉取加入申请，双方核对 `code()` 后 `approve(code, manager)`；`cancel()` 撤销。批准在回复丢失时可从已签名草稿精确恢复，不会把旧确认改签到别的申请上（`ApprovalConflict`）。
+- 加入：`resolve(link, typed_password)` / `resolve_with(link, typed, override)` 解析短链接，`join(invitation, name)` 后由 `finish_join()` 完成（auto 模式在 `join` 内即完成，`finish_join` 幂等返回 `true`）。
+- 成员变更：`refresh`、`remove`、`rename`、`exit(disband)`。`check_exit(disband)` 离线校验退出是否合法（最后一位管理员不能撇下其他成员，只有管理员能解散），便于先清本地再尽力通知服务器。
+- 错误：业务失败为 `Error::Relay(code)`（`ManagerRequired`、`ApprovalPending`、`ApprovalConflict`、`AnotherJoinPending`、`VerificationCodeMismatch`、`LastManager`），HTTP 失败为 `Error::Http(status)`，数据不合法为 `Error::Invalid`。
 
 所有签名载荷执行与服务端相同的字节级严格校验，签名链逐条验证（含委托 `authorization`），不信任未验证的 HTTP 成员列表。仅支持 HTTPS（测试选项只允许 `127.0.0.1` 的明文回环），拒绝重定向。若宿主进程同时启用 rustls 的 aws-lc-rs 与 ring，需先自行调用 `CryptoProvider::install_default`。
 
@@ -46,4 +45,4 @@ cd sdk/rust
 cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
 ```
 
-测试覆盖共享密码/设备组/短邀请/v2 封存向量（含严格载荷与委托授权）、secretstream 与 libsodium 已知答案、文件加密与篡改拒绝、HTTPS TLS 初始化与重定向拒绝、v1 地址拒绝，并在 `build/common-relay`（先 `go build -o build/common-relay ./cmd/common-relay`）临时回环服务上验证 v2 设备组全流程（自助创建、auto/manual 短链接邀请、批准、改名、退出、解散）与组成员之间的 `/v2/files` 上传/收件箱/下载/解密/删除；`tests/pipe_live.rs` 验证 `/v2/ws` 消息客户端（在线名单、离线投递与日志重发、无法解密消息上报且不断连并在信任后重投、错误密码分类）与 `check_exit`。`examples/group_probe.rs` 是 `scripts/group-interop.py` 使用的互通探针。均不是公网或长期运行验收。
+测试覆盖共享密码/设备组/短邀请/v2 封存向量（含严格载荷与委托授权）、secretstream 与 libsodium 已知答案、文件加密与篡改拒绝、HTTPS TLS 初始化与重定向拒绝、v1 地址拒绝，并在 `build/common-relay`（先 `go build -o build/common-relay ./cmd/common-relay`）临时回环服务上验证 v2 设备组全流程（自助创建、auto/manual 短链接邀请、批准、改名、退出、解散）与组成员之间的 `/v2/files` 上传/收件箱/下载/解密/删除；`tests/pipe_live.rs` 验证 `/v2/ws` 消息客户端（在线名单、离线投递与日志重发、无法解密消息上报且不断连并在信任后重投、错误密码分类）与 `check_exit`。`examples/group_probe.rs` 是 `scripts/group-interop.py` 使用的互通探针。`groups` 单元测试用内存传输验证草稿先于请求落盘。均不是公网或长期运行验收。

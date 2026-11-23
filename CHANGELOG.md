@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Breaking（Rust SDK）：持久化设备组状态机
+
+- `Groups` 改为 PasswordVault 已在四端使用的持久化状态机：`Groups { config, api, save, local }`，每个可重试步骤先经 `save` 落盘再发请求，回复丢失/重启后继续同一签名记录；批准可精确恢复、已用邀请自动退役、退出不可撤销。传输通过 `GroupApi` 注入，`GroupHttp` 为阻塞 HTTPS 实现。配置 JSON 格式不变。
+- 签名改用规范 JSON，验签改为严格模式（`verify_strict`），状态迁移校验补全（名称不可改、成员密钥不可原地补填或轮换等）。
+- 接口变化：`prepare_create`+`create` → `create(name, device)`；`invite(mode, compact)` → `invite(mode)`（返回短链接）；`resolve_invitation` → `resolve`；`approve(inv, request, manager)` → `pending()` + `approve(code, manager)`；`prepare_exit`+`exit`/`leave`/`disband` → `exit(disband)`；调用改为阻塞。业务错误改为 `Error::Relay(code)`。`examples/group_probe.rs` 已迁移，`scripts/group-interop.py --only rust` 通过。
+
 ### Rust SDK：`/v2/ws` 消息客户端与客户端默认策略
 
 - 新增 `Pipe`（`/v2/ws` 消息客户端）与 `Journal`（离线投递日志）：在线名单、离线消息与重试幂等、确认、重放丢弃；无法解密的信封以 `undecryptable` 事件上报而不断开连接（否则服务器会在每次连接时无限重投）。
