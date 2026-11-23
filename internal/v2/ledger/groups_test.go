@@ -205,3 +205,56 @@ func TestInvitationLinkAndAutoRoutesOverV2(t *testing.T) {
 		t.Fatalf("group list: %d", status)
 	}
 }
+
+// A spent invitation stays for replay until it expires but no longer counts toward the
+// per-group cap of 16 open invitations.
+func TestSpentInvitationDoesNotCountTowardCapacity(t *testing.T) {
+	f := setup(t)
+	pk, sk, _ := ed25519.GenerateKey(nil)
+	token := RandomID() + RandomID()
+	secret := RandomID() + RandomID()
+	m := Member{Device: "manager", Name: "Manager", PublicKey: strings.Repeat("01", 32), SigningKey: hex.EncodeToString(pk), Manager: true}
+	g := GroupState{Version: 1, App: "example", Group: "test", Revision: 1, Members: []Member{m}}
+	initial := groupSigned(t, g, m.Device, sk)
+	if e := f.s.Store.GroupBootstrap(g.App, g.Group, secret); e != nil {
+		t.Fatal(e)
+	}
+	if status, _ := groupRequest(t, f, "POST", "/v2/group/bootstrap", "Bootstrap "+secret, map[string]any{"entry": initial, "token_hash": hashToken(token)}); status != 200 {
+		t.Fatalf("bootstrap: %d", status)
+	}
+	invite := func() (int, string, string) {
+		invitationSecret := RandomID() + RandomID()
+		status, data := groupRequest(t, f, "POST", "/v2/group/invitations", "Bearer "+token, map[string]string{"secret_hash": hashToken(invitationSecret)})
+		var invitation struct {
+			ID string `json:"id"`
+		}
+		json.Unmarshal(data, &invitation)
+		return status, invitation.ID, invitationSecret
+	}
+	// Spend one invitation: request, then the manager's approval commits it.
+	status, id, invitationSecret := invite()
+	if status != 200 {
+		t.Fatal(status)
+	}
+	p, k, _ := ed25519.GenerateKey(nil)
+	j := JoinRequest{Version: 1, App: g.App, Group: g.Group, Invitation: id, TokenHash: hashToken(RandomID() + RandomID()), Member: Member{Device: "phone", Name: "phone", PublicKey: strings.Repeat("02", 32), SigningKey: hex.EncodeToString(p)}}
+	request := groupSigned(t, j, "phone", k)
+	if status, _ := groupRequest(t, f, "POST", "/v2/enroll/"+id, "Invitation "+invitationSecret, request); status != 200 {
+		t.Fatalf("enroll: %d", status)
+	}
+	raw, _ := request.bytes()
+	prior, _ := initial.bytes()
+	next := g
+	next.Revision, next.Previous, next.Members, next.Invitation, next.RequestHash = 2, digest(prior), []Member{m, j.Member}, id, digest(raw)
+	if status, _ := groupRequest(t, f, "PUT", "/v2/group", "Bearer "+token, groupSigned(t, next, m.Device, sk)); status != 200 {
+		t.Fatalf("approve: %d", status)
+	}
+	for i := 0; i < 16; i++ {
+		if status, _, _ := invite(); status != 200 {
+			t.Fatalf("open invitation %d after a spent one: %d", i+1, status)
+		}
+	}
+	if status, _, _ := invite(); status != 429 {
+		t.Fatalf("17th open invitation: %d, want 429", status)
+	}
+}

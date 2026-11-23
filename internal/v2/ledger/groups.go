@@ -384,7 +384,9 @@ func (s *Server) invitation(w http.ResponseWriter, r *http.Request, d Device) {
 			return
 		}
 		var n int
-		err = tx.QueryRow("SELECT count(*) FROM v2_ledger_invites WHERE app=? AND grp=?", d.App, d.Group).Scan(&n)
+		// Spent invitations stay until expiry so a joiner can replay its exact commit after a lost
+		// reply, but they no longer count toward the per-group cap.
+		err = tx.QueryRow("SELECT count(*) FROM v2_ledger_invites WHERE app=? AND grp=? AND approved=''", d.App, d.Group).Scan(&n)
 		if err != nil || n >= 16 {
 			http.Error(w, "invitation capacity", 429)
 			return

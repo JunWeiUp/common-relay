@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 服务端：已用邀请不再占用每组邀请上限
+
+- 已被入组提交使用的邀请（手动批准或自动入组）仍保留到过期，以便加入方在丢失回复时幂等重放同一提交；但不再计入每组 16 个未用邀请的上限（`internal/v2/ledger/groups.go`），新增 `TestSpentInvitationDoesNotCountTowardCapacity`。
+
 ### 文档与测试：v2 协议规范与共享测试向量
 
 - `protocol/v2/README.md` 成为唯一权威线协议规范（按服务端代码编写）：鉴权头与凭据类别、`/v2/ws` 帧与全部事件/错误码、保活与背压、Box 路由（queue/object/ephemeral、单条/批量 ACK、CAS/ETag）、签名组账本（记录格式、签名与哈希链、严格载荷、手动/自动邀请、短邀请、初始化、自助创建、退出/解散）、端到端文件、`crs1` 封存格式、`/v2/me`、管理面与插件 `if_version`、边缘插件鉴权、限额与状态码。v1 协议文档删除，`protocol/README.md` 只留索引与历史说明。
