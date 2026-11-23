@@ -22,30 +22,30 @@ func TestV2ClientAndRelayHubEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, deskTok, err := admin.CreateDevice(ctx, "hub-host", "Mac Hub", fakePubKey(), true)
+	_, deskTok, err := admin.CreateDevice(ctx, "hub-host", "Hub Host", fakePubKey(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, pvTok, err := admin.CreateDevice(ctx, "pv-mac", "PV Mac", fakePubKey(), false)
+	_, vaultTok, err := admin.CreateDevice(ctx, "vault-dev", "Vault Device", fakePubKey(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := admin.CreateSpace(ctx, "personal", "Personal", "bridge_allowed"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.CreateSpace(ctx, "pv", "VaultApp", "strict_e2e"); err != nil {
+	if _, err := admin.CreateSpace(ctx, "vault", "VaultApp", "strict_e2e"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := admin.SetSpaceMember(ctx, "personal", "hub-host", "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.SetSpaceMember(ctx, "pv", "pv-mac", "member"); err != nil {
+	if _, err := admin.SetSpaceMember(ctx, "vault", "vault-dev", "member"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.SetSpaceMember(ctx, "pv", "hub-host", "archive_observer"); err != nil {
+	if _, err := admin.SetSpaceMember(ctx, "vault", "hub-host", "archive_observer"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.CreateBox(ctx, "pv", v2client.Box{Name: "vault", Mode: "object", KeepVersions: 5}); err != nil {
+	if _, err := admin.CreateBox(ctx, "vault", v2client.Box{Name: "vault", Mode: "object", KeepVersions: 5}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,7 +56,7 @@ func TestV2ClientAndRelayHubEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Start Hub RelayHub (single connection handling both personal Drop queue & pv archive_observer).
+	// Start RelayHub (single connection handling both personal Drop queue & vault archive_observer).
 	deskClient, err := v2client.New(v2client.Config{
 		BaseURL: e.ts.URL, AccessPassword: e.access, Token: deskTok, AllowLocal: true,
 	})
@@ -71,11 +71,11 @@ func TestV2ClientAndRelayHubEndToEnd(t *testing.T) {
 		return nil
 	})
 
-	pvArchived := make(chan string, 1)
-	hub.SubscribeObject("pv", "vault", func(ctx context.Context, spaceID, boxName, key string, version int64) {
+	vaultArchived := make(chan string, 1)
+	hub.SubscribeObject("vault", "vault", func(ctx context.Context, spaceID, boxName, key string, version int64) {
 		raw, _, ver, err := deskClient.GetBoxObject(ctx, spaceID, boxName, key)
 		if err == nil && ver == version {
-			pvArchived <- string(raw)
+			vaultArchived <- string(raw)
 		}
 	})
 
@@ -112,21 +112,21 @@ func TestV2ClientAndRelayHubEndToEnd(t *testing.T) {
 		t.Fatal("timed out waiting for hub drop delivery")
 	}
 
-	// 2. VaultApp client writes new encrypted object -> Hub archive_observer auto-fetches ciphertext!
-	pvClient, err := v2client.New(v2client.Config{
-		BaseURL: e.ts.URL, AccessPassword: e.access, Token: pvTok, AllowLocal: true,
+	// 2. Vault client writes new encrypted object -> Hub archive_observer auto-fetches ciphertext!
+	vaultClient, err := v2client.New(v2client.Config{
+		BaseURL: e.ts.URL, AccessPassword: e.access, Token: vaultTok, AllowLocal: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pvClient.PutBoxObject(ctx, "pv", "vault", "main.pvenc", "application/octet-stream", "none", strings.NewReader("PV_OPAQUE_CIPHERTEXT_V1")); err != nil {
+	if _, err := vaultClient.PutBoxObject(ctx, "vault", "vault", "main.enc", "application/octet-stream", "none", strings.NewReader("VAULT_OPAQUE_CIPHERTEXT_V1")); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
-	case got := <-pvArchived:
-		if got != "PV_OPAQUE_CIPHERTEXT_V1" {
-			t.Fatalf("unexpected pv archived bytes: %q", got)
+	case got := <-vaultArchived:
+		if got != "VAULT_OPAQUE_CIPHERTEXT_V1" {
+			t.Fatalf("unexpected vault archived bytes: %q", got)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for archive_observer wake-up")

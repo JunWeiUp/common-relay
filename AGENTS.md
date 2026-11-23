@@ -11,7 +11,7 @@
 
 ## v2 通用聚合架构（`internal/v2/`）
 
-- 架构规格与插件扩展配方见 [docs/V2-ARCHITECTURE.md](docs/V2-ARCHITECTURE.md)。
+- 线协议与接口规格见 [protocol/v2/README.md](protocol/v2/README.md)。
 - 目录边界：`internal/v2/core/`（`Identity & Space`、`Pipe`、`Box` 四原语内核）、`internal/v2/ledger/`（签名组账本、邀请/入组、文件平面、旧库导入与 `check`）、`internal/v2/plugin/`（插件接口与信任等级校验）、`internal/v2/plugins/{drop,webhook,webdav,mcpedge}/`（薄边缘协议插件）、`internal/v2/server/`（`/v2/*` 设备面、`/v2/admin/*` 管理员面、`/edge/*` 插件面）。
 - 新增外部协议一律在 `internal/v2/plugins/<name>/` 实现 `plugin.Plugin` 接口并声明 `RequiredTrust()`，禁止修改内核硬编码业务协议，禁止绕过 `Space.TrustLevel` 校验。
 - 插件实现 `plugin.Configurable`（`ConfigSchema` 标记 `Secret` 字段、`ValidateConfig` 拒绝未知键）；桥接写入一律走 `host.PutBridgedItem`（支持 `seal_public_key` 封存），限流键用 `host.SourceKey`，RPC 用 `host.CallRPCTimeout`。

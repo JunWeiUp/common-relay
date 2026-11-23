@@ -17,11 +17,11 @@ type TrustLevel string
 
 const (
 	// TrustStrictE2E forbids any plaintext bridge plugin from binding to this Space.
-	// Used by VaultApp and SyncApp.
+	// Used by strict end-to-end encrypted apps.
 	TrustStrictE2E TrustLevel = "strict_e2e"
 
 	// TrustClientEncrypted allows opaque client-encrypted passthrough plugins
-	// (such as bidirectional WebDAV for VaultApp backups or encrypted Obsidian vaults).
+	// (such as bidirectional WebDAV for encrypted backups or synced vaults).
 	TrustClientEncrypted TrustLevel = "client_encrypted"
 
 	// TrustBridgeAllowed allows server-bridged ingress plugins (WebDAV queue, Webhook, Drop)
@@ -77,10 +77,10 @@ const (
 	ModeQueue BoxMode = "queue"
 
 	// ModeObject is a versioned opaque object store with ETag/CAS optimistic locking
-	// and bounded version retention (e.g. VaultApp sync, bidirectional WebDAV).
+	// and bounded version retention (e.g. encrypted vault sync, bidirectional WebDAV).
 	ModeObject BoxMode = "object"
 
-	// ModeEphemeral is a TTL-bounded large blob transfer box (up to 512 MiB, e.g. SyncApp offline transfer).
+	// ModeEphemeral is a TTL-bounded large blob transfer box (up to 512 MiB, e.g. offline file transfer).
 	ModeEphemeral BoxMode = "ephemeral"
 )
 

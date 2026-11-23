@@ -21,10 +21,10 @@ python3 -m venv .venv
 
 示例显式开启 `allow_local_test`，仅用于回环地址。实际部署使用 WSS；公钥和邀请应经可信渠道交付。实际应用应在发出接入请求前持久化身份和待重试申请，成功后保存 SDK 更新后的配置；本示例不实现崩溃恢复界面。令牌、密钥及完整邀请不应写入日志。
 
-Swift、Dart 和 Java 的设备组调用还可参考 `sdk/swift/Examples/RelayProbe`、`sdk/dart/bin/probe.dart` 与 `sdk/java/src/test/java/io/github/junweiup/commonrelay/`。运行这些探针的隔离测试入口见[开发指南](../docs/DEVELOPMENT.md)。
+Swift、Dart 和 Java 的设备组调用还可参考 `sdk/swift/Examples/RelayProbe`、`sdk/dart/bin/probe.dart` 与 `sdk/java/src/test/java/io/github/junweiup/commonrelay/`。
 
 ## 其他语言
 
 - [Go 客户端](../sdk/go/README.md)、[Rust 客户端](../sdk/rust/README.md)：先按各 SDK 文档准备工具链。
 
-这些测试探针只允许回环测试配置；正式应用从私有存储载入身份并使用 WSS。设备组互通见 [开发指南](../docs/DEVELOPMENT.md#新增语言-sdk)。
+这些测试探针只允许回环测试配置；正式应用从私有存储载入身份并使用 WSS。设备组互通可执行 `scripts/group-interop.py`。

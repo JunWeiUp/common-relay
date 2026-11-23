@@ -42,8 +42,8 @@ type objSub struct {
 	handler ObjectChangeHandler
 }
 
-// Hub maintains a single persistent /v2/ws connection for a device (e.g. hub-daemon
-// Hub), combining real-time box.changed wake-ups with cursor-based catch-up
+// Hub maintains a single persistent /v2/ws connection for a device (e.g. a local
+// hub daemon), combining real-time box.changed wake-ups with cursor-based catch-up
 // on reconnect so no module needs its own polling loop or relay.json.
 type Hub struct {
 	client *Client

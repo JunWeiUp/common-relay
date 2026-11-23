@@ -36,15 +36,12 @@ def main():
             subprocess.run(['go', 'build', '-trimpath', '-o', str(binary), './cmd/common-relay'],
                            cwd=ROOT, env={**os.environ, 'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': arch}, check=True)
             shutil.copytree(ROOT / 'deploy', stage / 'deploy')
-            (stage / 'docs').mkdir()
-            for doc in ('DEPLOYMENT.md', 'DEVICE-GROUPS.md', 'WEBHOOKS.md'):
-                shutil.copy2(ROOT / 'docs' / doc, stage / 'docs' / doc)
             (stage / 'protocol').mkdir()
             shutil.copy2(ROOT / 'protocol/v2/README.md', stage / 'protocol/README.md')
             shutil.copy2(ROOT / 'LICENSE', stage / 'LICENSE')
             (stage / 'README.txt').write_text(
                 f'Common Relay server {args.version} / linux-{arch}\n'
-                'See docs/DEPLOYMENT.md for installation, configuration, backup and rollback.\n'
+                'See deploy/ and protocol/README.md for deployment and wire protocol details.\n'
                 'Requires Linux, systemd, Nginx, an existing HTTPS site, Python 3 and curl.\n'
                 'Verify the archive against the Release SHA256SUMS before extracting.\n'
                 'Add # common-relay:include inside your HTTPS server block, then run as root:\n'

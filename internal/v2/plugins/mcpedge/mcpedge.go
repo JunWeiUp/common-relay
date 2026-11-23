@@ -33,7 +33,7 @@ import (
 )
 
 type config struct {
-	TargetDevice string `json:"target_device"` // Device ID of local Hub answering "mcp" RPC
+	TargetDevice string `json:"target_device"` // Device ID of target host answering "mcp" RPC
 	PublicBase   string `json:"public_base,omitempty"`
 }
 
@@ -79,12 +79,12 @@ func New() *Plugin {
 func (p *Plugin) ID() string                     { return "mcpedge" }
 func (p *Plugin) RequiredTrust() core.TrustLevel { return core.TrustBridgeAllowed }
 
-// RPCTimeout bounds each forwarded query so stalled hubes release slots.
+// RPCTimeout bounds each forwarded query so stalled target devices release slots.
 const RPCTimeout = 10 * time.Second
 
 func (p *Plugin) ConfigSchema() []plugin.FieldSpec {
 	return []plugin.FieldSpec{
-		{Key: "target_device", Type: "string", Required: true, Description: "device ID of the Hub answering \"mcp\" RPCs"},
+		{Key: "target_device", Type: "string", Required: true, Description: "device ID of the target host answering \"mcp\" RPCs"},
 		{Key: "public_base", Type: "string", Description: "public https base URL used for short-lived photo links"},
 	}
 }
@@ -195,7 +195,7 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 		}
 		defer release()
 		// Match against registered plugin accounts (including legacy shared token) or
-		// delegate per-client ck_* grant verification to the local Hub via RPC.
+		// delegate per-client ck_* grant verification to the target device via RPC.
 		grantName, authStatus := p.authorizeClient(r.Context(), host, binding, cfg, token)
 		if authStatus != 0 {
 			if authStatus == http.StatusUnauthorized {
@@ -266,12 +266,12 @@ func (p *Plugin) EdgeHandler(host *plugin.Host) http.Handler {
 			})
 			rawRes, err := host.CallRPCTimeout(r.Context(), RPCTimeout, binding.SpaceID, cfg.TargetDevice, "mcp", string(fwd))
 			if err != nil {
-				errValue = map[string]any{"code": -32000, "message": "hub offline or unavailable"}
+				errValue = map[string]any{"code": -32000, "message": "target device offline or unavailable"}
 				break
 			}
 			var decoded map[string]any
 			if json.Unmarshal([]byte(rawRes), &decoded) != nil {
-				errValue = map[string]any{"code": -32603, "message": "invalid hub response"}
+				errValue = map[string]any{"code": -32603, "message": "invalid target device response"}
 				break
 			}
 			if q.Method == "tools/call" && cfg.PublicBase != "" {
@@ -315,7 +315,7 @@ func (p *Plugin) authorizeClient(ctx context.Context, host *plugin.Host, binding
 			}
 		}
 	}
-	// Per-client Hub tokens (ck_...) are validated by SHA-256 hash on the local Hub.
+	// Per-client tokens (ck_...) are validated by SHA-256 hash on the target device.
 	if !strings.HasPrefix(token, "ck_") {
 		return "", http.StatusUnauthorized
 	}

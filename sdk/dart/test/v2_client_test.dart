@@ -5,7 +5,7 @@ import 'package:test/test.dart';
 import 'vectors.dart';
 
 void main() {
-  test('matches protocol/v2/vectors.json and SyncApp routing policy', () {
+  test('matches protocol/v2/vectors.json and 3-tier routing policy', () {
     final v = vectors('vectors.json');
     for (final c in v['hash_secret'] as List) {
       expect(RelayV2Client.hashSecret(c['input'] as String), equals(c['sha256']), reason: c['use'] as String);

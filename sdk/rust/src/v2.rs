@@ -1,4 +1,4 @@
-//! Common Relay v2 client module for Rust (tailored for VaultApp).
+//! Common Relay v2 client module for Rust.
 //!
 //! Covers:
 //!   - `Box(object)` opaque client-encrypted sync with `If-Match` CAS optimistic locking
@@ -421,7 +421,7 @@ impl V2Client {
     }
 
     /// Uploads opaque ciphertext into `Box(object)` with optional `If-Match` CAS (`"none"` or ETag).
-    /// Returns `Error::Http(409)` on CAS conflict so VaultApp can merge before retrying.
+    /// Returns `Error::Http(409)` on CAS conflict so callers can merge before retrying.
     pub async fn put_object(
         &self,
         space: &str,

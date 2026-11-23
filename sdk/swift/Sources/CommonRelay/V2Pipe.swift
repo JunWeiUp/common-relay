@@ -126,7 +126,7 @@ public actor RelayV2Stream {
 
 /// Leak-free Common Relay v2 Pipe over `NWConnection` + `NWProtocolWebSocket` (`RelaySocket`).
 /// Provides E2E-encrypted online messages, presence queries, and zero-disk binary streams
-/// on `strict_e2e` Spaces (such as SyncApp).
+/// on `strict_e2e` Spaces.
 public actor RelayV2Pipe {
     public let client: RelayV2Client
     public let space: String

@@ -27,18 +27,18 @@ func TestGoSDKV2StreamFlowControlAndEncryption(t *testing.T) {
 	const spaceID = "g-b71a6f76db6824d176cc07b89106f666"
 	tokA := core.RandomHex(24)
 	tokB := core.RandomHex(24)
-	if err := e.srv.Store.SyncManagedGroup(spaceID, "ADB WiFi", []core.ManagedMember{
-		{ID: "pc-mac", Name: "Mac", PublicKey: pubA, TokenHash: core.HashSecret(tokA)},
-		{ID: "device-b", Name: "DeviceB", PublicKey: pubB, TokenHash: core.HashSecret(tokB)},
+	if err := e.srv.Store.SyncManagedGroup(spaceID, "Tunnel Demo", []core.ManagedMember{
+		{ID: "device-a", Name: "Device A", PublicKey: pubA, TokenHash: core.HashSecret(tokA)},
+		{ID: "device-b", Name: "Device B", PublicKey: pubB, TokenHash: core.HashSecret(tokB)},
 	}, nil, false); err != nil {
 		t.Fatalf("SyncManagedGroup: %v", err)
 	}
 
-	idA, err := sdk.NewIdentity("tunnelapp", spaceID, "pc-mac", secA, map[string]string{"device-b": pubB})
+	idA, err := sdk.NewIdentity("tunnel-app", spaceID, "device-a", secA, map[string]string{"device-b": pubB})
 	if err != nil {
 		t.Fatal(err)
 	}
-	idB, err := sdk.NewIdentity("tunnelapp", spaceID, "device-b", secB, map[string]string{"pc-mac": pubA})
+	idB, err := sdk.NewIdentity("tunnel-app", spaceID, "device-b", secB, map[string]string{"device-a": pubA})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestGoSDKV2StreamFlowControlAndEncryption(t *testing.T) {
 	if _, err := rand.Read(payload); err != nil {
 		t.Fatal(err)
 	}
-	replyPayload := []byte("adb-ok-response-payload")
+	replyPayload := []byte("stream-ok-response-payload")
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -72,7 +72,7 @@ func TestGoSDKV2StreamFlowControlAndEncryption(t *testing.T) {
 			errCh <- err
 			return
 		}
-		if ev.Type != "stream.open" || ev.From != "pc-mac" {
+		if ev.Type != "stream.open" || ev.From != "device-a" {
 			errCh <- io.ErrUnexpectedEOF
 			return
 		}

@@ -5,12 +5,12 @@
 [English](README.md) · 简体中文
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](docs/V2-ARCHITECTURE.md)
+[![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](protocol/v2/README.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
 Common Relay 包含一个 Go 中继服务，以及 Swift、Android Java、Dart、Python、Go 和 Rust 客户端 SDK。通过加密消息、双向字节流和离线文件投递连接不同网络中的设备，并隔离各应用与设备组。
 
-**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。**服务端只提供协议 v2**（`serve` 必须传入 `--v2-admin-hash-file`）：`/v2/ws` 设备管道、`/v2/group` 与 `/v2/enroll` 签名设备组、`/v2/files` 可续传加密文件、Space/Box，以及 Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件。v1 传输与全部 `/relay/v1/*` 路由已移除（见[变更记录](CHANGELOG.md)）；完整线协议见 [protocol/v2](protocol/v2/README.md)。SDK 同样只支持 v2：TypeScript、Kotlin SDK 及所有仅限 v1 的客户端接口已删除。详见 [V2 架构](docs/V2-ARCHITECTURE.md)。
+**开发状态：** 服务端和 SDK 处于 1.0 之前阶段。SDK 以 Git 标签依赖分发，不发布到公共包注册表。**服务端只提供协议 v2**（`serve` 必须传入 `--v2-admin-hash-file`）：`/v2/ws` 设备管道、`/v2/group` 与 `/v2/enroll` 签名设备组、`/v2/files` 可续传加密文件、Space/Box，以及 Webhook/Drop/WebDAV/MCP 等 `/edge/*` 插件。v1 传输与全部 `/relay/v1/*` 路由已移除（见[变更记录](CHANGELOG.md)）；完整线协议见 [protocol/v2](protocol/v2/README.md)。SDK 同样只支持 v2：TypeScript、Kotlin SDK 及所有仅限 v1 的客户端接口已删除。
 
 [快速开始](#快速开始) · [客户端 SDK](#客户端-sdk) · [文档](#文档) · [参与贡献](CONTRIBUTING.md#简体中文)
 
@@ -69,7 +69,7 @@ printf '%s\n' 'choose-a-root-admin-secret' | build/common-relay hash-password > 
 build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256 --v2-admin-hash-file v2-admin.sha256
 ```
 
-公网部署需要 TLS 反向代理，并使用 **WSS/HTTPS**。使用服务端打包流程发布的 Release 提供 Linux amd64 / arm64 部署包，内含二进制、安装脚本、配置和来源校验记录。仓库提供 [Nginx 配置](deploy/nginx.conf)和 [systemd 单元](deploy/common-relay.service)，安装、备份和升级步骤见[部署指南](docs/DEPLOYMENT.md)。
+公网部署需要 TLS 反向代理，并使用 **WSS/HTTPS**。使用服务端打包流程发布的 Release 提供 Linux amd64 / arm64 部署包，内含二进制、安装脚本、配置和来源校验记录。仓库提供 [Nginx 配置](deploy/nginx.conf)和 [systemd 单元](deploy/common-relay.service)。
 
 示例显式允许回环地址使用未加密的 WebSocket 传输，仅用于本地测试；应用内容仍由 SDK 加密。
 
@@ -83,7 +83,7 @@ build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-passwor
 
 使用 `<命令> --help` 查看参数。凭据文件使用私有权限、拒绝覆盖已有文件，令牌不输出到终端。签名设备组通过 SDK API 管理成员。
 
-自助创建默认关闭，通过 `serve --self-service-apps example` 启用指定应用命名空间。该白名单**不是账户认证系统**，详见[设备组管理](docs/DEVICE-GROUPS.md)。
+自助创建默认关闭，通过 `serve --self-service-apps example` 启用指定应用命名空间。该白名单**不是账户认证系统**，详见 [protocol/v2](protocol/v2/README.md)。
 
 ## 客户端 SDK
 
@@ -107,8 +107,6 @@ Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.7
 Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.7" }
 ```
 
-[SDK 分发指南](docs/REGISTRY.md)介绍仓库配置、发布流程，以及用于审计或本地补丁的可选源码快照。
-
 各 SDK 按已支持能力验证共享密码向量，且只支持协议 v2。Swift、Java、Dart、Python、Rust 提供签名设备组与短邀请（`/v2/group`、`/v2/enroll`、`common-relay://host/v2/i/…` 链接）及可续传加密文件（`/v2/files`）；设备消息使用各 SDK 的 `/v2/ws` 客户端（Swift `RelayV2Client`/`RelayV2Pipe`、Java `V2Client`、Dart `RelayV2Client`/`RelayV2Pipe`、Python `Client`、Rust `V2Client`、Go `v2client`）。各语言独立实现，Rust SDK 是独立纯 Rust 客户端而非共享核心，不需要多平台产物构建。应用应安全持久化身份、可信公钥和重试状态；启用自动邀请前，组内全部成员的 SDK 都应支持相应授权链。
 
 ## 开发与测试
@@ -125,27 +123,17 @@ swift test --package-path sdk/swift
 (cd sdk/rust && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features)
 ```
 
-Swift、Dart 和 Android 检查需要各自工具链；Java 单测还需要本机 libsodium。环境变量及跨语言测试命令见[开发指南](docs/DEVELOPMENT.md)。
+Swift、Dart 和 Android 检查需要各自工具链；Java 单测还需要本机 libsodium。
 
-各 SDK 的测试针对真实回环服务端验证设备组与文件客户端，`scripts/group-interop.py` 覆盖跨 SDK 的签名设备组全流程。公网 WSS、长时负载和恢复演练属于单独的部署检查，详见[验证指南](docs/VALIDATION.md)。
+各 SDK 的测试针对真实回环服务端验证设备组与文件客户端，`scripts/group-interop.py` 覆盖跨 SDK 的签名设备组全流程。公网 WSS、长时负载和恢复演练属于单独的部署检查。
 
 ## 文档
-
-README 和贡献指南提供中英文版本。详细指南目前主要使用中文，协议文档包含英文内容。
 
 | 文档 | 内容 |
 | --- | --- |
 | [示例](examples/README.md) | 可运行示例与接入说明 |
 | [协议 v2](protocol/v2/README.md) | 权威线协议规范（管道、Box、签名组账本、邀请、文件、封存载荷、管理面、限额）与共享测试向量（英文） |
-| [V2 架构](docs/V2-ARCHITECTURE.md) | v2：Space、Box、边缘插件、管理接口与 v1 退役 |
-| [架构](docs/ARCHITECTURE.md) | 模块、存储与资源限制 |
-| [设备组](docs/DEVICE-GROUPS.md) | 信任、成员与邀请 |
 | [安全](SECURITY.md) | 威胁模型与密钥管理 |
-| [可靠性](docs/RELIABILITY.md) | 重试、日志、去重与清理 |
-| [部署](docs/DEPLOYMENT.md) | 安装、配置、备份与回滚 |
-| [开发](docs/DEVELOPMENT.md) / [验证](docs/VALIDATION.md) | 工具链与验证流程 |
-| [SDK 分发](docs/REGISTRY.md) | 源码快照与来源记录 |
-| [接口入口](docs/PAGE-STRUCTURE.md) | HTTP 和 WebSocket 路由 |
 | [开发计划](TODO.md) / [变更记录](CHANGELOG.md) | 后续工作与版本变化 |
 
 ## 参与贡献
@@ -160,4 +148,4 @@ README 和贡献指南提供中英文版本。详细指南目前主要使用中�
 
 ## Webhook、WebDAV、Drop 与 MCP 接入
 
-这些入口是 v2 边缘插件，路径为 `/edge/{plugin}/{mount}`，通过 `/v2/admin/plugins` 绑定到 Space，详见 [V2 架构](docs/V2-ARCHITECTURE.md)。桥接端能看到传输中的明文。原 v1 的 `--webhook-config` / `--webdav-config` 接入已移除。
+这些入口是 v2 边缘插件，路径为 `/edge/{plugin}/{mount}`，通过 `/v2/admin/plugins` 绑定到 Space，详见 [protocol/v2](protocol/v2/README.md)。桥接端能看到传输中的明文。原 v1 的 `--webhook-config` / `--webdav-config` 接入已移除。

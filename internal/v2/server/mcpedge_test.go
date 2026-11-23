@@ -28,7 +28,7 @@ func TestMCPEdgePluginOverPipeRPCAndPhotoLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, deskTok, err := admin.CreateDevice(ctx, "hub-mcp", "Mac Hub", fakePubKey(), true)
+	_, deskTok, err := admin.CreateDevice(ctx, "hub-mcp", "Demo Hub", fakePubKey(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,12 +44,12 @@ func TestMCPEdgePluginOverPipeRPCAndPhotoLease(t *testing.T) {
 	}, true); err != nil {
 		t.Fatal(err)
 	}
-	clientSecret := "claude-mcp-client-key-1234567890"
-	if _, err := admin.UpsertPluginAccount(ctx, "mcpedge", "main", "claude-desktop", "claude", v2client.HashSecret(clientSecret), "read"); err != nil {
+	clientSecret := "demo-mcp-client-key-1234567890"
+	if _, err := admin.UpsertPluginAccount(ctx, "mcpedge", "main", "demo-client", "demo", v2client.HashSecret(clientSecret), "read"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Start Hub Hub answering "mcp" RPC calls.
+	// Start target Hub answering "mcp" RPC calls.
 	deskClient, err := v2client.New(v2client.Config{
 		BaseURL: e.ts.URL, AccessPassword: e.access, Token: deskTok, AllowLocal: true,
 	})

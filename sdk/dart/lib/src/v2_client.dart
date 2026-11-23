@@ -1,6 +1,6 @@
 part of '../common_relay.dart';
 
-/// Common Relay v2 client for Dart/Flutter (tailored for SyncApp Android & Windows).
+/// Common Relay v2 client for Dart/Flutter.
 enum RelayV2Route { lanDirect, pipeStream, boxEphemeral }
 
 class RelayV2BoxItem {

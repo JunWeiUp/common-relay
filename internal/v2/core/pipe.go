@@ -33,7 +33,7 @@ const (
 
 // PipeEvent is the compact JSON envelope carried over /v2/ws.
 // Binary frames use a 16-byte stream ID prefix followed by raw encrypted chunk bytes
-// for zero-overhead streaming (SyncApp 512 MiB folder transfers, TunnelApp, MCP).
+// for zero-overhead streaming (large folder transfers, tunnels, MCP).
 type PipeEvent struct {
 	Type    string   `json:"type"` // hello | presence | ping | pong | msg | ack | box.changed | stream.open | stream.accept | stream.close | error
 	Space   string   `json:"space,omitempty"`
@@ -134,7 +134,7 @@ func NewPipeHub(store *Store) *PipeHub {
 }
 
 // CallRPC dispatches a bounded synchronous RPC request over the target device's
-// existing /v2/ws connection (used by plugins like mcpedge to query the local Hub).
+// existing /v2/ws connection (used by plugins like mcpedge to query the target host).
 func (h *PipeHub) CallRPC(ctx context.Context, spaceID, targetDeviceID, topic, payload string) (string, error) {
 	if targetDeviceID == "" {
 		return "", ErrInvalidInput

@@ -18,7 +18,7 @@ Thank you for contributing. Documentation, examples, reproducible bug reports, a
 1. Fork and clone the repository. Follow the [README](README.md#quick-start) to build the server and prepare Python.
 2. Create a branch such as `fix/message-retry` or `docs/sdk-examples`; use a lowercase kebab-case description.
 3. Keep changes focused and update relevant documentation. Keep both README translations aligned.
-4. Run the checks appropriate to your change. For code changes, follow the Go race, SDK, and interoperability checks in [DEVELOPMENT.md](docs/DEVELOPMENT.md).
+4. Run the checks appropriate to your change (Go race, SDK unit tests, and cross-language interoperability checks).
 5. Open a pull request describing the problem, resulting behavior, and commands you actually ran. Explain any checks you could not run.
 
 Protocol changes must update all four SDKs, shared test vectors, and protocol documentation together. Tests must not operate real desktops or devices or modify production configuration. Documentation-only changes require link and command review; they do not require the entire SDK test suite.
@@ -49,7 +49,7 @@ Contributions are provided under this repository's [MIT license](LICENSE). Prese
 1. Fork 并克隆仓库，按 [README](README.zh-CN.md#快速开始)构建服务端并准备 Python 环境。
 2. 创建 `fix/message-retry`、`docs/sdk-examples` 等分支，描述使用小写 kebab-case。
 3. 保持改动范围明确，同步更新相关文档及中英文 README。
-4. 按改动范围执行检查；代码改动遵循[开发指南](docs/DEVELOPMENT.md)中的 Go race、SDK 和互通验证要求。
+4. 按改动范围执行检查（Go race、SDK 单测与跨语言互通验证）。
 5. 提交 PR，说明问题、改动后的行为，以及实际执行的验证命令；未执行的检查应明确说明原因。
 
 协议变更必须同步四类 SDK、共享测试向量和协议文档。测试不得操作真实桌面或设备，也不得修改生产配置。纯文档改动需检查链接与命令，不要求重跑全部 SDK 测试。

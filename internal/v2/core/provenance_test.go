@@ -20,27 +20,27 @@ func TestSyncNeverMergesIntoForeignSpacesOrDevices(t *testing.T) {
 	}
 	tok := RandomHex(32)
 	m := []ManagedMember{{ID: "phone", Name: "P", PublicKey: RandomHex(32), TokenHash: HashSecret(tok)}}
-	if err := st.SyncManagedGroupWithApp("g-0123456789abcdef", "daily", "G", m, nil, false); !errors.Is(err, ErrConflict) {
+	if err := st.SyncManagedGroupWithApp("g-0123456789abcdef", "app-a", "G", m, nil, false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("sync into admin space = %v, want ErrConflict", err)
 	}
 
 	// Two apps with the same group ID: the second projection is refused.
-	if err := st.SyncManagedGroupWithApp("g-1111111111111111", "daily", "G", m, nil, false); err != nil {
+	if err := st.SyncManagedGroupWithApp("g-1111111111111111", "app-a", "G", m, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SyncManagedGroupWithApp("g-1111111111111111", "tunnelapp", "G", m, nil, false); !errors.Is(err, ErrConflict) {
+	if err := st.SyncManagedGroupWithApp("g-1111111111111111", "app-b", "G", m, nil, false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("cross-app sync = %v, want ErrConflict", err)
 	}
 
 	// An admin-created device ID is never overwritten by a projection.
-	_, adminTok, err := st.CreateDevice("mac", "Mac", RandomHex(32), false)
+	_, adminTok, err := st.CreateDevice("desktop-1", "Desktop", RandomHex(32), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := SyncConflicts.Load()
 	evil := RandomHex(32)
-	if err := st.SyncManagedGroupWithApp("g-2222222222222222", "daily", "G", []ManagedMember{
-		{ID: "mac", Name: "hijack", PublicKey: RandomHex(32), TokenHash: HashSecret(evil)},
+	if err := st.SyncManagedGroupWithApp("g-2222222222222222", "app-a", "G", []ManagedMember{
+		{ID: "desktop-1", Name: "hijack", PublicKey: RandomHex(32), TokenHash: HashSecret(evil)},
 	}, nil, false); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestSyncNeverMergesIntoForeignSpacesOrDevices(t *testing.T) {
 		t.Fatalf("admin device token broken: %v", err)
 	}
 	// Removing it via the projection must not revoke it either.
-	if err := st.SyncManagedGroupWithApp("g-2222222222222222", "daily", "G", nil, []string{"mac"}, false); err != nil {
+	if err := st.SyncManagedGroupWithApp("g-2222222222222222", "app-a", "G", nil, []string{"desktop-1"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.AuthenticateDevice(adminTok); err != nil {

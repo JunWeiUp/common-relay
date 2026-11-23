@@ -3,6 +3,7 @@
 build/
 data/
 .local/
+docs/
 __pycache__/
 *.egg-info/
 .DS_Store

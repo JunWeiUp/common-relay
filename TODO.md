@@ -5,7 +5,7 @@
 - [ ] 扩充文件续传、断线恢复及应用接入示例。
 - [ ] 在独立测试环境执行 24 小时混合负载和备份恢复演练。
 
-已有能力、接口和测试入口分别见 [README](README.md)、[协议](protocol/v2/README.md)与[验证指南](docs/VALIDATION.md)。部署验收由使用方针对自己的环境执行。
+已有能力、接口和测试入口分别见 [README](README.md) 与 [协议](protocol/v2/README.md)。部署验收由使用方针对自己的环境执行。
 
 ## 通用 Webhook
 

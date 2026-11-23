@@ -5,12 +5,12 @@
 English · [简体中文](README.zh-CN.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](docs/V2-ARCHITECTURE.md)
+[![Protocol: v2](https://img.shields.io/badge/Protocol-v2-2563eb.svg)](protocol/v2/README.md)
 [![Status: Development](https://img.shields.io/badge/Status-Development-orange.svg)](CHANGELOG.md)
 
 Common Relay is a Go relay server with Swift, Android Java, Dart, Python, Go, and Rust client SDKs. Connect devices across networks using encrypted messages, bidirectional byte streams, and offline file delivery, with isolation between applications and device groups.
 
-**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. **The server speaks protocol v2 only** (`serve` requires `--v2-admin-hash-file`): the `/v2/ws` device pipe, signed device groups on `/v2/group` and `/v2/enroll`, resumable encrypted files on `/v2/files`, spaces and boxes, and `/edge/*` plugins (Webhook, Drop, WebDAV, MCP). The v1 transport and every `/relay/v1/*` route were removed (see the [changelog](CHANGELOG.md)); the complete wire protocol is specified in [protocol/v2](protocol/v2/README.md). The SDKs are v2-only too: the TypeScript and Kotlin SDKs and every v1-only client API were removed. See [V2 architecture](docs/V2-ARCHITECTURE.md).
+**Development status:** the server and SDKs are pre-1.0. SDKs are distributed as Git-tagged dependencies, not public package registries. **The server speaks protocol v2 only** (`serve` requires `--v2-admin-hash-file`): the `/v2/ws` device pipe, signed device groups on `/v2/group` and `/v2/enroll`, resumable encrypted files on `/v2/files`, spaces and boxes, and `/edge/*` plugins (Webhook, Drop, WebDAV, MCP). The v1 transport and every `/relay/v1/*` route were removed (see the [changelog](CHANGELOG.md)); the complete wire protocol is specified in [protocol/v2](protocol/v2/README.md). The SDKs are v2-only too: the TypeScript and Kotlin SDKs and every v1-only client API were removed.
 
 [Quick start](#quick-start) · [SDKs](#client-sdks) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
 
@@ -69,7 +69,7 @@ printf '%s\n' 'choose-a-root-admin-secret' | build/common-relay hash-password > 
 build/common-relay serve --data ./data --listen 127.0.0.1:47805 --access-password-file access.sha256 --v2-admin-hash-file v2-admin.sha256
 ```
 
-For public access, place the service behind a TLS reverse proxy and use **WSS/HTTPS**. Releases built with the server packaging workflow include Linux amd64 / arm64 deployment archives with binaries, installation scripts, configuration, and source checksums. The repository includes [Nginx configuration](deploy/nginx.conf) and a [systemd unit](deploy/common-relay.service). Follow the [deployment guide](docs/DEPLOYMENT.md) for installation, backups, and upgrades.
+For public access, place the service behind a TLS reverse proxy and use **WSS/HTTPS**. Releases built with the server packaging workflow include Linux amd64 / arm64 deployment archives with binaries, installation scripts, configuration, and source checksums. The repository includes [Nginx configuration](deploy/nginx.conf) and a [systemd unit](deploy/common-relay.service).
 
 The demos explicitly allow unencrypted WebSocket transport on loopback. This setting is for local testing only; payload encryption still applies.
 
@@ -83,7 +83,7 @@ The demos explicitly allow unencrypted WebSocket transport on loopback. This set
 
 Use `<command> --help` for flags. Credential files are private, cannot overwrite existing files, and tokens are not printed to the terminal. Signed groups manage membership through the SDK APIs.
 
-Self-service group creation is disabled by default. Enable selected application namespaces with `serve --self-service-apps example`. This allowlist is **not** an account authentication system. See [device groups](docs/DEVICE-GROUPS.md).
+Self-service group creation is disabled by default. Enable selected application namespaces with `serve --self-service-apps example`. This allowlist is **not** an account authentication system. See [protocol/v2](protocol/v2/README.md).
 
 ## Client SDKs
 
@@ -107,8 +107,6 @@ Go      go get github.com/JunWeiUp/common-relay/sdk/go@v0.1.7
 Rust    common-relay = { git = "https://github.com/JunWeiUp/common-relay", tag = "v0.1.7" }
 ```
 
-The [SDK distribution guide](docs/REGISTRY.md) covers repository setup, the release process, and optional source snapshots for auditing or local patches.
-
 All SDKs test their supported encryption against shared vectors and speak protocol v2 only. Swift, Java, Dart, Python and Rust provide signed device groups and compact invitations (`/v2/group`, `/v2/enroll`, `common-relay://host/v2/i/…` links) and resumable encrypted files (`/v2/files`); device messaging uses each SDK's `/v2/ws` client (Swift `RelayV2Client`/`RelayV2Pipe`, Java `V2Client`, Dart `RelayV2Client`/`RelayV2Pipe`, Python `Client`, Rust `V2Client`, Go `v2client`). Implementations use their own language runtimes; the Rust SDK is a standalone pure-Rust client, not a shared core, and no platform artifact build is required. Applications must securely persist identities, trusted keys, and retry state. Enable automatic invitations only after all members' SDKs support the authorization chain.
 
 ## Development
@@ -125,27 +123,17 @@ swift test --package-path sdk/swift
 (cd sdk/rust && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features)
 ```
 
-Swift, Dart, and Android checks require their own toolchains. Java unit tests also require a local libsodium library. See the [development guide](docs/DEVELOPMENT.md) for environment variables and cross-language tests.
+Swift, Dart, and Android checks require their own toolchains. Java unit tests also require a local libsodium library.
 
-Each SDK's tests run its group and file clients against a real loopback server, and `scripts/group-interop.py` drives the signed-group flow across SDKs. Public WSS, long-running load, and recovery testing are separate deployment checks; see the [validation guide](docs/VALIDATION.md).
+Each SDK's tests run its group and file clients against a real loopback server, and `scripts/group-interop.py` drives the signed-group flow across SDKs. Public WSS, long-running load, and recovery testing are separate deployment checks.
 
 ## Documentation
-
-The READMEs and contribution guide are bilingual. Detailed guides currently contain primarily Chinese text; protocol documentation includes English sections.
 
 | Guide | Contents |
 | --- | --- |
 | [Examples](examples/README.md) | Runnable demos and integration notes |
 | [Protocol v2](protocol/v2/README.md) | Authoritative wire specification (pipe, boxes, signed group ledger, invitations, files, sealed payloads, admin, limits) and shared test vectors |
-| [V2 architecture](docs/V2-ARCHITECTURE.md) | v2 spaces, boxes, edge plugins, admin API and the v1 retirement (Chinese) |
-| [Architecture](docs/ARCHITECTURE.md) | Components, storage, and resource limits |
-| [Device groups](docs/DEVICE-GROUPS.md) | Trust, membership, and invitations |
 | [Security](SECURITY.md) | Threat model and key management |
-| [Reliability](docs/RELIABILITY.md) | Retries, journals, deduplication, and cleanup |
-| [Deployment](docs/DEPLOYMENT.md) | Installation, configuration, backup, and rollback |
-| [Development](docs/DEVELOPMENT.md) / [Validation](docs/VALIDATION.md) | Toolchains and verification |
-| [SDK distribution](docs/REGISTRY.md) | Source snapshots and provenance |
-| [API entry points](docs/PAGE-STRUCTURE.md) | HTTP and WebSocket routes |
 | [Roadmap](TODO.md) / [Changelog](CHANGELOG.md) | Planned work and changes |
 
 ## Contributing
@@ -160,4 +148,4 @@ Built with [libsodium](https://github.com/jedisct1/libsodium), [coder/websocket]
 
 ## Webhook, WebDAV, Drop and MCP ingress
 
-These are v2 edge plugins served under `/edge/{plugin}/{mount}` and bound to a space through `/v2/admin/plugins`; see [V2 architecture](docs/V2-ARCHITECTURE.md). The bridge sees plaintext in transit. The former v1 `--webhook-config` / `--webdav-config` ingress was removed.
+These are v2 edge plugins served under `/edge/{plugin}/{mount}` and bound to a space through `/v2/admin/plugins`; see [protocol/v2](protocol/v2/README.md). The bridge sees plaintext in transit. The former v1 `--webhook-config` / `--webdav-config` ingress was removed.

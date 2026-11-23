@@ -2,13 +2,13 @@ import Foundation
 import CryptoKit
 import Clibsodium
 
-/// Common Relay v2 client for Swift (tailored for SyncApp macOS/iOS).
+/// Common Relay v2 client for Swift.
 ///
 /// Design priorities:
 ///   - Single shared URLSession (zero session leak, low resident memory)
 ///   - `[16-byte streamID][chunk]` zero-disk binary stream framing for 512 MiB folder transfers
 ///   - `Box(ephemeral)` offline transfer fallback + `Box(object)` CAS support
-///   - SyncApp 3-tier transfer routing helper (LAN -> Pipe stream -> Box ephemeral)
+///   - 3-tier transfer routing helper (LAN -> Pipe stream -> Box ephemeral)
 public enum RelayV2Error: Error, Equatable {
     case invalidURL
     case insecureTransport
@@ -378,7 +378,7 @@ public final class RelayV2Client {
         return (sid, frame.dropFirst(16))
     }
 
-    /// Deterministic SyncApp 3-tier transfer routing policy (prevents LAN/Pipe/Box races).
+    /// Deterministic 3-tier transfer routing policy (prevents LAN/Pipe/Box races).
     public static func chooseRoute(lanReachable: Bool, peerOnline: Bool) -> RelayV2Route {
         if lanReachable { return .lanDirect }
         if peerOnline { return .pipeStream }

@@ -21,9 +21,9 @@ import (
 // seedPersonal creates a bridge_allowed space with an admin hub device.
 func seedPersonal(t *testing.T, e *testEnv) (deskTok string) {
 	t.Helper()
-	_, d := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "hub", "public_key": fakePubKey(), "is_admin": true})
+	_, d := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "hub-host", "public_key": fakePubKey(), "is_admin": true})
 	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "personal", "name": "Personal", "trust_level": "bridge_allowed"})
-	e.adminJSON("PUT", "/v2/admin/spaces/personal/members", map[string]any{"device_id": "hub", "role": "admin"})
+	e.adminJSON("PUT", "/v2/admin/spaces/personal/members", map[string]any{"device_id": "hub-host", "role": "admin"})
 	return d["token"].(string)
 }
 

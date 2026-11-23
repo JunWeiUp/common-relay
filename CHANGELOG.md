@@ -38,7 +38,7 @@
 - Dart/Java/Swift：删除 `RelayClient`/`RelayStream`（Java、Swift 另删 `RelayJournal`，Swift 删 `RelayDevice`），设备消息改用各自 v2 客户端（`RelayV2Client`/`RelayV2Pipe`、`V2Client`）；`RelayGroups` 只接受 `/v2/ws`；Swift `RelayFiles` 要求 `/v2/files`。
 - 短邀请只生成和解析 `common-relay://host/v2/i/…`，旧 `/i/` 链接被拒绝。
 - 测试：Python、Rust、Dart 设备组/文件测试直接对真实服务端运行（用签名设备组注册设备）；`group-interop.py` 覆盖 Swift/Dart/Java/Go/Rust。
-- 应用影响：SyncApp（Flutter/macOS）升级 SDK 时需删除 v1 分支，仅保留 `RelayV2Pipe` 路径。
+- 应用影响：客户端（Flutter/macOS）升级 SDK 时需删除 v1 分支，仅保留 `RelayV2Pipe` 路径。
 
 ### Breaking：移除 Common Relay v1
 

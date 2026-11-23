@@ -95,7 +95,7 @@ class RelayV2Stream {
   }
 }
 
-/// Common Relay v2 Pipe over `/v2/ws` for Dart/Flutter (SyncApp Android & Windows).
+/// Common Relay v2 Pipe over `/v2/ws` for Dart/Flutter.
 class RelayV2Pipe {
   final RelayV2Client client;
   final String space;

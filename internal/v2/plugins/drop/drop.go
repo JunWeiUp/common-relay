@@ -1,5 +1,5 @@
 // Package drop implements the ultra-simple HTTPS Drop plugin (/edge/drop/{mount})
-// for iOS Shortcuts, shell scripts, and explicit SyncApp-to-Hub sends.
+// for shortcuts, shell scripts, and quick push-to-inbox sends.
 // Any authorized POST enqueues the payload (optionally sealed) into the bound Box(queue).
 package drop
 

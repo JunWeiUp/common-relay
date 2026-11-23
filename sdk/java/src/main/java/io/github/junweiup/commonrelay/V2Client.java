@@ -25,7 +25,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * Common Relay v2 client for Android Java/Kotlin (tailored for 示例应用 App snapshot uploads).
+ * Common Relay v2 client for Android Java/Kotlin.
  * Covers Box(queue) upload, protocol/v2 shared secret hashing, and the Admin Control Plane plugin API
  * (catalog, get, PATCH merge, scrypt account passwords). Admin JSON calls use OkHttp because
  * {@link HttpURLConnection} cannot send PATCH. Sealed (crs1) bridge payloads: see {@link V2Sealed}.

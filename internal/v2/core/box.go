@@ -29,7 +29,7 @@ func (s *Store) CreateBox(b Box) (Box, error) {
 		b.KeepVersions = 10
 	}
 	if b.Mode == ModeEphemeral && b.TTLSec <= 0 {
-		b.TTLSec = 86400 // 24h default for SyncApp offline file transfers
+		b.TTLSec = 86400 // 24h default for offline ephemeral file transfers
 	}
 	_, err := s.DB.Exec(
 		`INSERT INTO v2_boxes(space_id,name,mode,max_bytes,keep_versions,ttl_sec,next_seq) VALUES(?,?,?,?,?,?,0)`,

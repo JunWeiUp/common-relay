@@ -21,7 +21,7 @@ const (
 	DefaultSpaceQuota  = 2 << 30 // 2 GiB
 	DefaultGlobalQuota = 8 << 30 // 8 GiB
 	DefaultBoxMaxBytes = 64 << 20
-	HardBoxMaxBytes    = 512 << 20 // 512 MiB (covers SyncApp folder transfers)
+	HardBoxMaxBytes    = 512 << 20 // 512 MiB (covers large folder transfers)
 )
 
 // Store persists v2 metadata in SQLite WAL and opaque blobs in <dir>/blobs/.

@@ -8,7 +8,7 @@ Type=simple
 DynamicUser=yes
 StateDirectory=common-relay
 StateDirectoryMode=0700
-# Server access password and v2 Root Admin secret hashes (root:root 0600); see docs/DEPLOYMENT.md.
+# Server access password and v2 Root Admin secret hashes (root:root 0600).
 LoadCredential=access:/etc/common-relay/access-password.sha256
 LoadCredential=v2admin:/etc/common-relay/v2-admin.sha256
 ExecStart=/usr/local/bin/common-relay serve --data /var/lib/common-relay --listen 127.0.0.1:47805 --access-password-file ${CREDENTIALS_DIRECTORY}/access --v2-admin-hash-file ${CREDENTIALS_DIRECTORY}/v2admin

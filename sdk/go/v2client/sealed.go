@@ -16,7 +16,7 @@ import (
 // Sealed bridge payloads ("crs1") let bridge plugins (Webhook, Drop, WebDAV queue)
 // encrypt plaintext they receive over TLS to a recipient X25519 public key
 // before it touches relay disk. Only the holder of the matching private key
-// (e.g. the local Hub) can open it; the relay keeps no decryption key.
+// (e.g. the recipient host) can open it; the relay keeps no decryption key.
 //
 // Wire format:
 //

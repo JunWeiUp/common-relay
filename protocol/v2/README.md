@@ -537,10 +537,6 @@ bodies are capped at 513 MiB overall and by each plugin's `max_bytes`.
 | `webdav` | `client_encrypted` | Basic, per-folder accounts | `object` mode: GET/HEAD/PUT/DELETE/PROPFIND on an object Box; `queue` mode (needs `bridge_allowed`): write-only inbox |
 | `mcpedge` | `bridge_allowed` | `Bearer` / `X-Console-Key` accounts (SHA-256 stored) | read-only MCP gateway forwarded as `rpc.req` to `target_device` over `/v2/ws`; rejects any `Origin` |
 
-Details: [docs/WEBHOOKS.md](../../docs/WEBHOOKS.md),
-[docs/WEBDAV.md](../../docs/WEBDAV.md),
-[docs/V2-ARCHITECTURE.md](../../docs/V2-ARCHITECTURE.md).
-
 ## 13. Limits and status codes
 
 | Limit | Value |

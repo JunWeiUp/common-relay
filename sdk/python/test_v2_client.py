@@ -8,7 +8,7 @@ ACCESS = 'interop-v2-access-1'
 
 
 class V2ClientIntegration(unittest.IsolatedAsyncioTestCase):
-    """The worker-demo shape: a gateway and a worker enrolled in one signed group."""
+    """A gateway and a worker enrolled in one signed group."""
 
     async def asyncSetUp(self):
         server = binary()

@@ -92,73 +92,73 @@ func buildLegacy(t *testing.T) *legacyFixture {
 	}
 	pub := func(b string) string { return strings.Repeat(b, 32) }
 
-	// daily/g-…: manager mac + phone joined (rev 2), tablet joined then removed (rev 3, revoked).
-	dailyGroup := "g-0123456789abcdef0123456789abcdef"
-	macSign, macKey := legacyKey(t)
-	mac := Member{Device: "mac", Name: "Mac", PublicKey: pub("01"), SigningKey: macSign, Manager: true}
+	// app-a/g-…: manager desktop + phone joined (rev 2), tablet joined then removed (rev 3, revoked).
+	appAGroup := "g-0123456789abcdef0123456789abcdef"
+	deskSign, deskKey := legacyKey(t)
+	desk := Member{Device: "desktop", Name: "Desktop", PublicKey: pub("01"), SigningKey: deskSign, Manager: true}
 	phone := Member{Device: "phone", Name: "Phone", PublicKey: pub("02")}
 	tablet := Member{Device: "tablet", Name: "Tablet", PublicKey: pub("03")}
-	g := GroupState{Name: "我的设备", Version: 1, App: "daily", Group: dailyGroup, Revision: 1, Members: []Member{mac}}
-	e1 := groupSigned(t, g, "mac", macKey)
-	put("daily", dailyGroup, 1, e1)
+	g := GroupState{Name: "My Devices", Version: 1, App: "app-a", Group: appAGroup, Revision: 1, Members: []Member{desk}}
+	e1 := groupSigned(t, g, "desktop", deskKey)
+	put("app-a", appAGroup, 1, e1)
 	b1, _ := e1.bytes()
 	g2 := g
-	g2.Revision, g2.Previous, g2.Members = 2, digest(b1), []Member{mac, phone, tablet}
-	e2 := groupSigned(t, g2, "mac", macKey)
-	put("daily", dailyGroup, 2, e2)
+	g2.Revision, g2.Previous, g2.Members = 2, digest(b1), []Member{desk, phone, tablet}
+	e2 := groupSigned(t, g2, "desktop", deskKey)
+	put("app-a", appAGroup, 2, e2)
 	b2, _ := e2.bytes()
 	g3 := g2
-	g3.Revision, g3.Previous, g3.Members = 3, digest(b2), []Member{mac, phone}
-	put("daily", dailyGroup, 3, groupSigned(t, g3, "mac", macKey))
-	if _, err := db.Exec("INSERT INTO group_creations VALUES('daily',?,?)", dailyGroup, time.Now().Unix()); err != nil {
+	g3.Revision, g3.Previous, g3.Members = 3, digest(b2), []Member{desk, phone}
+	put("app-a", appAGroup, 3, groupSigned(t, g3, "desktop", deskKey))
+	if _, err := db.Exec("INSERT INTO group_creations VALUES('app-a',?,?)", appAGroup, time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
-	dev(legacyDevice{"daily", dailyGroup, "mac", RandomID() + RandomID(), mac.PublicKey, false})
-	dev(legacyDevice{"daily", dailyGroup, "phone", RandomID() + RandomID(), phone.PublicKey, false})
-	dev(legacyDevice{"daily", dailyGroup, "tablet", RandomID() + RandomID(), tablet.PublicKey, true})
+	dev(legacyDevice{"app-a", appAGroup, "desktop", RandomID() + RandomID(), desk.PublicKey, false})
+	dev(legacyDevice{"app-a", appAGroup, "phone", RandomID() + RandomID(), phone.PublicKey, false})
+	dev(legacyDevice{"app-a", appAGroup, "tablet", RandomID() + RandomID(), tablet.PublicKey, true})
 
-	// syncapp/production: same device ID "mac" as in daily (per-group credential),
+	// app-b/production: same device ID "desktop" as in app-a (per-group credential),
 	// plus a member whose ID collides with the admin device.
-	clipSign, clipKey := legacyKey(t)
-	cmac := Member{Device: "mac", Name: "SyncApp Mac", PublicKey: pub("04"), SigningKey: clipSign, Manager: true}
-	cwb := Member{Device: "hub-host", Name: "Hub", PublicKey: pub("05")}
-	cg := GroupState{Version: 1, App: "syncapp", Group: "production", Revision: 1, Members: []Member{cmac, cwb}}
-	put("syncapp", "production", 1, groupSigned(t, cg, "mac", clipKey))
-	dev(legacyDevice{"syncapp", "production", "mac", RandomID() + RandomID(), cmac.PublicKey, false})
-	dev(legacyDevice{"syncapp", "production", "hub-host", RandomID() + RandomID(), cwb.PublicKey, false})
+	bSign, bKey := legacyKey(t)
+	bDesk := Member{Device: "desktop", Name: "AppB Desktop", PublicKey: pub("04"), SigningKey: bSign, Manager: true}
+	bHub := Member{Device: "hub-host", Name: "Hub", PublicKey: pub("05")}
+	cg := GroupState{Version: 1, App: "app-b", Group: "production", Revision: 1, Members: []Member{bDesk, bHub}}
+	put("app-b", "production", 1, groupSigned(t, cg, "desktop", bKey))
+	dev(legacyDevice{"app-b", "production", "desktop", RandomID() + RandomID(), bDesk.PublicKey, false})
+	dev(legacyDevice{"app-b", "production", "hub-host", RandomID() + RandomID(), bHub.PublicKey, false})
 
-	// tunnelapp/closed: disbanded group, every credential revoked.
-	wSign, wKey := legacyKey(t)
-	wm := Member{Device: "pc", Name: "PC", PublicKey: pub("06"), SigningKey: wSign, Manager: true}
-	wg := GroupState{Version: 1, App: "tunnelapp", Group: "closed", Revision: 1, Members: []Member{wm}}
-	w1 := groupSigned(t, wg, "pc", wKey)
-	put("tunnelapp", "closed", 1, w1)
+	// app-c/closed: disbanded group, every credential revoked.
+	cSign, cKey := legacyKey(t)
+	cm := Member{Device: "pc", Name: "PC", PublicKey: pub("06"), SigningKey: cSign, Manager: true}
+	wg := GroupState{Version: 1, App: "app-c", Group: "closed", Revision: 1, Members: []Member{cm}}
+	w1 := groupSigned(t, wg, "pc", cKey)
+	put("app-c", "closed", 1, w1)
 	wb, _ := w1.bytes()
 	wg2 := wg
 	wg2.Revision, wg2.Previous, wg2.Members, wg2.Closed = 2, digest(wb), []Member{}, true
-	put("tunnelapp", "closed", 2, groupSigned(t, wg2, "pc", wKey))
-	dev(legacyDevice{"tunnelapp", "closed", "pc", RandomID() + RandomID(), wm.PublicKey, true})
+	put("app-c", "closed", 2, groupSigned(t, wg2, "pc", cKey))
+	dev(legacyDevice{"app-c", "closed", "pc", RandomID() + RandomID(), cm.PublicKey, true})
 
-	// speech/old: a pre-ledger group (credentials only, no signed entries).
-	dev(legacyDevice{"worker-demo", "old", "box", RandomID() + RandomID(), pub("07"), false})
-	dev(legacyDevice{"worker-demo", "old", "laptop", RandomID() + RandomID(), pub("08"), false})
+	// legacy-svc/old: a pre-ledger group (credentials only, no signed entries).
+	dev(legacyDevice{"legacy-svc", "old", "box", RandomID() + RandomID(), pub("07"), false})
+	dev(legacyDevice{"legacy-svc", "old", "laptop", RandomID() + RandomID(), pub("08"), false})
 
 	// A pending invitation with a grant and link, and an unused bootstrap.
 	if _, err := db.Exec(`INSERT INTO group_invites(id,app,grp,owner,secret_hash,expires) VALUES(?,?,?,?,?,?);
 		INSERT INTO group_invite_grants VALUES(?,'{}'); INSERT INTO group_invite_links VALUES(?,?,'cipher');
 		INSERT INTO group_bootstrap VALUES(?,?,?,?); INSERT INTO messages VALUES('m1','old v1 message')`,
-		strings.Repeat("a", 32), "daily", dailyGroup, "mac", hashToken("secret"), time.Now().Add(time.Hour).Unix(),
+		strings.Repeat("a", 32), "app-a", appAGroup, "desktop", hashToken("secret"), time.Now().Add(time.Hour).Unix(),
 		strings.Repeat("a", 32), strings.Repeat("a", 32), hashToken("read"),
-		hashToken("bootstrap"), "bills", "home", time.Now().Add(time.Hour).Unix()); err != nil {
+		hashToken("bootstrap"), "demo-app", "home", time.Now().Add(time.Hour).Unix()); err != nil {
 		t.Fatal(err)
 	}
 
-	// A pending file: mac → phone, 5 of 10 bytes uploaded.
+	// A pending file: desktop → phone, 5 of 10 bytes uploaded.
 	fx.payload = []byte("0123456789")
 	sum := sha256.Sum256(fx.payload)
 	fx.fileID = RandomID()
 	if _, err := db.Exec("INSERT INTO files(id,app,grp,sender,recipient,size,offset,metadata,digest,expires) VALUES(?,?,?,?,?,?,?,?,?,?)",
-		fx.fileID, "daily", dailyGroup, "mac", "phone", len(fx.payload), 5, "cipher-meta", hex.EncodeToString(sum[:]), time.Now().Add(time.Hour).Unix()); err != nil {
+		fx.fileID, "app-a", appAGroup, "desktop", "phone", len(fx.payload), 5, "cipher-meta", hex.EncodeToString(sum[:]), time.Now().Add(time.Hour).Unix()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(fx.dir, "files"), 0o700); err != nil {
@@ -193,17 +193,17 @@ func buildLegacy(t *testing.T) *legacyFixture {
 		t.Fatalf("no device %s/%s/%s", app, group, id)
 		return ""
 	}
-	if err := v2.SyncManagedGroupWithApp(dailyGroup, "daily", "我的设备", []core.ManagedMember{
-		{ID: "mac", Name: "Mac", PublicKey: mac.PublicKey, TokenHash: tok("daily", dailyGroup, "mac"), Manager: true},
-		{ID: "phone", Name: "Phone", PublicKey: phone.PublicKey, TokenHash: tok("daily", dailyGroup, "phone")},
+	if err := v2.SyncManagedGroupWithApp(appAGroup, "app-a", "My Devices", []core.ManagedMember{
+		{ID: "desktop", Name: "Desktop", PublicKey: desk.PublicKey, TokenHash: tok("app-a", appAGroup, "desktop"), Manager: true},
+		{ID: "phone", Name: "Phone", PublicKey: phone.PublicKey, TokenHash: tok("app-a", appAGroup, "phone")},
 	}, []string{"tablet"}, false); err != nil {
 		t.Fatal(err)
 	}
-	// "mac" of syncapp collides with daily's projected "mac", "hub-host" with
+	// "desktop" of app-b collides with app-a's projected "desktop", "hub-host" with
 	// the admin device: the old projection skipped both, and so must the import.
-	if err := v2.SyncManagedGroupWithApp("production", "syncapp", "", []core.ManagedMember{
-		{ID: "mac", Name: "SyncApp Mac", PublicKey: cmac.PublicKey, TokenHash: tok("syncapp", "production", "mac"), Manager: true},
-		{ID: "hub-host", Name: "Hub", PublicKey: cwb.PublicKey, TokenHash: tok("syncapp", "production", "hub-host")},
+	if err := v2.SyncManagedGroupWithApp("production", "app-b", "", []core.ManagedMember{
+		{ID: "desktop", Name: "AppB Desktop", PublicKey: bDesk.PublicKey, TokenHash: tok("app-b", "production", "desktop"), Manager: true},
+		{ID: "hub-host", Name: "Hub", PublicKey: bHub.PublicKey, TokenHash: tok("app-b", "production", "hub-host")},
 	}, nil, false); err != nil {
 		t.Fatal(err)
 	}
@@ -330,9 +330,9 @@ func TestLegacyImportPreservesLedgerDevicesAndFiles(t *testing.T) {
 		c.CloseNow()
 		return 101
 	}
-	daily := "g-0123456789abcdef0123456789abcdef"
-	for _, id := range []string{"mac", "phone"} {
-		tok := fx.token("daily", daily, id)
+	appAGroup := "g-0123456789abcdef0123456789abcdef"
+	for _, id := range []string{"desktop", "phone"} {
+		tok := fx.token("app-a", appAGroup, id)
 		if code := ws(tok); code != 101 {
 			t.Fatalf("%s on /v2/ws: %d", id, code)
 		}
@@ -345,7 +345,7 @@ func TestLegacyImportPreservesLedgerDevicesAndFiles(t *testing.T) {
 		}
 	}
 	// Revoked credentials stay revoked on both planes.
-	for _, d := range [][3]string{{"daily", daily, "tablet"}, {"tunnelapp", "closed", "pc"}} {
+	for _, d := range [][3]string{{"app-a", appAGroup, "tablet"}, {"app-c", "closed", "pc"}} {
 		tok := fx.token(d[0], d[1], d[2])
 		if code, _ := do("GET", "/v2/group", tok, nil, nil); code != 401 {
 			t.Fatalf("revoked %v on /v2/group: %d", d, code)
@@ -355,23 +355,23 @@ func TestLegacyImportPreservesLedgerDevicesAndFiles(t *testing.T) {
 		}
 	}
 	// A credential whose ID collided in v2_devices still works on the ledger planes.
-	if code, _ := do("GET", "/v2/group", fx.token("syncapp", "production", "hub-host"), nil, nil); code != 200 {
+	if code, _ := do("GET", "/v2/group", fx.token("app-b", "production", "hub-host"), nil, nil); code != 200 {
 		t.Fatalf("collided member on /v2/group: %d", code)
 	}
 	if code := ws(fx.adminTok); code != 101 {
 		t.Fatalf("admin device on /v2/ws: %d", code)
 	}
 	// Pre-ledger credentials keep their file plane.
-	if code, _ := do("GET", "/v2/files", fx.token("worker-demo", "old", "box"), nil, nil); code != 200 {
+	if code, _ := do("GET", "/v2/files", fx.token("legacy-svc", "old", "box"), nil, nil); code != 200 {
 		t.Fatalf("pre-ledger device on /v2/files: %d", code)
 	}
 
 	// The pending upload resumes at its offset, commits and downloads.
-	mac, phone := fx.token("daily", daily, "mac"), fx.token("daily", daily, "phone")
-	if code, body := do("PUT", "/v2/files/"+fx.fileID+"/data", mac, fx.payload[5:], map[string]string{"Upload-Offset": "5"}); code != 200 {
+	deskTok, phone := fx.token("app-a", appAGroup, "desktop"), fx.token("app-a", appAGroup, "phone")
+	if code, body := do("PUT", "/v2/files/"+fx.fileID+"/data", deskTok, fx.payload[5:], map[string]string{"Upload-Offset": "5"}); code != 200 {
 		t.Fatalf("resume: %d %s", code, body)
 	}
-	if code, body := do("POST", "/v2/files/"+fx.fileID+"/commit", mac, nil, nil); code != 200 {
+	if code, body := do("POST", "/v2/files/"+fx.fileID+"/commit", deskTok, nil, nil); code != 200 {
 		t.Fatalf("commit: %d %s", code, body)
 	}
 	if code, body := do("GET", "/v2/files/"+fx.fileID+"/data", phone, nil, nil); code != 200 || !bytes.Equal(body, fx.payload) {
@@ -380,8 +380,8 @@ func TestLegacyImportPreservesLedgerDevicesAndFiles(t *testing.T) {
 	if used, _ := st.UsedBytes(); used != int64(len(fx.payload)) {
 		t.Fatalf("ledger bytes = %d", used)
 	}
-	if n := countRows(t, v2.DB, "SELECT COALESCE(SUM(bytes),0) FROM v2_usage WHERE space_id=?", daily); n != len(fx.payload) {
-		t.Fatalf("v2_usage for %s = %d", daily, n)
+	if n := countRows(t, v2.DB, "SELECT COALESCE(SUM(bytes),0) FROM v2_usage WHERE space_id=?", appAGroup); n != len(fx.payload) {
+		t.Fatalf("v2_usage for %s = %d", appAGroup, n)
 	}
 
 	// Re-import is a no-op, also after a restart.
@@ -395,7 +395,7 @@ func TestLegacyImportPreservesLedgerDevicesAndFiles(t *testing.T) {
 	if code, _ := do("DELETE", "/v2/files/"+fx.fileID, phone, nil, nil); code != 204 {
 		t.Fatal("delete", code)
 	}
-	if n := countRows(t, v2.DB, "SELECT COALESCE(SUM(bytes),0) FROM v2_usage WHERE space_id=?", daily); n != 0 {
+	if n := countRows(t, v2.DB, "SELECT COALESCE(SUM(bytes),0) FROM v2_usage WHERE space_id=?", appAGroup); n != 0 {
 		t.Fatalf("v2_usage after delete = %d", n)
 	}
 }
@@ -412,7 +412,7 @@ func TestLegacyImportRollsBackOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A conflicting row makes the copy fail after devices were already inserted.
-	if _, err := v2.DB.Exec("INSERT INTO v2_ledger_entries VALUES('tunnelapp','closed',2,'{}')"); err != nil {
+	if _, err := v2.DB.Exec("INSERT INTO v2_ledger_entries VALUES('app-c','closed',2,'{}')"); err != nil {
 		t.Fatal(err)
 	}
 	var spacesBefore, devicesBefore string

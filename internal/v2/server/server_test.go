@@ -133,14 +133,14 @@ func TestThreePlaneAuthAndTrustBoundaries(t *testing.T) {
 
 	// 4. Create strict_e2e Space (VaultApp) -> MUST reject drop, webhook, and webdav!
 	code, _ = e.adminJSON("POST", "/v2/admin/spaces", map[string]any{
-		"id": "pv", "name": "VaultApp", "trust_level": "strict_e2e",
+		"id": "vault", "name": "VaultApp", "trust_level": "strict_e2e",
 	})
 	if code != 201 {
-		t.Fatalf("create pv space = %d", code)
+		t.Fatalf("create vault space = %d", code)
 	}
 	for _, pid := range []string{"drop", "webhook", "webdav"} {
 		code, _ = e.adminJSON("PUT", "/v2/admin/plugins", map[string]any{
-			"plugin_id": pid, "mount": "bad-" + pid, "space_id": "pv",
+			"plugin_id": pid, "mount": "bad-" + pid, "space_id": "vault",
 		})
 		if code != 403 {
 			t.Fatalf("binding %s to strict_e2e space = %d, want 403", pid, code)
@@ -148,22 +148,22 @@ func TestThreePlaneAuthAndTrustBoundaries(t *testing.T) {
 	}
 }
 
-func TestVaultAppObjectCASAndArchiveObserver(t *testing.T) {
+func TestVaultObjectCASAndArchiveObserver(t *testing.T) {
 	e := newEnv(t)
 
-	_, dPV := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "pv-mac", "public_key": fakePubKey()})
-	_, dDesk := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "desk-mac", "public_key": fakePubKey()})
-	pvTok := dPV["token"].(string)
+	_, dVault := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "vault-dev", "public_key": fakePubKey()})
+	_, dDesk := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "desk-host", "public_key": fakePubKey()})
+	vaultTok := dVault["token"].(string)
 	deskTok := dDesk["token"].(string)
 
-	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "pv", "name": "VaultApp", "trust_level": "strict_e2e"})
-	e.adminJSON("PUT", "/v2/admin/spaces/pv/members", map[string]any{"device_id": "pv-mac", "role": "member"})
-	e.adminJSON("PUT", "/v2/admin/spaces/pv/members", map[string]any{"device_id": "desk-mac", "role": "archive_observer"})
-	e.adminJSON("POST", "/v2/admin/spaces/pv/boxes", map[string]any{"name": "vault", "mode": "object", "keep_versions": 3})
+	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "vault", "name": "VaultApp", "trust_level": "strict_e2e"})
+	e.adminJSON("PUT", "/v2/admin/spaces/vault/members", map[string]any{"device_id": "vault-dev", "role": "member"})
+	e.adminJSON("PUT", "/v2/admin/spaces/vault/members", map[string]any{"device_id": "desk-host", "role": "archive_observer"})
+	e.adminJSON("POST", "/v2/admin/spaces/vault/boxes", map[string]any{"name": "vault", "mode": "object", "keep_versions": 3})
 
 	// Put v1 with If-Match: none.
-	r1 := e.do("PUT", "/v2/spaces/pv/boxes/vault/objects/main.pvenc", strings.NewReader("CIPHER_V1"), map[string]string{
-		"Relay-Access": e.access, "Authorization": "Bearer " + pvTok, "If-Match": "none",
+	r1 := e.do("PUT", "/v2/spaces/vault/boxes/vault/objects/main.enc", strings.NewReader("CIPHER_V1"), map[string]string{
+		"Relay-Access": e.access, "Authorization": "Bearer " + vaultTok, "If-Match": "none",
 	})
 	var j1 map[string]any
 	_ = json.NewDecoder(r1.Body).Decode(&j1)
@@ -174,8 +174,8 @@ func TestVaultAppObjectCASAndArchiveObserver(t *testing.T) {
 	etag1 := r1.Header.Get("ETag")
 
 	// Update v2 with valid CAS.
-	r2 := e.do("PUT", "/v2/spaces/pv/boxes/vault/objects/main.pvenc", strings.NewReader("CIPHER_V2"), map[string]string{
-		"Relay-Access": e.access, "Authorization": "Bearer " + pvTok, "If-Match": etag1,
+	r2 := e.do("PUT", "/v2/spaces/vault/boxes/vault/objects/main.enc", strings.NewReader("CIPHER_V2"), map[string]string{
+		"Relay-Access": e.access, "Authorization": "Bearer " + vaultTok, "If-Match": etag1,
 	})
 	r2.Body.Close()
 	if r2.StatusCode != 200 {
@@ -183,16 +183,16 @@ func TestVaultAppObjectCASAndArchiveObserver(t *testing.T) {
 	}
 
 	// Stale CAS with etag1 MUST return 409 Conflict!
-	rStale := e.do("PUT", "/v2/spaces/pv/boxes/vault/objects/main.pvenc", strings.NewReader("CIPHER_STALE"), map[string]string{
-		"Relay-Access": e.access, "Authorization": "Bearer " + pvTok, "If-Match": etag1,
+	rStale := e.do("PUT", "/v2/spaces/vault/boxes/vault/objects/main.enc", strings.NewReader("CIPHER_STALE"), map[string]string{
+		"Relay-Access": e.access, "Authorization": "Bearer " + vaultTok, "If-Match": etag1,
 	})
 	rStale.Body.Close()
 	if rStale.StatusCode != 409 {
 		t.Fatalf("stale CAS = %d, want 409", rStale.StatusCode)
 	}
 
-	// Archive observer (Hub) CAN read opaque ciphertext & versions, CANNOT write!
-	rObsGet := e.do("GET", "/v2/spaces/pv/boxes/vault/objects/main.pvenc", nil, map[string]string{
+	// Archive observer CAN read opaque ciphertext & versions, CANNOT write!
+	rObsGet := e.do("GET", "/v2/spaces/vault/boxes/vault/objects/main.enc", nil, map[string]string{
 		"Relay-Access": e.access, "Authorization": "Bearer " + deskTok,
 	})
 	gotBytes, _ := io.ReadAll(rObsGet.Body)
@@ -201,7 +201,7 @@ func TestVaultAppObjectCASAndArchiveObserver(t *testing.T) {
 		t.Fatalf("observer GET = %d %q", rObsGet.StatusCode, string(gotBytes))
 	}
 
-	rObsPut := e.do("PUT", "/v2/spaces/pv/boxes/vault/objects/main.pvenc", strings.NewReader("BAD"), map[string]string{
+	rObsPut := e.do("PUT", "/v2/spaces/vault/boxes/vault/objects/main.enc", strings.NewReader("BAD"), map[string]string{
 		"Relay-Access": e.access, "Authorization": "Bearer " + deskTok,
 	})
 	rObsPut.Body.Close()
@@ -213,13 +213,13 @@ func TestVaultAppObjectCASAndArchiveObserver(t *testing.T) {
 func TestSyncAppPipeStreamAndEphemeralBox(t *testing.T) {
 	e := newEnv(t)
 
-	_, d1 := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "syncapp-mac", "public_key": fakePubKey()})
-	_, d2 := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "syncapp-phone", "public_key": fakePubKey()})
+	_, d1 := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "sync-desktop", "public_key": fakePubKey()})
+	_, d2 := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "sync-phone", "public_key": fakePubKey()})
 	tok1, tok2 := d1["token"].(string), d2["token"].(string)
 
 	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "syncapp", "name": "SyncApp", "trust_level": "strict_e2e"})
-	e.adminJSON("PUT", "/v2/admin/spaces/syncapp/members", map[string]any{"device_id": "syncapp-mac", "role": "member"})
-	e.adminJSON("PUT", "/v2/admin/spaces/syncapp/members", map[string]any{"device_id": "syncapp-phone", "role": "member"})
+	e.adminJSON("PUT", "/v2/admin/spaces/syncapp/members", map[string]any{"device_id": "sync-desktop", "role": "member"})
+	e.adminJSON("PUT", "/v2/admin/spaces/syncapp/members", map[string]any{"device_id": "sync-phone", "role": "member"})
 	e.adminJSON("POST", "/v2/admin/spaces/syncapp/boxes", map[string]any{"name": "xfer", "mode": "ephemeral", "ttl_sec": 3600})
 
 	dial := func(tok string) *websocket.Conn {
@@ -248,7 +248,7 @@ func TestSyncAppPipeStreamAndEphemeralBox(t *testing.T) {
 
 	// Open a zero-disk bidirectional stream (16-byte stream ID).
 	streamID := "0123456789abcdef"
-	openEv, _ := json.Marshal(core.PipeEvent{Type: "stream.open", Space: "syncapp", ID: streamID, To: "syncapp-phone", Topic: "folder"})
+	openEv, _ := json.Marshal(core.PipeEvent{Type: "stream.open", Space: "syncapp", ID: streamID, To: "sync-phone", Topic: "folder"})
 	if err := c1.Write(ctx, websocket.MessageText, openEv); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestSyncAppPipeStreamAndEphemeralBox(t *testing.T) {
 		}
 	}
 
-	// Mac waits for stream.accept, then sends encrypted binary frame.
+	// Desktop waits for stream.accept, then sends encrypted binary frame.
 	for {
 		_, data, err := c1.Read(ctx)
 		if err != nil {
@@ -310,14 +310,14 @@ func TestSyncAppPipeStreamAndEphemeralBox(t *testing.T) {
 func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 	e := newEnv(t)
 
-	_, dDesk := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "hub", "public_key": fakePubKey(), "is_admin": true})
+	_, dDesk := e.adminJSON("POST", "/v2/admin/devices", map[string]any{"id": "hub-host", "public_key": fakePubKey(), "is_admin": true})
 	deskTok := dDesk["token"].(string)
 
 	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "personal", "name": "Personal", "trust_level": "bridge_allowed"})
-	e.adminJSON("PUT", "/v2/admin/spaces/personal/members", map[string]any{"device_id": "hub", "role": "admin"})
+	e.adminJSON("PUT", "/v2/admin/spaces/personal/members", map[string]any{"device_id": "hub-host", "role": "admin"})
 
-	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "pv-bak", "name": "PV Backup", "trust_level": "client_encrypted"})
-	e.adminJSON("PUT", "/v2/admin/spaces/pv-bak/members", map[string]any{"device_id": "hub", "role": "admin"})
+	e.adminJSON("POST", "/v2/admin/spaces", map[string]any{"id": "vault-bak", "name": "Vault Backup", "trust_level": "client_encrypted"})
+	e.adminJSON("PUT", "/v2/admin/spaces/vault-bak/members", map[string]any{"device_id": "hub-host", "role": "admin"})
 
 	// 1. Drop plugin: POST -> Box(queue) -> Hub lists & ACKs.
 	dropSecret := "drop-secret-token-abcdef123456"
@@ -396,13 +396,13 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 	e.adminJSON("PUT", "/v2/admin/plugins", map[string]any{
 		"plugin_id": "webdav", "mount": "backup", "space_id": "personal",
 	})
-	billsPass := "bills-pass-secret-123456"
+	inboxPass := "inbox-pass-secret-123456"
 	e.adminJSON("PUT", "/v2/admin/plugins/webdav/backup/accounts", map[string]any{
-		"scope_key": "Bills", "username": "u_bills", "secret_sha256": core.HashSecret(billsPass), "mode": "queue",
+		"scope_key": "Archive", "username": "u_archive", "secret_sha256": core.HashSecret(inboxPass), "mode": "queue",
 	})
 
-	reqPut, _ := http.NewRequest("PUT", e.ts.URL+"/edge/webdav/backup/Bills/2026.zip", strings.NewReader("ZIP_BYTES"))
-	reqPut.SetBasicAuth("u_bills", billsPass)
+	reqPut, _ := http.NewRequest("PUT", e.ts.URL+"/edge/webdav/backup/Archive/2026.zip", strings.NewReader("ZIP_BYTES"))
+	reqPut.SetBasicAuth("u_archive", inboxPass)
 	rDavPut, err := http.DefaultClient.Do(reqPut)
 	if err != nil || rDavPut.StatusCode != 201 {
 		t.Fatalf("webdav queue PUT = %v %v", rDavPut, err)
@@ -410,22 +410,22 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 	rDavPut.Body.Close()
 
 	// Write-only queue mode MUST reject GET (403) and sibling folder access (403)!
-	reqGet, _ := http.NewRequest("GET", e.ts.URL+"/edge/webdav/backup/Bills/2026.zip", nil)
-	reqGet.SetBasicAuth("u_bills", billsPass)
+	reqGet, _ := http.NewRequest("GET", e.ts.URL+"/edge/webdav/backup/Archive/2026.zip", nil)
+	reqGet.SetBasicAuth("u_archive", inboxPass)
 	rDavGet, _ := http.DefaultClient.Do(reqGet)
 	rDavGet.Body.Close()
 	if rDavGet.StatusCode != 403 {
 		t.Fatalf("webdav queue GET = %d, want 403", rDavGet.StatusCode)
 	}
 	reqSib, _ := http.NewRequest("PROPFIND", e.ts.URL+"/edge/webdav/backup/OtherFolder/", nil)
-	reqSib.SetBasicAuth("u_bills", billsPass)
+	reqSib.SetBasicAuth("u_archive", inboxPass)
 	rDavSib, _ := http.DefaultClient.Do(reqSib)
 	rDavSib.Body.Close()
 	if rDavSib.StatusCode != 403 {
 		t.Fatalf("webdav sibling folder access = %d, want 403", rDavSib.StatusCode)
 	}
 
-	// 3a-unicode) Queue mode with Unicode folder name (e.g. 示例目录) uses deterministic ASCII box name.
+	// 3a-unicode) Queue mode with Unicode folder name uses deterministic ASCII box name.
 	unicodePass := "unicode-pass-secret-123456"
 	e.adminJSON("PUT", "/v2/admin/plugins/webdav/backup/accounts", map[string]any{
 		"scope_key": "示例目录", "username": "u_unicode", "secret_sha256": core.HashSecret(unicodePass), "mode": "queue",
@@ -447,15 +447,15 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 
 	// 3b) Object mode (bidirectional client-encrypted) on client_encrypted space.
 	code, _ = e.adminJSON("PUT", "/v2/admin/plugins", map[string]any{
-		"plugin_id": "webdav", "mount": "vaultmirror", "space_id": "pv-bak",
+		"plugin_id": "webdav", "mount": "vaultmirror", "space_id": "vault-bak",
 		"config": map[string]any{"cors_origins": []string{"chrome-extension://demotestextension"}},
 	})
 	if code != 200 {
 		t.Fatalf("bind webdav to client_encrypted = %d", code)
 	}
-	pvPass := "pv-backup-pass-123456"
+	vaultPass := "vault-backup-pass-123456"
 	e.adminJSON("PUT", "/v2/admin/plugins/webdav/vaultmirror/accounts", map[string]any{
-		"scope_key": "VaultApp", "username": "u_pv", "secret_sha256": core.HashSecret(pvPass), "mode": "object",
+		"scope_key": "VaultApp", "username": "u_vault", "secret_sha256": core.HashSecret(vaultPass), "mode": "object",
 	})
 
 	// CORS preflight: allowlisted origin -> 204 without auth; foreign origin -> 401.
@@ -476,8 +476,8 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 		t.Fatalf("cors preflight foreign = %d acao=%q", rBadPre.StatusCode, rBadPre.Header.Get("Access-Control-Allow-Origin"))
 	}
 
-	reqObjPut, _ := http.NewRequest("PUT", e.ts.URL+"/edge/webdav/vaultmirror/VaultApp/snap.backup", strings.NewReader("ENCRYPTED_PV_SNAP"))
-	reqObjPut.SetBasicAuth("u_pv", pvPass)
+	reqObjPut, _ := http.NewRequest("PUT", e.ts.URL+"/edge/webdav/vaultmirror/VaultApp/snap.backup", strings.NewReader("ENCRYPTED_VAULT_SNAP"))
+	reqObjPut.SetBasicAuth("u_vault", vaultPass)
 	reqObjPut.Header.Set("If-None-Match", "*")
 	rObjPut, _ := http.DefaultClient.Do(reqObjPut)
 	etag := rObjPut.Header.Get("ETag")
@@ -485,9 +485,9 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 	if rObjPut.StatusCode != 201 || etag == "" {
 		t.Fatalf("webdav object PUT = %d etag=%q", rObjPut.StatusCode, etag)
 	}
-	// Duplicate PUT with If-None-Match: * MUST return 412 Precondition Failed (VaultApp no-overwrite guarantee).
+	// Duplicate PUT with If-None-Match: * MUST return 412 Precondition Failed (no-overwrite guarantee).
 	reqObjDup, _ := http.NewRequest("PUT", e.ts.URL+"/edge/webdav/vaultmirror/VaultApp/snap.backup", strings.NewReader("OVERWRITE_ATTEMPT"))
-	reqObjDup.SetBasicAuth("u_pv", pvPass)
+	reqObjDup.SetBasicAuth("u_vault", vaultPass)
 	reqObjDup.Header.Set("If-None-Match", "*")
 	rObjDup, _ := http.DefaultClient.Do(reqObjDup)
 	rObjDup.Body.Close()
@@ -496,7 +496,7 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 	}
 	// PROPFIND on folder returns multistatus XML with creationdate and href.
 	reqProp, _ := http.NewRequest("PROPFIND", e.ts.URL+"/edge/webdav/vaultmirror/VaultApp/", nil)
-	reqProp.SetBasicAuth("u_pv", pvPass)
+	reqProp.SetBasicAuth("u_vault", vaultPass)
 	reqProp.Header.Set("Depth", "1")
 	rProp, _ := http.DefaultClient.Do(reqProp)
 	propXML, _ := io.ReadAll(rProp.Body)
@@ -505,15 +505,15 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 		t.Fatalf("webdav object PROPFIND = %d xml=%s", rProp.StatusCode, string(propXML))
 	}
 	reqObjGet, _ := http.NewRequest("GET", e.ts.URL+"/edge/webdav/vaultmirror/VaultApp/snap.backup", nil)
-	reqObjGet.SetBasicAuth("u_pv", pvPass)
+	reqObjGet.SetBasicAuth("u_vault", vaultPass)
 	rObjGet, _ := http.DefaultClient.Do(reqObjGet)
 	gotSnap, _ := io.ReadAll(rObjGet.Body)
 	rObjGet.Body.Close()
-	if rObjGet.StatusCode != 200 || string(gotSnap) != "ENCRYPTED_PV_SNAP" {
+	if rObjGet.StatusCode != 200 || string(gotSnap) != "ENCRYPTED_VAULT_SNAP" {
 		t.Fatalf("webdav object GET = %d %q", rObjGet.StatusCode, string(gotSnap))
 	}
 	req304, _ := http.NewRequest("GET", e.ts.URL+"/edge/webdav/vaultmirror/VaultApp/snap.backup", nil)
-	req304.SetBasicAuth("u_pv", pvPass)
+	req304.SetBasicAuth("u_vault", vaultPass)
 	req304.Header.Set("If-None-Match", etag)
 	r304, _ := http.DefaultClient.Do(req304)
 	r304.Body.Close()
@@ -521,7 +521,7 @@ func TestEdgePluginsDropWebhookAndDualModeWebDAV(t *testing.T) {
 		t.Fatalf("webdav object If-None-Match = %d, want 304", r304.StatusCode)
 	}
 
-	// 4. Verify Admin status endpoint works cleanly for Hub #settings/sync.
+	// 4. Verify Admin status endpoint works cleanly.
 	code, st := e.adminJSON("GET", "/v2/admin/status", nil)
 	if code != 200 || st["ok"] != true {
 		t.Fatalf("admin status = %d %v", code, st)
@@ -534,7 +534,7 @@ func TestAdminTopologyAndSecretSanitization(t *testing.T) {
 
 	// 1. Project a managed E2E group with app metadata and a manager role.
 	if err := e.srv.Store.SyncManagedGroupWithApp("g-1234567890abcdef", "vaultapp", "VaultApp", []core.ManagedMember{
-		{ID: "mac-pro", Name: "MacBook Pro", PublicKey: fakePubKey(), TokenHash: core.HashSecret("tok-mac"), Manager: true},
+		{ID: "desktop-1", Name: "Desktop", PublicKey: fakePubKey(), TokenHash: core.HashSecret("tok-desktop"), Manager: true},
 		{ID: "phone-1", Name: "Phone", PublicKey: fakePubKey(), TokenHash: core.HashSecret("tok-phone"), Manager: false},
 	}, nil, false); err != nil {
 		t.Fatalf("SyncManagedGroupWithApp: %v", err)
@@ -567,8 +567,8 @@ func TestAdminTopologyAndSecretSanitization(t *testing.T) {
 		t.Fatalf("upsert webdav = %d", code)
 	}
 	code, _ = e.adminJSON("PUT", "/v2/admin/plugins/webdav/backup/accounts", map[string]any{
-		"scope_key":     "bills",
-		"username":      "u_bills",
+		"scope_key":     "archive",
+		"username":      "u_archive",
 		"secret_sha256": core.HashSecret("dav-secret-pass"),
 		"mode":          "queue",
 	})
@@ -598,7 +598,7 @@ func TestAdminTopologyAndSecretSanitization(t *testing.T) {
 	if gotGroup == nil || gotGroup.App != "vaultapp" || len(gotGroup.Members) != 2 {
 		t.Fatalf("expected enriched E2E group, got %+v", gotGroup)
 	}
-	if gotGroup.Members[0].DeviceID != "mac-pro" || gotGroup.Members[0].Role != core.RoleAdmin {
+	if gotGroup.Members[0].DeviceID != "desktop-1" || gotGroup.Members[0].Role != core.RoleAdmin {
 		t.Fatalf("expected manager promoted to admin role first, got %+v", gotGroup.Members)
 	}
 	if gotPersonal == nil || len(gotPersonal.Boxes) != 1 || gotPersonal.Boxes[0].Name != "demo-hook" {
@@ -641,7 +641,7 @@ func TestAdminTopologyAndSecretSanitization(t *testing.T) {
 	if gotWH == nil || gotWH.Summary == nil || gotWH.Summary.Tag != "device-tag" || !gotWH.Summary.HasHMAC || !gotWH.Summary.HasToken {
 		t.Fatalf("expected webhook summary, got %+v", gotWH)
 	}
-	if gotDAV == nil || len(gotDAV.Accounts) != 1 || gotDAV.Accounts[0].Username != "u_bills" || gotDAV.Accounts[0].ScopeKey != "bills" {
+	if gotDAV == nil || len(gotDAV.Accounts) != 1 || gotDAV.Accounts[0].Username != "u_archive" || gotDAV.Accounts[0].ScopeKey != "archive" {
 		t.Fatalf("expected webdav accounts view, got %+v", gotDAV)
 	}
 }
