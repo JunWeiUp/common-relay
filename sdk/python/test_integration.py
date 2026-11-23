@@ -70,6 +70,22 @@ class Integration(unittest.IsolatedAsyncioTestCase):
                 await a.send_online('b', b'online without transport receipt')
                 self.assertEqual((await asyncio.wait_for(b.events.get(),3))['data'], b'online without transport receipt')
 
+    async def test_undecryptable_message_is_surfaced_not_fatal(self):
+        # A receiver whose trust map lacks the sender (e.g. it left the group) gets an event and
+        # keeps its connection; unacknowledged, the message is redelivered once trusted.
+        async with self.client('a') as a:
+            await a.message('b',b'from a',offline=True)
+        stranger=Identity(self.ids['b'].app,self.ids['b'].group,'b',self.ids['b'].key.encode().hex(),{})
+        async with Client(self.url,self.tokens['b'],stranger,self.dir/'b-stranger.db',allow_local_test=True,password=ACCESS) as b:
+            event=await asyncio.wait_for(b.events.get(),3)
+            self.assertEqual((event['type'],event['from'],event['trusted']),('undecryptable','a',False))
+            await asyncio.sleep(.3)
+            self.assertFalse(b.ws.closed if hasattr(b.ws,'closed') else False)
+        async with self.client('b') as b:
+            event=await asyncio.wait_for(b.events.get(),3)
+            self.assertEqual((event['type'],event['data']),('message',b'from a'))
+            await b.acknowledge(event)
+
     async def test_lost_reply_restart_and_lost_ack(self):
         object_id = 'ab'*16
         async with self.client('a') as a:

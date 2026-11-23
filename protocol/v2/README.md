@@ -185,6 +185,20 @@ Space (`unknown_recipient`). `id` defaults to a random 24-hex value.
 
 `body` is opaque to the server; SDKs carry the content envelope of §6.
 
+Client rules (all SDK message clients):
+
+- A `msg` whose envelope cannot be opened (sender not in the receiver's pinned
+  keys, or authentication failure) must not fail the connection: the relay
+  would re-deliver the stored copy on every connect. Surface it to the app
+  (`undecryptable`, with whether the sender was trusted). The app reconnects
+  with fresh pinned keys when the sender is in its current signed roster or is
+  seen for the first time (it may have just joined), and sends `ack` to drop
+  it when it returns from a sender that is still not a member, or when a
+  trusted sender's envelope is corrupt.
+- Reconnect with back-off: 1 s doubling to 30 s, reset only after a connection
+  stayed up for 120 s. HTTP 401/403 at the upgrade or on `/v2/group*` means the
+  credentials or access password were rejected: stop and ask the user.
+
 ### 4.6 `box.changed`
 
 Sent to every online member (including `archive_observer`) of the Space:
@@ -369,8 +383,10 @@ unless the change shrinks the group. Nothing follows a closed state.
 ### 7.5 Invitations and joining
 
 Managers create invitations with `POST /v2/group/invitations`
-`{secret_hash, mode?, grant?}` → `{id, expires, mode}`; at most 16 active per
-group (429), 10-minute lifetime. The trusted channel (QR/link) carries the
+`{secret_hash, mode?, grant?}` → `{id, expires, mode}`; at most 16 unused per
+group (429), 10-minute lifetime. A spent invitation (its join committed) stays
+until expiry so the joiner can replay its exact commit after a lost reply, but
+it no longer counts toward the 16. The trusted channel (QR/link) carries the
 complete invitation:
 `{version:1,mode,url:"wss://host/v2/ws",app,group,id,expires,secret,manager:{…},grant?,delegate_secret?}`.
 
@@ -418,7 +434,10 @@ HTTP roster and `online` are never trust input.
 
 `POST /v2/group/exit` (Bearer) with a signed state that no longer contains
 the signer (self-removal, or `closed` disband by a manager; a sole manager of
-an otherwise empty group disbands). The device's token is revoked by the
+an otherwise empty group disbands). The last manager cannot leave while other
+members remain (the state would have no manager); it must disband instead.
+SDKs offer an offline `check_exit` so an app can validate the exit before
+clearing local state and notifying the relay best-effort. The device's token is revoked by the
 commit; a revoked token may still re-post the exact committed exit entry and
 gets it back, so a lost response is recoverable. Clients persist the pending
 exit before sending.
@@ -549,7 +568,7 @@ bodies are capped at 513 MiB overall and by each plugin's `max_bytes`.
 | Batch ACK | 1–200 IDs, body ≤ 64 KiB |
 | Quotas (defaults) | per Space / per app 2 GiB (`--app-quota`), global 5 GiB (`--global-quota`), free-disk reserve 2 GiB (`--disk-reserve`) |
 | Group | ≤ 32 members, ≤ 4096 revisions, 64 entries per page, payload ≤ 32 KiB, group JSON body ≤ 64 KiB |
-| Invitations | 10 min, ≤ 16 active per group; auto grant expiry ≤ 600 s |
+| Invitations | 10 min, ≤ 16 unused per group; auto grant expiry ≤ 600 s |
 | Self-service creation | 20/hour, 1000 total |
 | Files | 1 GiB each, chunks ≤ 1 MiB, expiry ≤ 24 h, metadata ≤ 8 KiB |
 

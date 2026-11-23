@@ -156,7 +156,15 @@ class Client:
                 if e['type']=='msg':
                     if e.get('offline') and self.journal is None:
                         raise RelayError('Persistent state required for offline reception')
-                    value=self.identity.open(e['from'],'message',object_id,e['body'])
+                    try:
+                        value=self.identity.open(e['from'],'message',object_id,e['body'])
+                    except Exception:
+                        # Never fatal: closing the connection would make the relay redeliver this
+                        # stored message forever. The app reconnects with fresh trusted keys when the
+                        # sender is (now) a member, or acknowledges it to drop it for good.
+                        self.events.put_nowait({'type':'undecryptable','id':object_id,'from':e['from'],
+                                                'offline':bool(e.get('offline')),'trusted':e['from'] in self.identity.trusted})
+                        continue
                     if ('expires' in value and value['expires'] <= int(self.clock())) or (self.journal and self.journal.contains(e['from'], object_id)):
                         if e.get('offline'):
                             await self.send_event({'type':'ack','space':self.identity.group,'id':object_id,'from':e['from']})
