@@ -3,7 +3,7 @@ name = "common-relay"
 version = "0.1.7"
 edition = "2021"
 rust-version = "1.89"
-description = "Common Relay v2 SDK: signed device groups, encrypted files, invitation links and v2 helpers"
+description = "Common Relay v2 SDK: signed device groups, encrypted files, invitation links, the /v2/ws message client and v2 helpers"
 license = "MIT"
 publish = false
 
@@ -21,6 +21,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+# ring + bundled webpki roots: cross-compiles for Android and iOS (no aws-lc).
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 url = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1"

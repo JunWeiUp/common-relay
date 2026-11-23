@@ -267,6 +267,27 @@ impl Identity {
     pub(crate) fn device(&self) -> &str {
         &self.device
     }
+
+    /// Whether `device`'s key is in this identity's pinned trust map.
+    pub fn trusts(&self, device: &str) -> bool {
+        self.trusted.contains_key(device)
+    }
+
+    /// Seals message data that the receiver must drop after `expires` (Unix seconds).
+    pub(crate) fn seal_message_expiring(
+        &self,
+        to: &str,
+        id: &str,
+        data: &[u8],
+        expires: i64,
+    ) -> Result<String> {
+        self.seal_value(
+            to,
+            "message",
+            id,
+            json!({"data": STANDARD.encode(data), "expires": expires}),
+        )
+    }
 }
 
 /// A random 16-byte lowercase hex object ID. Save it before an offline send so retries reuse it.

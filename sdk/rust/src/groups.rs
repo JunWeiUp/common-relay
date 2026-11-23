@@ -317,7 +317,7 @@ impl Groups {
         }
         let mut res = req.send().await.map_err(|e| Error::Relay(e.to_string()))?;
         if res.status() != reqwest::StatusCode::OK {
-            return Err(Error::Relay(format!("http {}", res.status().as_u16())));
+            return Err(Error::Http(res.status().as_u16()));
         }
         let mut data = Vec::new();
         while let Some(chunk) = res.chunk().await.map_err(|e| Error::Relay(e.to_string()))? {
@@ -907,6 +907,12 @@ impl Groups {
         g["request_hash"] = json!("");
         self.change(g).await
     }
+    /// Offline check against the locally verified state that `prepare_exit(disband)` would be
+    /// accepted: e.g. the last manager cannot leave other members behind (disband instead),
+    /// and only a manager can disband. Lets an app clear local state before notifying the relay.
+    pub fn check_exit(&self, disband: bool) -> Result<()> {
+        self.exit_entry(disband).map(|_| ())
+    }
     pub async fn prepare_exit(&mut self, disband: bool) -> Result<()> {
         if self
             .config
@@ -916,6 +922,11 @@ impl Groups {
             return Ok(());
         }
         self.refresh().await?;
+        let e = self.exit_entry(disband)?;
+        self.config["pending_exit"] = e;
+        Ok(())
+    }
+    fn exit_entry(&self, disband: bool) -> Result<Value> {
         let old = self.config["group_entry"].clone();
         let mut g = unpack_group_entry(&old)?;
         let own = members(&g)?
@@ -923,7 +934,7 @@ impl Groups {
             .find(|m| m["device"] == self.config["device"])
             .ok_or_else(invalid)?;
         if disband && !boolean(own, "manager") {
-            return Err(invalid());
+            return Err(Error::Invalid("only a manager can disband the group"));
         }
         let ms = g["members"].as_array_mut().ok_or_else(invalid)?;
         if disband {
@@ -933,6 +944,10 @@ impl Groups {
         }
         if ms.is_empty() {
             g["closed"] = json!(true);
+        } else if !ms.iter().any(|m| boolean(m, "manager")) {
+            return Err(Error::Invalid(
+                "last manager cannot leave other members; disband instead",
+            ));
         }
         g["invitation"] = json!("");
         g["request_hash"] = json!("");
@@ -944,8 +959,7 @@ impl Groups {
             field(&self.config, "device")?,
         )?;
         advance_group(&old, &e)?;
-        self.config["pending_exit"] = e;
-        Ok(())
+        Ok(e)
     }
     pub async fn exit(&mut self) -> Result<()> {
         let e = self
@@ -957,7 +971,7 @@ impl Groups {
             .call(reqwest::Method::POST, "/group/exit", Some(&e), None)
             .await
         {
-            if err == Error::Relay("http 409".to_owned()) {
+            if err == Error::Http(409) {
                 self.remove_key("pending_exit");
             }
             return Err(err);
@@ -1302,7 +1316,7 @@ mod tests {
             g.call(reqwest::Method::GET, "/group", None, None)
                 .await
                 .unwrap_err(),
-            Error::Relay("http 302".into())
+            Error::Http(302)
         );
         task.await.unwrap();
         assert!(
