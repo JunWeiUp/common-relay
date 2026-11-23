@@ -7,6 +7,7 @@
 - 新增 `Pipe`（`/v2/ws` 消息客户端）与 `Journal`（离线投递日志）：在线名单、离线消息与重试幂等、确认、重放丢弃；无法解密的信封以 `undecryptable` 事件上报而不断开连接（否则服务器会在每次连接时无限重投）。
 - 新增 `policy`：401/403 归类为停止重连，1→30 秒退避且连接稳定 120 秒后才重置，`fresh_identity()` 用于退出后换新身份。
 - `Groups::check_exit` 离线校验退出，最后一位管理员撇下成员时给出明确错误；组 HTTP 失败改为 `Error::Http(status)`（原为 `Error::Relay("http N")`）。
+- `decrypt_file` 在硬链接被拒绝时（Android 应用沙箱、部分网络/FAT 文件系统）改为先独占占位再重命名发布，仍不覆盖已有文件；此前在 Android 上接收文件总是报 `Storage`。
 - Python SDK：无法解密的消息改为 `undecryptable` 事件，不再关闭连接。协议规范 §4.5、§7.5、§7.7 补充客户端规则。
 - 已知未修：Go 消息客户端与 v2 帧不匹配；Dart/Swift 无确认接口且消息信封 kind 为 `msg`（规范为 `message`）；Java/Rust 之外仍无统一的 `undecryptable` 处理。见 TODO。
 

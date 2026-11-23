@@ -54,6 +54,39 @@ fn io(_: std::io::Error) -> Error {
 }
 
 fn create_private(path: &Path) -> Result<File> {
+    create_private_raw(path).map_err(io)
+}
+
+/// Moves a finished file into place without ever replacing an existing destination. A hard
+/// link publishes atomically; where links are refused (Android's app sandbox, some network
+/// and FAT file systems) the destination is first reserved exclusively, then renamed over.
+fn publish(temporary: &Path, destination: &Path) -> Result<()> {
+    publish_with(temporary, destination, |a, b| fs::hard_link(a, b))
+}
+
+fn publish_with(
+    temporary: &Path,
+    destination: &Path,
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let exists = |e: &std::io::Error| e.kind() == std::io::ErrorKind::AlreadyExists;
+    match link(temporary, destination) {
+        Ok(()) => return Ok(()),
+        Err(e) if exists(&e) => return Err(Error::Invalid("destination already exists")),
+        Err(_) => {}
+    }
+    match create_private_raw(destination) {
+        Ok(_) => {}
+        Err(e) if exists(&e) => return Err(Error::Invalid("destination already exists")),
+        Err(e) => return Err(io(e)),
+    }
+    fs::rename(temporary, destination).map_err(|e| {
+        let _ = fs::remove_file(destination);
+        io(e)
+    })
+}
+
+fn create_private_raw(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -61,7 +94,7 @@ fn create_private(path: &Path) -> Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path).map_err(io)
+    options.open(path)
 }
 
 fn sync_parent(path: &Path) -> Result<()> {
@@ -240,14 +273,7 @@ pub fn decrypt_file(
             return Err(Error::Crypto("missing authenticated final record"));
         }
         output.sync_all().map_err(io)?;
-        // A hard link publishes atomically and fails instead of replacing an existing file.
-        fs::hard_link(&temporary, destination).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                Error::Invalid("destination already exists")
-            } else {
-                io(e)
-            }
-        })?;
+        publish(&temporary, destination)?;
         sync_parent(destination)
     })();
     drop(output);
@@ -556,5 +582,45 @@ impl RelayFiles {
             return Err(Error::Http(status.as_u16()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refused(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    #[test]
+    fn publish_falls_back_when_hard_links_are_refused_and_never_replaces() {
+        let dir = std::env::temp_dir().join(format!(
+            "cr-publish-{}",
+            hex::encode(random::<8>().unwrap())
+        ));
+        fs::create_dir(&dir).unwrap();
+        for (round, linked) in [(0, true), (1, false)] {
+            let temporary = dir.join(format!("t{round}"));
+            let destination = dir.join(format!("d{round}"));
+            fs::write(&temporary, b"new").unwrap();
+            if linked {
+                publish(&temporary, &destination).unwrap();
+            } else {
+                publish_with(&temporary, &destination, refused).unwrap();
+            }
+            assert_eq!(fs::read(&destination).unwrap(), b"new");
+
+            let temporary = dir.join(format!("u{round}"));
+            fs::write(&temporary, b"other").unwrap();
+            let again = if linked {
+                publish(&temporary, &destination)
+            } else {
+                publish_with(&temporary, &destination, refused)
+            };
+            assert!(matches!(again, Err(Error::Invalid(_))));
+            assert_eq!(fs::read(&destination).unwrap(), b"new");
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
