@@ -207,9 +207,14 @@ impl Shared {
                 o.remove("body");
             }
         }
+        if kind == "received" && !id.is_empty() {
+            if let Some(journal) = &self.journal {
+                let _ = journal.complete(&self.scope(), &id);
+            }
+        }
         if matches!(
             kind.as_str(),
-            "message" | "peer.up" | "peer.down" | "group.changed"
+            "message" | "received" | "peer.up" | "peer.down" | "group.changed"
         ) {
             let _ = self.events.send(event);
         }

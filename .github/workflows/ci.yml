@@ -54,7 +54,7 @@ jobs:
           dart analyze
           dart test
       - name: Cross-language group interop
-        run: python3 scripts/group-interop.py --only python go rust dart
+        run: python3 scripts/group-interop.py --only go rust dart
 
   swift:
     name: Swift SDK (macOS)

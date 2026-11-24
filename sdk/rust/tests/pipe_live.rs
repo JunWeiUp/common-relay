@@ -226,6 +226,10 @@ async fn messages_offline_delivery_undecryptable_and_rejected_credentials() {
         event["offline"] == true,
     )
     .unwrap();
+    // Wait until the relay has deleted the offline message and notified `a`
+    // before re-sending the same id or closing `b`.
+    let rec = next_of(&a, "received").await;
+    assert_eq!(rec["id"].as_str(), Some(id));
     assert!(a.message("phone", b"hello", true, Some(id)).await.is_ok());
     assert!(
         a.message("phone", b"different", true, Some(id))
@@ -258,9 +262,10 @@ async fn messages_offline_delivery_undecryptable_and_rejected_credentials() {
     let event = next_of(&trusting, "message").await;
     assert_eq!(event["data"], "bGF0ZXI=");
     // Acknowledging it removes it for good.
-    trusting
-        .acknowledge("mac", event["id"].as_str().unwrap(), true)
-        .unwrap();
+    let later_id = event["id"].as_str().unwrap().to_string();
+    trusting.acknowledge("mac", &later_id, true).unwrap();
+    let rec = next_of(&a, "received").await;
+    assert_eq!(rec["id"].as_str(), Some(later_id.as_str()));
     trusting.close();
     let again = connect(&relay, &phone, true, &journals.join("b3")).await;
     for _ in 0..10 {
