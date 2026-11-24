@@ -151,14 +151,15 @@ Space.
 | `ack` | `space,from,id` | deletes a stored offline message addressed to this device; the sender, if online, gets `{type:"received",space,id,from:<acker>}`. No reply. |
 | `stream.open` | `space,to,id(16 chars),topic?,body?` | target gets `stream.open` with `from`; errors `invalid_stream`, `offline`, `forbidden` |
 | `stream.accept` | `id,body?` | only the target; origin gets `stream.accept` with `from`; else `error unknown_stream` |
-| `stream.close` | `id` | other end gets `stream.close` with `from` |
+| `stream.credit` | `id,seq` (`seq ≥ 0`) | grants `seq` frames of flow-control credit (or `0` to request pause) to the other end of a ready stream; errors `invalid_stream`, `unknown_stream` |
+| `stream.close` | `id` | other end gets `stream.close` with `from` (ordered behind already-queued binary stream chunks) |
 | `rpc.res` | `id,body?,code?` | answers a server `rpc.req`; accepted only from the device the request went to; a non-empty `code` is an error |
 
 ### 4.4 Server → client
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `hello` | `from` (own device ID) | session ready |
+| `hello` | `from` (own device ID), `seq` (monotonic session seq) | session ready |
 | `presence` | `space,peers[,id]` | online device IDs of the Space (broadcast on every connect/disconnect, or a reply) |
 | `pong` | `id` | reply to `ping` |
 | `msg` | `space,id,from,to,topic,body[,offline]` | message; `offline:true` when it came from (or was also stored in) the offline queue |
@@ -166,7 +167,7 @@ Space.
 | `received` | `space,id,from` | the recipient ACKed an offline message |
 | `box.changed` | `space,box,event,ref,seq[,item]` | Box wake-up, see 4.6 |
 | `group.changed` | `space` (group ID), `seq` (revision) | signed membership advanced; fetch and verify `GET /v2/group` (the event is not proof) |
-| `stream.open` / `stream.accept` / `stream.close` | `space,id,from[,topic,body]` | stream lifecycle; `stream.close` without `from` means the peer disconnected |
+| `stream.open` / `stream.accept` / `stream.credit` / `stream.close` | `space,id,from[,topic,body,seq]` | stream lifecycle & back-pressure; `stream.credit` without `from` and `seq:0` is a server back-pressure hint (only when opted into `stream-credit`); `stream.close` without `from` means the peer disconnected |
 | `rpc.req` | `space,id,topic,body` | plugin RPC (e.g. `mcpedge`) to this device; answer with `rpc.res` within 15 s |
 | `error` | `code[,id]` | see 4.7 |
 
@@ -220,18 +221,37 @@ the compact event is sent.
 `bad_json`, `forbidden`, `unknown_recipient`, `offline`, `storage`,
 `invalid_stream`, `unknown_stream`. Errors carry the request `id` when known.
 
-### 4.8 Keepalive and back-pressure
+### 4.8 Keepalive, priority queues, and back-pressure
 
 - The server sends a WebSocket ping every 30 s and closes a peer that does not
   pong within 10 s (`keepalive_timeout`). Clients must answer control pings
   (all WebSocket libraries do) and should send their own `ping` event or
   WebSocket ping if their proxies time out faster.
-- Each peer has a 64-frame send queue and all peers share 32 MiB of queued
-  bytes; a peer that would overflow either is disconnected rather than
-  buffered. A single frame write times out after 10 s.
-- Streams have no server-side flow control or count limit: they live only
-  while both ends are connected; a disconnect closes them. Use a Box
-  (`ephemeral`) when the peer may be offline.
+- Each peer has a **high-priority control queue** (64 frames: `hello`, `ping`/`pong`,
+  `presence`, `msg`, `ack`, `received`, `rpc.*`, `box.changed`, `group.changed`,
+  `stream.open`/`accept`/`credit`, `error`) and a **lower-priority binary stream
+  queue** (64 frames: binary stream chunks plus `stream.close` to preserve stream
+  end ordering). All peers share 32 MiB of queued bytes. A single frame write
+  times out after 10 s.
+- Control queue overflow disconnects the peer; binary stream queue overflow drops
+  the excess binary chunk instead of killing the WebSocket session, increments
+  `metrics.stream_drops`, and (when the sender opted into `features=stream-credit`)
+  sends `{type:"stream.credit",space,id,seq:0}` as a back-pressure hint.
+- Streams live only while both ends are connected; a disconnect closes them. Use
+  a Box (`ephemeral` or resumable `uploads`) when the peer may be offline.
+
+### 4.9 Optional direct-upgrade convention (`relay.direct.v1`)
+
+The relay remains strictly transport-only and always acts as the fallback path.
+Apps/SDKs that wish to opportunistically upgrade high-bandwidth traffic to a LAN
+or direct TCP/QUIC link may exchange encrypted candidate endpoints over normal
+online Pipe `msg` frames with `topic: "relay.direct.v1"`:
+
+- Payload (inside the normal §6 encrypted envelope):
+  `{"op":"offer"|"answer"|"fallback","session":"<hex>","candidates":["<host:port>",…],"nonce":"<hex>"}`.
+- Peers must authenticate the direct connection with the same pinned X25519/Ed25519
+  keys used for the Space and fall back seamlessly to `/v2/ws` on probe timeout
+  (recommended ≤ 1.5 s) or network change.
 
 ## 5. Boxes
 
@@ -264,6 +284,11 @@ may read; writing requires `admin`/`member` (else 403). Non-members get 403.
 | `GET`/`HEAD …/objects/{key}` | `version=<n>`; `If-None-Match` | bytes; `ETag`, `X-Object-Version`; 304 when the ETag matches |
 | `GET …/objects/{key}?versions=1` | | `{ok,versions:[BoxObject]}` |
 | `DELETE …/objects/{key}` | | `{ok}` |
+| `POST …/uploads` | `{"total_size":N,"key"?:…,"content_type"?:…,"meta"?:…,"ttl"?:…}` | 201 `{ok,upload}` (reserves quota; `key` required for `object` Boxes, forbidden for `queue`/`ephemeral`) |
+| `GET …/uploads/{id}` | | `{ok,upload}` (current `offset` for resume) |
+| `PATCH …/uploads/{id}?offset=<n>` | raw chunk bytes | `{ok,upload}` (409 on offset mismatch; 507 if exceeding `total_size`) |
+| `POST …/uploads/{id}/complete` | optional `{"sha256":"<64 hex>"}` | 201 `{ok,item}` (`queue`/`ephemeral`) or `{ok,object}` (`object`) |
+| `DELETE …/uploads/{id}` | | `{ok}` (aborts upload and frees reserved quota) |
 
 `BoxItem`: `id, space_id, box_name, seq, sender, size, sha256, content_type,
 meta_json, expires_at, created_at`. `BoxObject`: `space_id, box_name, key,
@@ -525,12 +550,13 @@ Bodies are JSON (≤ 64 KiB, unknown fields rejected → 400). Errors are
 
 | Route | Purpose |
 |---|---|
-| `GET status` | counts, used bytes, global quota, online peers, plugins |
-| `GET metrics` | `{metrics:{started_at,uptime_seconds,edge:{"<plugin>/<mount>":{requests,ok,rejected,client_err,server_err,last_at,last_err_at,last_status}},devices:{…connects/disconnects/last_reason…},keepalive_timeouts,replaced,box_inline,box_inline_skipped,recent:[…≤30]}, ledger:{rows:[{app,kind,requests,last_at}]}}` |
+| `GET status` | counts, used bytes, global quota, online peers, `sync_conflicts`, plugins |
+| `GET metrics` | `{metrics:{started_at,uptime_seconds,edge:{…},spaces:{"<space>":{messages_online,messages_offline,stream_frames,stream_bytes,stream_drops,last_at}},devices:{…},keepalive_timeouts,replaced,box_inline,box_inline_skipped,stream_frames,stream_bytes,stream_drops,recent:[…≤30]}, sync_conflicts, ledger:{rows:[{app,kind,requests,last_at}]}}` |
 | `GET`/`PUT access-password` | read hash prefix/source; set `{access_hash:"<64 hex>"}` (takes effect immediately) |
 | `GET`/`POST devices` | list; create `{id,name,public_key,is_admin}` → `{device, token}` (token shown once) |
 | `DELETE devices/{id}` | revoke and disconnect |
-| `GET`/`POST spaces` | list (with members, online flags, boxes, usage); create `{id,name,trust_level}` |
+| `GET`/`POST spaces` | list (with `governance`, `quota_bytes`, members, online flags, boxes, usage); create `{id,name,trust_level,quota_bytes?}` |
+| `PUT spaces/{id}/quota` | `{quota_bytes}` (`0` resets to default Space quota) |
 | `PUT spaces/{id}/members` | `{device_id, role}`; disconnects the device to apply the role |
 | `GET`/`POST spaces/{id}/boxes` | list; create `{name,mode,max_bytes?,keep_versions?,ttl_sec?}` |
 | `GET plugins[?plugin_id=]` | `{registered, plugins (schemas), bindings}` |
@@ -555,6 +581,7 @@ bodies are capped at 513 MiB overall and by each plugin's `max_bytes`.
 | `webhook` | `bridge_allowed` | `Bearer`; optional HMAC-SHA256 over `timestamp "." body` in `X-Webhook-Signature` (`sha256=` hex) with `X-Webhook-Timestamp` (±5 min, single use); `Idempotency-Key` dedup | body (validated if JSON) → queue item, sealed if configured; default 32 MiB, max 64 MiB |
 | `webdav` | `client_encrypted` | Basic, per-folder accounts | `object` mode: GET/HEAD/PUT/DELETE/PROPFIND on an object Box; `queue` mode (needs `bridge_allowed`): write-only inbox |
 | `mcpedge` | `bridge_allowed` | `Bearer` / `X-Console-Key` accounts (SHA-256 stored) | read-only MCP gateway forwarded as `rpc.req` to `target_device` over `/v2/ws`; rejects any `Origin` |
+| `egress` | `bridge_allowed` | outbound-only (`HMAC-SHA256` over `timestamp "." body` in `X-Relay-Signature`) | subscribes to committed Box events (`item`/`object`/`object_deleted`) and asynchronously POSTs metadata-only JSON (never payload bytes) to `target_url` (rejects private/loopback URLs unless `allow_private_url:true`) |
 
 ## 13. Limits and status codes
 

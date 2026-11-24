@@ -552,6 +552,7 @@ func (s *Store) SweepExpired() (removedItems int, removedMsgs int) {
 		removedMsgs = int(n)
 	}
 	s.sweepReceipts()
+	s.sweepExpiredUploads()
 	s.SweepOrphanBlobs()
 	return removedItems, removedMsgs
 }

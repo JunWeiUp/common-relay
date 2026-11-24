@@ -158,9 +158,11 @@ func (s *Store) SweepOrphanBlobs() (removed int) {
 			continue
 		}
 		name := e.Name()
-		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".tmp") {
+		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".tmp") || strings.HasSuffix(name, ".part") {
 			if info, err := e.Info(); err == nil && info.ModTime().Before(cutoff.Add(-time.Hour)) {
-				_ = os.Remove(filepath.Join(dir, name))
+				if !strings.HasSuffix(name, ".part") {
+					_ = os.Remove(filepath.Join(dir, name))
+				}
 			}
 			continue
 		}

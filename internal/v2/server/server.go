@@ -282,20 +282,22 @@ func (s *Server) handleSpaceDevice(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if action == "items" {
+	switch action {
+	case "items":
 		s.handleBoxItems(w, r, dev, role, spaceID, boxName, sub)
-	} else {
+	case "uploads":
+		s.handleBoxUploads(w, r, dev, role, spaceID, boxName, sub)
+	default:
 		s.handleBoxObjects(w, r, role, spaceID, boxName, sub)
 	}
 }
 
-// splitBoxPath splits "{box...}/items[/{id}]" or "{box...}/objects[/{key...}]"
-// on whole path segments. Box names may contain "/" but never a bare "items" or
-// "objects" segment (core.ValidBoxName), so the first such segment is the action.
+// splitBoxPath splits "{box...}/items[/{id}]", "{box...}/objects[/{key...}]",
+// or "{box...}/uploads[/{id}[/complete]]" on whole path segments.
 func splitBoxPath(p string) (box, action, sub string, ok bool) {
 	segs := strings.Split(p, "/")
 	for i := 1; i < len(segs); i++ {
-		if segs[i] == "items" || segs[i] == "objects" {
+		if segs[i] == "items" || segs[i] == "objects" || segs[i] == "uploads" {
 			box = strings.Join(segs[:i], "/")
 			if !core.ValidBoxName(box) {
 				return "", "", "", false
@@ -308,6 +310,100 @@ func splitBoxPath(p string) (box, action, sub string, ok bool) {
 		}
 	}
 	return "", "", "", false
+}
+
+func (s *Server) handleBoxUploads(w http.ResponseWriter, r *http.Request, dev core.Device, role core.MemberRole, spaceID, boxName, sub string) {
+	sub = strings.Trim(sub, "/")
+	switch {
+	case sub == "" && r.Method == http.MethodPost:
+		if !role.CanWrite() {
+			http.Error(w, "read-only role", http.StatusForbidden)
+			return
+		}
+		var in struct {
+			TotalSize   int64  `json:"total_size"`
+			Key         string `json:"key"`
+			ContentType string `json:"content_type"`
+			Meta        string `json:"meta"`
+			TTL         int64  `json:"ttl"`
+		}
+		if err := decodeJSON(r, &in); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		up, err := s.Store.CreateBoxUpload(spaceID, boxName, dev.ID, in.Key, in.ContentType, in.Meta, in.TotalSize, in.TTL)
+		if err != nil {
+			writeCoreErr(w, err)
+			return
+		}
+		replyJSON(w, http.StatusCreated, map[string]any{"ok": true, "upload": up})
+
+	case sub != "" && !strings.Contains(sub, "/") && r.Method == http.MethodGet:
+		up, err := s.Store.GetBoxUpload(spaceID, boxName, sub)
+		if err != nil {
+			writeCoreErr(w, err)
+			return
+		}
+		replyJSON(w, http.StatusOK, map[string]any{"ok": true, "upload": up})
+
+	case sub != "" && !strings.Contains(sub, "/") && r.Method == http.MethodPatch:
+		if !role.CanWrite() {
+			http.Error(w, "read-only role", http.StatusForbidden)
+			return
+		}
+		offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+		if err != nil || offset < 0 {
+			http.Error(w, "invalid offset", http.StatusBadRequest)
+			return
+		}
+		up, err := s.Store.AppendBoxUploadChunk(spaceID, boxName, sub, offset, r.Body)
+		if err != nil {
+			writeCoreErr(w, err)
+			return
+		}
+		replyJSON(w, http.StatusOK, map[string]any{"ok": true, "upload": up})
+
+	case strings.HasSuffix(sub, "/complete") && r.Method == http.MethodPost:
+		if !role.CanWrite() {
+			http.Error(w, "read-only role", http.StatusForbidden)
+			return
+		}
+		id := strings.TrimSuffix(sub, "/complete")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		var in struct {
+			SHA256 string `json:"sha256"`
+		}
+		if r.ContentLength != 0 {
+			_ = decodeJSON(r, &in)
+		}
+		item, obj, err := s.Store.CompleteBoxUpload(spaceID, boxName, id, in.SHA256)
+		if err != nil {
+			writeCoreErr(w, err)
+			return
+		}
+		if item != nil {
+			replyJSON(w, http.StatusCreated, map[string]any{"ok": true, "item": item})
+			return
+		}
+		replyJSON(w, http.StatusCreated, map[string]any{"ok": true, "object": obj})
+
+	case sub != "" && !strings.Contains(sub, "/") && r.Method == http.MethodDelete:
+		if !role.CanWrite() {
+			http.Error(w, "read-only role", http.StatusForbidden)
+			return
+		}
+		if err := s.Store.AbortBoxUpload(spaceID, boxName, sub); err != nil {
+			writeCoreErr(w, err)
+			return
+		}
+		replyJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleBoxItems(w http.ResponseWriter, r *http.Request, dev core.Device, role core.MemberRole, spaceID, boxName, sub string) {
