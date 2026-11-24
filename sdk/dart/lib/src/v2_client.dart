@@ -588,5 +588,115 @@ class RelayV2Client {
     return RelayV2PluginAccount.fromJson(j['account'] as Map<String, dynamic>);
   }
 
+  /// Creates a resumable chunked upload session for a Box (queue/ephemeral or object).
+  Future<Map<String, dynamic>> createBoxUpload(
+    String spaceId,
+    String boxName, {
+    required int totalSize,
+    String key = '',
+    String contentType = 'application/octet-stream',
+    String metaJson = '{}',
+    int ttlSeconds = 0,
+  }) async {
+    final path = _boxPath(spaceId, boxName, 'uploads');
+    final j = await _adminJson('createBoxUpload', 'POST', '$baseUrl$path', {
+      'total_size': totalSize,
+      if (key.isNotEmpty) 'key': key,
+      'content_type': contentType,
+      'meta': metaJson,
+      if (ttlSeconds > 0) 'ttl': ttlSeconds,
+    });
+    return (j['upload'] as Map).cast<String, dynamic>();
+  }
+
+  /// Queries server-side offset for resuming an in-progress Box upload.
+  Future<Map<String, dynamic>> getBoxUpload(String spaceId, String boxName, String uploadId) async {
+    final path = '${_boxPath(spaceId, boxName, 'uploads')}/${Uri.encodeComponent(uploadId)}';
+    final j = await _adminJson('getBoxUpload', 'GET', '$baseUrl$path');
+    return (j['upload'] as Map).cast<String, dynamic>();
+  }
+
+  /// Appends a raw chunk at the exact server offset.
+  Future<Map<String, dynamic>> appendBoxUploadChunk(
+    String spaceId,
+    String boxName,
+    String uploadId,
+    int offset,
+    Uint8List chunk,
+  ) async {
+    final uri = Uri.parse('$baseUrl${_boxPath(spaceId, boxName, 'uploads')}/${Uri.encodeComponent(uploadId)}?offset=$offset');
+    final req = http.Request('PATCH', uri)
+      ..headers.addAll({
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/octet-stream',
+        if (accessPassword.isNotEmpty) relayAccessHeader: accessPassword,
+      })
+      ..bodyBytes = chunk;
+    final res = await http.Response.fromStream(await _http.send(req));
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw RelayV2HttpException('appendBoxUploadChunk', res.statusCode, res.body);
+    }
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    return (j['upload'] as Map).cast<String, dynamic>();
+  }
+
+  /// Finalizes a chunked Box upload with optional SHA-256 and CAS expectedETag.
+  Future<Map<String, dynamic>> completeBoxUpload(
+    String spaceId,
+    String boxName,
+    String uploadId, {
+    String sha256Hex = '',
+    String expectedETag = '',
+  }) async {
+    final path = '${_boxPath(spaceId, boxName, 'uploads')}/${Uri.encodeComponent(uploadId)}/complete';
+    return await _adminJson('completeBoxUpload', 'POST', '$baseUrl$path', {
+      if (sha256Hex.isNotEmpty) 'sha256': sha256Hex,
+      if (expectedETag.isNotEmpty) 'expected_etag': expectedETag,
+    });
+  }
+
+  /// Aborts an incomplete Box upload and frees reserved quota.
+  Future<void> abortBoxUpload(String spaceId, String boxName, String uploadId) async {
+    final path = '${_boxPath(spaceId, boxName, 'uploads')}/${Uri.encodeComponent(uploadId)}';
+    await _adminJson('abortBoxUpload', 'DELETE', '$baseUrl$path');
+  }
+
+  /// Uploads [data] in chunks of [chunkSize] bytes with SHA-256 verification.
+  Future<Map<String, dynamic>> uploadBoxResumable(
+    String spaceId,
+    String boxName,
+    Uint8List data, {
+    String key = '',
+    String contentType = 'application/octet-stream',
+    String metaJson = '{}',
+    int chunkSize = 256 * 1024,
+    int ttlSeconds = 0,
+    String expectedETag = '',
+  }) async {
+    final digest = hashes.sha256.convert(data).toString();
+    var up = await createBoxUpload(
+      spaceId,
+      boxName,
+      totalSize: data.length,
+      key: key,
+      contentType: contentType,
+      metaJson: metaJson,
+      ttlSeconds: ttlSeconds,
+    );
+    final uploadId = up['id'] as String;
+    var offset = 0;
+    while (offset < data.length) {
+      final end = (offset + chunkSize) < data.length ? offset + chunkSize : data.length;
+      up = await appendBoxUploadChunk(spaceId, boxName, uploadId, offset, Uint8List.sublistView(data, offset, end));
+      offset = (up['offset'] as num).toInt();
+    }
+    return await completeBoxUpload(spaceId, boxName, uploadId, sha256Hex: digest, expectedETag: expectedETag);
+  }
+
+  String _boxPath(String spaceId, String boxName, String action) {
+    final segs = boxName.split('/').map(Uri.encodeComponent).join('/');
+    return '/v2/spaces/${Uri.encodeComponent(spaceId)}/boxes/$segs/$action';
+  }
+
   void close() => _http.close();
 }

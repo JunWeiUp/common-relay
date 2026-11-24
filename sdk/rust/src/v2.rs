@@ -420,6 +420,177 @@ impl V2Client {
         rb.header("Authorization", format!("Bearer {}", self.token))
     }
 
+    fn uploads_url(&self, space: &str, box_name: &str, suffix: &str) -> String {
+        format!("{}/v2/spaces/{space}/boxes/{box_name}/uploads{suffix}", self.base_url)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_box_upload(
+        &self,
+        space: &str,
+        box_name: &str,
+        total_size: u64,
+        key: &str,
+        content_type: &str,
+        meta_json: &str,
+        ttl_sec: u64,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let mut body = serde_json::json!({
+            "total_size": total_size,
+            "content_type": if content_type.is_empty() { "application/octet-stream" } else { content_type },
+            "meta": if meta_json.is_empty() { "{}" } else { meta_json },
+        });
+        if !key.is_empty() {
+            body["key"] = serde_json::Value::String(key.to_string());
+        }
+        if ttl_sec > 0 {
+            body["ttl"] = serde_json::json!(ttl_sec);
+        }
+        let resp = self
+            .apply_auth(self.http.post(self.uploads_url(space, box_name, "")))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| crate::Error::Connection("box upload create failed"))?;
+        if !resp.status().is_success() {
+            return Err(crate::Error::Http(resp.status().as_u16()));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|_| crate::Error::Protocol("invalid box upload json"))?;
+        Ok(v["upload"].clone())
+    }
+
+    pub async fn get_box_upload(
+        &self,
+        space: &str,
+        box_name: &str,
+        upload_id: &str,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let resp = self
+            .apply_auth(self.http.get(self.uploads_url(space, box_name, &format!("/{upload_id}"))))
+            .send()
+            .await
+            .map_err(|_| crate::Error::Connection("box upload get failed"))?;
+        if !resp.status().is_success() {
+            return Err(crate::Error::Http(resp.status().as_u16()));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|_| crate::Error::Protocol("invalid box upload json"))?;
+        Ok(v["upload"].clone())
+    }
+
+    pub async fn append_box_upload_chunk(
+        &self,
+        space: &str,
+        box_name: &str,
+        upload_id: &str,
+        offset: u64,
+        chunk: Vec<u8>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let url = self.uploads_url(space, box_name, &format!("/{upload_id}?offset={offset}"));
+        let resp = self
+            .apply_auth(self.http.patch(url))
+            .header("Content-Type", "application/octet-stream")
+            .body(chunk)
+            .send()
+            .await
+            .map_err(|_| crate::Error::Connection("box upload chunk failed"))?;
+        if !resp.status().is_success() {
+            return Err(crate::Error::Http(resp.status().as_u16()));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|_| crate::Error::Protocol("invalid box upload json"))?;
+        Ok(v["upload"].clone())
+    }
+
+    pub async fn complete_box_upload(
+        &self,
+        space: &str,
+        box_name: &str,
+        upload_id: &str,
+        sha256_hex: &str,
+        expected_etag: &str,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let mut body = serde_json::Map::new();
+        if !sha256_hex.is_empty() {
+            body.insert("sha256".into(), serde_json::Value::String(sha256_hex.into()));
+        }
+        if !expected_etag.is_empty() {
+            body.insert("expected_etag".into(), serde_json::Value::String(expected_etag.into()));
+        }
+        let url = self.uploads_url(space, box_name, &format!("/{upload_id}/complete"));
+        let resp = self
+            .apply_auth(self.http.post(url))
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await
+            .map_err(|_| crate::Error::Connection("box upload complete failed"))?;
+        if !resp.status().is_success() {
+            return Err(crate::Error::Http(resp.status().as_u16()));
+        }
+        resp.json()
+            .await
+            .map_err(|_| crate::Error::Protocol("invalid box upload complete json"))
+    }
+
+    pub async fn abort_box_upload(
+        &self,
+        space: &str,
+        box_name: &str,
+        upload_id: &str,
+    ) -> Result<(), crate::Error> {
+        let url = self.uploads_url(space, box_name, &format!("/{upload_id}"));
+        let resp = self
+            .apply_auth(self.http.delete(url))
+            .send()
+            .await
+            .map_err(|_| crate::Error::Connection("box upload abort failed"))?;
+        if !resp.status().is_success() {
+            return Err(crate::Error::Http(resp.status().as_u16()));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upload_box_resumable(
+        &self,
+        space: &str,
+        box_name: &str,
+        data: &[u8],
+        key: &str,
+        content_type: &str,
+        meta_json: &str,
+        chunk_size: usize,
+        ttl_sec: u64,
+        expected_etag: &str,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let step = if chunk_size == 0 { 256 * 1024 } else { chunk_size };
+        let digest = hex::encode(Sha256::digest(data));
+        let mut up = self
+            .create_box_upload(space, box_name, data.len() as u64, key, content_type, meta_json, ttl_sec)
+            .await?;
+        let uid = up["id"]
+            .as_str()
+            .ok_or(crate::Error::Protocol("missing upload id"))?
+            .to_string();
+        let mut offset = 0usize;
+        while offset < data.len() {
+            let end = (offset + step).min(data.len());
+            up = self
+                .append_box_upload_chunk(space, box_name, &uid, offset as u64, data[offset..end].to_vec())
+                .await?;
+            offset = up["offset"].as_u64().unwrap_or(end as u64) as usize;
+        }
+        self.complete_box_upload(space, box_name, &uid, &digest, expected_etag)
+            .await
+    }
+
     /// Uploads opaque ciphertext into `Box(object)` with optional `If-Match` CAS (`"none"` or ETag).
     /// Returns `Error::Http(409)` on CAS conflict so callers can merge before retrying.
     pub async fn put_object(

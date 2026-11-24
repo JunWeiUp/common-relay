@@ -8,13 +8,17 @@ public actor RelayV2Stream {
     private let identity: RelayIdentity
     private let sendFrame: @Sendable (Data) async throws -> Void
     private let sendCloseEvent: @Sendable () async -> Void
+    private let sendCreditEvent: (@Sendable (Int) async -> Void)?
     private let tx: SecretStream
     private var rx: SecretStream?
     private var sendSeq: UInt64 = 0
     private var recvSeq: UInt64 = 0
+    private var uncreditedRecv = 0
+    private var paused = false
     private var incoming: [Data] = []
     private var waiters: [CheckedContinuation<Data, Error>] = []
     private var closed = false
+    private static let creditBatch = 16
 
     init(
         id: String,
@@ -23,7 +27,8 @@ public actor RelayV2Stream {
         tx: SecretStream,
         rx: SecretStream?,
         sendFrame: @escaping @Sendable (Data) async throws -> Void,
-        sendCloseEvent: @escaping @Sendable () async -> Void
+        sendCloseEvent: @escaping @Sendable () async -> Void,
+        sendCreditEvent: (@Sendable (Int) async -> Void)? = nil
     ) {
         self.id = id
         self.peer = peer
@@ -32,16 +37,26 @@ public actor RelayV2Stream {
         self.rx = rx
         self.sendFrame = sendFrame
         self.sendCloseEvent = sendCloseEvent
+        self.sendCreditEvent = sendCreditEvent
     }
 
     func attachReceiver(_ rx: SecretStream) {
         self.rx = rx
     }
 
+    func handleCredit(_ seq: Int64) {
+        paused = (seq == 0)
+    }
+
     public func send(_ data: Data) async throws {
         guard !closed else { throw RelayError.closed }
         var offset = 0
         while offset < data.count {
+            if paused {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                paused = false
+            }
+            guard !closed else { throw RelayError.closed }
             let end = min(offset + 65519, data.count)
             let chunk = data.subdata(in: offset..<end)
             let aad = try identity.aad(from: identity.device, to: peer, kind: "stream", id: id, sequence: sendSeq)
@@ -71,6 +86,13 @@ public actor RelayV2Stream {
             let aad = try identity.aad(from: peer, to: identity.device, kind: "stream", id: id, sequence: recvSeq)
             recvSeq += 1
             let plain = try rx.pull(cipher, aad: aad)
+            uncreditedRecv += 1
+            if uncreditedRecv >= Self.creditBatch {
+                uncreditedRecv = 0
+                if let sendCreditEvent {
+                    Task { await sendCreditEvent(Self.creditBatch) }
+                }
+            }
             if rx.finished {
                 if !plain.isEmpty { enqueue(plain) }
                 finishLocal()
@@ -262,6 +284,19 @@ public actor RelayV2Pipe {
         ])
     }
 
+    /// Requests the next batch (up to 256) of un-ACKed offline messages for this
+    /// Space without reconnecting. Ends with a `msg.pull.done` event.
+    @discardableResult
+    public func pullOfflineMessages(id: String? = nil) async throws -> String {
+        let reqID = id ?? String(RelayIdentity.generateSecretKey().prefix(8).relayHex)
+        try await sendJSON([
+            "type": "msg.pull",
+            "space": space,
+            "id": reqID,
+        ])
+        return reqID
+    }
+
     /// Grants flow-control credit (`seq` frames, or `0` to request pause) for a ready stream.
     public func sendStreamCredit(streamID: String, credit: Int) async throws {
         guard credit >= 0 else {
@@ -317,6 +352,9 @@ public actor RelayV2Pipe {
             },
             sendCloseEvent: { [weak self] in
                 await self?.closeStream(id: sid)
+            },
+            sendCreditEvent: { [weak self] n in
+                try? await self?.sendStreamCredit(streamID: sid, credit: n)
             }
         )
         streams[sid] = stream
@@ -374,6 +412,9 @@ public actor RelayV2Pipe {
             },
             sendCloseEvent: { [weak self] in
                 await self?.closeStream(id: sid)
+            },
+            sendCreditEvent: { [weak self] n in
+                try? await self?.sendStreamCredit(streamID: sid, credit: n)
             }
         )
         streams[sid] = stream
@@ -438,6 +479,11 @@ public actor RelayV2Pipe {
             if let sid = ev.id, let c = pendingAccept.removeValue(forKey: sid) {
                 c.resume(returning: ev)
                 return false
+            }
+            return false
+        case "stream.credit":
+            if let sid = ev.id, let st = streams[sid] {
+                await st.handleCredit(ev.seq ?? 0)
             }
             return false
         case "stream.close":

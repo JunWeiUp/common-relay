@@ -391,6 +391,101 @@ public final class V2Client {
         }
     }
 
+    private HttpUrl uploadsUrl(String spaceId, String boxName, String suffix) {
+        HttpUrl.Builder b = HttpUrl.parse(baseUrl).newBuilder()
+                .addPathSegment("v2").addPathSegment("spaces").addPathSegment(spaceId)
+                .addPathSegment("boxes");
+        for (String seg : boxName.split("/")) {
+            b.addPathSegment(seg);
+        }
+        b.addPathSegment("uploads");
+        if (suffix != null && !suffix.isEmpty()) {
+            for (String seg : suffix.split("/")) {
+                if (!seg.isEmpty()) b.addPathSegment(seg);
+            }
+        }
+        return b.build();
+    }
+
+    public JSONObject createBoxUpload(String spaceId, String boxName, long totalSize, String key, String contentType, String metaJson, long ttlSec) throws IOException {
+        JSONObject body = new JSONObject();
+        try {
+            body.put("total_size", totalSize);
+            if (key != null && !key.isEmpty()) body.put("key", key);
+            body.put("content_type", contentType == null || contentType.isEmpty() ? "application/octet-stream" : contentType);
+            body.put("meta", metaJson == null || metaJson.isEmpty() ? "{}" : metaJson);
+            if (ttlSec > 0) body.put("ttl", ttlSec);
+        } catch (JSONException e) {
+            throw new IOException(e);
+        }
+        return adminJson("POST", uploadsUrl(spaceId, boxName, ""), body).optJSONObject("upload");
+    }
+
+    public JSONObject getBoxUpload(String spaceId, String boxName, String uploadId) throws IOException {
+        return adminJson("GET", uploadsUrl(spaceId, boxName, uploadId), null).optJSONObject("upload");
+    }
+
+    public JSONObject appendBoxUploadChunk(String spaceId, String boxName, String uploadId, long offset, byte[] chunk) throws IOException {
+        HttpUrl url = uploadsUrl(spaceId, boxName, uploadId).newBuilder()
+                .addQueryParameter("offset", Long.toString(offset))
+                .build();
+        Request.Builder rb = new Request.Builder().url(url).header("Authorization", "Bearer " + token);
+        if (!accessPassword.isEmpty()) rb.header("Relay-Access", accessPassword);
+        rb.patch(RequestBody.create(chunk, MediaType.get("application/octet-stream")));
+        try (Response resp = http.newCall(rb.build()).execute()) {
+            ResponseBody rbody = resp.body();
+            String text = rbody == null ? "" : rbody.string();
+            if (!resp.isSuccessful()) {
+                throw new ApiException(resp.code(), text.trim());
+            }
+            try {
+                return new JSONObject(text).optJSONObject("upload");
+            } catch (JSONException e) {
+                throw new IOException("relay v2: invalid json", e);
+            }
+        }
+    }
+
+    public JSONObject completeBoxUpload(String spaceId, String boxName, String uploadId, String sha256Hex, String expectedETag) throws IOException {
+        JSONObject body = new JSONObject();
+        try {
+            if (sha256Hex != null && !sha256Hex.isEmpty()) body.put("sha256", sha256Hex);
+            if (expectedETag != null && !expectedETag.isEmpty()) body.put("expected_etag", expectedETag);
+        } catch (JSONException e) {
+            throw new IOException(e);
+        }
+        return adminJson("POST", uploadsUrl(spaceId, boxName, uploadId + "/complete"), body);
+    }
+
+    public void abortBoxUpload(String spaceId, String boxName, String uploadId) throws IOException {
+        adminJson("DELETE", uploadsUrl(spaceId, boxName, uploadId), null);
+    }
+
+    public JSONObject uploadBoxResumable(String spaceId, String boxName, byte[] data, String key, String contentType, String metaJson, int chunkSize, long ttlSec, String expectedETag) throws IOException {
+        int step = chunkSize <= 0 ? (256 * 1024) : chunkSize;
+        String digest;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] sum = md.digest(data);
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : sum) sb.append(String.format("%02x", b & 0xff));
+            digest = sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IOException(e);
+        }
+        JSONObject up = createBoxUpload(spaceId, boxName, data.length, key, contentType, metaJson, ttlSec);
+        String uid = up.optString("id", "");
+        int offset = 0;
+        while (offset < data.length) {
+            int end = Math.min(offset + step, data.length);
+            byte[] chunk = new byte[end - offset];
+            System.arraycopy(data, offset, chunk, 0, chunk.length);
+            up = appendBoxUploadChunk(spaceId, boxName, uid, offset, chunk);
+            offset = (int) up.optLong("offset", end);
+        }
+        return completeBoxUpload(spaceId, boxName, uid, digest, expectedETag);
+    }
+
     private static List<String> strings(JSONArray arr) {
         List<String> out = new ArrayList<>();
         if (arr != null) for (int i = 0; i < arr.length(); i++) {

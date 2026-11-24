@@ -326,7 +326,7 @@ public final class RelayV2Client {
     public let baseURL: String
     public let accessPassword: String
     public let token: String
-    private let session: URLSession
+    let session: URLSession
 
     public init(baseURL: String, accessPassword: String, token: String, allowLocal: Bool = false, session: URLSession = .shared) throws {
         let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))

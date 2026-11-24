@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Server + Go / Rust / Dart / Python / Interop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-go@v5.5.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5.5.0
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          components: clippy
+      - uses: dart-lang/setup-dart@v1.7.1
+        with:
+          sdk: '3.11'
+      - name: Install native libsodium
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev
+      - name: Go server tests (race)
+        run: go test -race ./...
+      - name: Go SDK tests (race)
+        working-directory: sdk/go
+        run: go test -race ./...
+      - name: Build relay binary for SDK integration tests
+        run: |
+          mkdir -p build
+          go build -o build/common-relay ./cmd/common-relay
+      - name: Python SDK tests
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e sdk/python
+          python3 -m unittest discover -s sdk/python -v
+      - name: Rust SDK clippy and tests
+        working-directory: sdk/rust
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
+      - name: Dart SDK analyze and tests
+        working-directory: sdk/dart
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+      - name: Cross-language group interop
+        run: python3 scripts/group-interop.py --only python go rust dart
+
+  swift:
+    name: Swift SDK (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Swift SDK tests
+        run: swift test --package-path sdk/swift

@@ -8,12 +8,17 @@ class RelayV2Stream {
   final RelayIdentity _identity;
   final Future<void> Function(Uint8List frame) _sendFrame;
   final Future<void> Function() _sendCloseEvent;
+  final void Function(int credit)? _sendCredit;
   final RelayEncryptStream _tx;
   RelayDecryptStream? _rx;
   int _sendSeq = 0;
   int _recvSeq = 0;
+  int _uncreditedRecv = 0;
+  Completer<void>? _backpressureWait;
   final _incoming = StreamController<Uint8List>();
   bool _closed = false;
+
+  static const _creditBatch = 16;
 
   RelayV2Stream._({
     required this.id,
@@ -23,11 +28,13 @@ class RelayV2Stream {
     RelayDecryptStream? rx,
     required Future<void> Function(Uint8List frame) sendFrame,
     required Future<void> Function() sendCloseEvent,
+    void Function(int credit)? sendCredit,
   })  : _identity = identity,
         _tx = tx,
         _rx = rx,
         _sendFrame = sendFrame,
-        _sendCloseEvent = sendCloseEvent;
+        _sendCloseEvent = sendCloseEvent,
+        _sendCredit = sendCredit;
 
   Stream<Uint8List> get data => _incoming.stream;
 
@@ -35,10 +42,26 @@ class RelayV2Stream {
     _rx = rx;
   }
 
+  void _onCredit(int seq) {
+    if (seq == 0) {
+      _backpressureWait ??= Completer<void>();
+    } else if (seq > 0) {
+      final w = _backpressureWait;
+      _backpressureWait = null;
+      if (w != null && !w.isCompleted) w.complete();
+    }
+  }
+
   Future<void> send(Uint8List plain) async {
     if (_closed) throw StateError('v2 stream closed');
     var offset = 0;
     while (offset < plain.length) {
+      final wait = _backpressureWait;
+      if (wait != null && !wait.isCompleted) {
+        await wait.future.timeout(const Duration(milliseconds: 250), onTimeout: () {});
+        _backpressureWait = null;
+      }
+      if (_closed) throw StateError('v2 stream closed');
       final end = (offset + 65519) < plain.length ? offset + 65519 : plain.length;
       final chunk = Uint8List.sublistView(plain, offset, end);
       final aad = _identity.aad(_identity.device, peer, 'stream', id, _sendSeq++);
@@ -56,6 +79,13 @@ class RelayV2Stream {
       final plain = await _rx!.pull(cipher, aad);
       if (plain.isNotEmpty && !_incoming.isClosed) {
         _incoming.add(plain);
+      }
+      _uncreditedRecv++;
+      if (_uncreditedRecv >= _creditBatch) {
+        _uncreditedRecv = 0;
+        try {
+          _sendCredit?.call(_creditBatch);
+        } catch (_) {}
       }
       if (_rx!.finished) {
         await _finishLocal();
@@ -120,6 +150,7 @@ class RelayV2Pipe {
   Future<void> connect() async {
     final headers = <String, dynamic>{
       'Authorization': 'Bearer ${client.token}',
+      'X-Relay-Features': 'stream-credit',
       if (client.accessPassword.isNotEmpty) relayAccessHeader: client.accessPassword,
     };
     final ws = await WebSocket.connect(client.wsUrl, headers: headers);
@@ -200,6 +231,14 @@ class RelayV2Pipe {
     });
   }
 
+  /// Requests the next batch (up to 256) of un-ACKed offline messages for this
+  /// Space without reconnecting. Ends with a `msg.pull.done` event.
+  String pullOfflineMessages({String? id}) {
+    final reqId = id ?? hex(identity.sodium.randombytes.buf(8));
+    _sendJson({'type': 'msg.pull', 'space': space, 'id': reqId});
+    return reqId;
+  }
+
   /// Grants flow-control credit (`seq` frames, or `0` to pause) for a ready stream.
   void sendStreamCredit(String streamId, int credit) {
     if (credit < 0) throw ArgumentError.value(credit, 'credit', 'must be >= 0');
@@ -251,6 +290,7 @@ class RelayV2Pipe {
       tx: tx,
       sendFrame: (frame) async => _sendBinary(frame),
       sendCloseEvent: () => closeStream(sid),
+      sendCredit: (n) => sendStreamCredit(sid, n),
     );
     _streams[sid] = stream;
     final completer = Completer<Map<String, dynamic>>();
@@ -296,6 +336,7 @@ class RelayV2Pipe {
       rx: rx,
       sendFrame: (frame) async => _sendBinary(frame),
       sendCloseEvent: () => closeStream(sid),
+      sendCredit: (n) => sendStreamCredit(sid, n),
     );
     _streams[sid] = stream;
     _sendJson({
@@ -371,6 +412,13 @@ class RelayV2Pipe {
         if (sid != null && _pendingAccept.containsKey(sid)) {
           final c = _pendingAccept.remove(sid)!;
           if (!c.isCompleted) c.complete(ev);
+        }
+        return;
+      case 'stream.credit':
+        final sid = ev['id'] as String?;
+        final seq = (ev['seq'] as num?)?.toInt() ?? 0;
+        if (sid != null) {
+          _streams[sid]?._onCredit(seq);
         }
         return;
       case 'stream.close':
