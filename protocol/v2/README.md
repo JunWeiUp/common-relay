@@ -149,6 +149,7 @@ Space.
 | `presence` | `space,id` | `{type:"presence",space,id,peers}`; not a member → `error forbidden` |
 | `msg` | `space,to,id?,topic?,body,offline?,ttl?` | see 4.5 |
 | `ack` | `space,from,id` | deletes a stored offline message addressed to this device; the sender, if online, gets `{type:"received",space,id,from:<acker>}`. No reply. |
+| `msg.pull` | `space,id?` | requests the next batch (up to 256) of un-ACKed offline messages for `space` without reconnecting; ends with `{type:"msg.pull.done",space,id,seq:<count>}` |
 | `stream.open` | `space,to,id(16 chars),topic?,body?` | target gets `stream.open` with `from`; errors `invalid_stream`, `offline`, `forbidden` |
 | `stream.accept` | `id,body?` | only the target; origin gets `stream.accept` with `from`; else `error unknown_stream` |
 | `stream.credit` | `id,seq` (`seq ≥ 0`) | grants `seq` frames of flow-control credit (or `0` to request pause) to the other end of a ready stream; errors `invalid_stream`, `unknown_stream` |
@@ -287,7 +288,7 @@ may read; writing requires `admin`/`member` (else 403). Non-members get 403.
 | `POST …/uploads` | `{"total_size":N,"key"?:…,"content_type"?:…,"meta"?:…,"ttl"?:…}` | 201 `{ok,upload}` (reserves quota; `key` required for `object` Boxes, forbidden for `queue`/`ephemeral`) |
 | `GET …/uploads/{id}` | | `{ok,upload}` (current `offset` for resume) |
 | `PATCH …/uploads/{id}?offset=<n>` | raw chunk bytes | `{ok,upload}` (409 on offset mismatch; 507 if exceeding `total_size`) |
-| `POST …/uploads/{id}/complete` | optional `{"sha256":"<64 hex>"}` | 201 `{ok,item}` (`queue`/`ephemeral`) or `{ok,object}` (`object`) |
+| `POST …/uploads/{id}/complete` | optional `{"sha256":"<64 hex>","expected_etag":"<etag>|none"}` (or `If-Match`) | 201 `{ok,item}` (`queue`/`ephemeral`) or `{ok,object}` (`object`, enforces `keep_versions` & 409 on CAS mismatch) |
 | `DELETE …/uploads/{id}` | | `{ok}` (aborts upload and frees reserved quota) |
 
 `BoxItem`: `id, space_id, box_name, seq, sender, size, sha256, content_type,

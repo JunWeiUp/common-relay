@@ -209,9 +209,11 @@ func (s *Store) AppendBoxUploadChunk(spaceID, boxName, id string, offset int64, 
 	return up, nil
 }
 
-// CompleteBoxUpload verifies the uploaded length and optional SHA-256 digest,
-// then atomically promotes the staged file into a committed BoxItem or BoxObject.
-func (s *Store) CompleteBoxUpload(spaceID, boxName, id, expectedSHA256 string) (*BoxItem, *BoxObject, error) {
+// CompleteBoxUpload verifies the uploaded length, optional SHA-256 digest, and
+// (for object Boxes) optional expectedETag CAS guard, then atomically promotes
+// the staged file into a committed BoxItem or BoxObject (pruning stale versions
+// according to box.KeepVersions).
+func (s *Store) CompleteBoxUpload(spaceID, boxName, id, expectedSHA256, expectedETag string) (*BoxItem, *BoxObject, error) {
 	box, err := s.GetBox(spaceID, boxName)
 	if err != nil {
 		return nil, nil, err
@@ -322,9 +324,27 @@ func (s *Store) CompleteBoxUpload(spaceID, boxName, id, expectedSHA256 string) (
 		return &item, nil, nil
 	}
 
-	// Object box promotion.
+	// Object box promotion with optional CAS (expectedETag) and keep_versions pruning.
 	var prevVer int64
-	_ = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM v2_box_objects WHERE space_id=? AND box_name=? AND obj_key=?`, spaceID, boxName, up.Key).Scan(&prevVer)
+	var curETag string
+	verErr := tx.QueryRow(
+		`SELECT version, etag FROM v2_box_objects WHERE space_id=? AND box_name=? AND obj_key=? ORDER BY version DESC LIMIT 1`,
+		spaceID, boxName, up.Key,
+	).Scan(&prevVer, &curETag)
+	if verErr != nil && !errors.Is(verErr, sql.ErrNoRows) {
+		return nil, nil, verErr
+	}
+	expectedETag = strings.Trim(strings.TrimSpace(expectedETag), `"`)
+	if expectedETag != "" {
+		if expectedETag == "none" {
+			if prevVer > 0 {
+				return nil, nil, ErrConflict
+			}
+		} else if prevVer == 0 || curETag != expectedETag {
+			return nil, nil, ErrConflict
+		}
+	}
+
 	nextVer := prevVer + 1
 	_, err = tx.Exec(
 		`INSERT INTO v2_box_objects(space_id,box_name,obj_key,version,etag,size,content_type,meta_json,blob_id,created_at)
@@ -334,10 +354,41 @@ func (s *Store) CompleteBoxUpload(spaceID, boxName, id, expectedSHA256 string) (
 	if err != nil {
 		return nil, nil, err
 	}
+
+	var staleBlobs []string
+	if box.KeepVersions > 0 {
+		cutoff := nextVer - int64(box.KeepVersions)
+		if cutoff > 0 {
+			rows, qerr := tx.Query(
+				`SELECT blob_id FROM v2_box_objects WHERE space_id=? AND box_name=? AND obj_key=? AND version<=?`,
+				spaceID, boxName, up.Key, cutoff,
+			)
+			if qerr != nil {
+				return nil, nil, qerr
+			}
+			for rows.Next() {
+				var bid string
+				if rows.Scan(&bid) == nil {
+					staleBlobs = append(staleBlobs, bid)
+				}
+			}
+			rows.Close()
+			if _, derr := tx.Exec(
+				`DELETE FROM v2_box_objects WHERE space_id=? AND box_name=? AND obj_key=? AND version<=?`,
+				spaceID, boxName, up.Key, cutoff,
+			); derr != nil {
+				return nil, nil, derr
+			}
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
 	promoted = true
+	for _, bid := range staleBlobs {
+		_ = os.Remove(s.blobPath(bid))
+	}
 	obj := BoxObject{
 		SpaceID: spaceID, BoxName: boxName, Key: up.Key, Version: nextVer,
 		ETag: digest, Size: up.TotalSize, ContentType: up.ContentType,

@@ -110,4 +110,30 @@ func TestPipePriorityQueuesAndBackpressure(t *testing.T) {
 	if sc.StreamFrames != 2 || sc.StreamDrops != 1 || sc.StreamBytes != int64(2*len(frame)) {
 		t.Fatalf("unexpected space metrics: %+v", sc)
 	}
+
+	// Verify msg.pull returns pending offline messages and msg.pull.done with count.
+	if _, err := store.CreateSpace("sp-1", "S1", TrustStrictE2E); err != nil {
+		t.Fatalf("CreateSpace: %v", err)
+	}
+	if _, err := store.PutMessage(Message{
+		ID: "m1", SpaceID: "sp-1", Sender: "dev-a", Recipient: "dev-b", Topic: "t", Body: "enc", ExpiresAt: 9999999999,
+	}); err != nil {
+		t.Fatalf("PutMessage: %v", err)
+	}
+	for len(peerB.out) > 0 {
+		<-peerB.out
+	}
+	hub.handleEvent(peerB, PipeEvent{Type: "msg.pull", Space: "sp-1", ID: "pull-1"})
+	if len(peerB.out) != 2 {
+		t.Fatalf("expected 1 offline msg + 1 msg.pull.done, got %d", len(peerB.out))
+	}
+	var mEv, doneEv PipeEvent
+	_ = json.Unmarshal((<-peerB.out).data, &mEv)
+	_ = json.Unmarshal((<-peerB.out).data, &doneEv)
+	if mEv.Type != "msg" || mEv.ID != "m1" || !mEv.Offline {
+		t.Fatalf("unexpected pulled msg: %+v", mEv)
+	}
+	if doneEv.Type != "msg.pull.done" || doneEv.ID != "pull-1" || doneEv.Seq != 1 {
+		t.Fatalf("unexpected pull done event: %+v", doneEv)
+	}
 }

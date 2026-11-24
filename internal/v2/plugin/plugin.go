@@ -111,6 +111,13 @@ func NewHost(store *core.Store, pipe *core.PipeHub) *Host {
 // Store exposes the kernel store for plugin-internal bookkeeping (receipts).
 func (h *Host) Store() *core.Store { return h.store }
 
+// RecordEdge records an outbound/background plugin delivery outcome in metrics.
+func (h *Host) RecordEdge(pluginID, mount string, status int) {
+	if h.pipe != nil && h.pipe.Metrics != nil {
+		h.pipe.Metrics.Edge(pluginID+"/"+mount, status)
+	}
+}
+
 // CallRPC forwards a request to targetDeviceID over its /v2/ws pipe, bounded by
 // timeout (core.DefaultRPCTimeout when zero).
 func (h *Host) CallRPC(ctx context.Context, spaceID, targetDeviceID, topic, payload string) (string, error) {

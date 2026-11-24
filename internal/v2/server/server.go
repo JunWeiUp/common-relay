@@ -374,12 +374,16 @@ func (s *Server) handleBoxUploads(w http.ResponseWriter, r *http.Request, dev co
 			return
 		}
 		var in struct {
-			SHA256 string `json:"sha256"`
+			SHA256       string `json:"sha256"`
+			ExpectedETag string `json:"expected_etag"`
 		}
 		if r.ContentLength != 0 {
 			_ = decodeJSON(r, &in)
 		}
-		item, obj, err := s.Store.CompleteBoxUpload(spaceID, boxName, id, in.SHA256)
+		if in.ExpectedETag == "" {
+			in.ExpectedETag = r.Header.Get("If-Match")
+		}
+		item, obj, err := s.Store.CompleteBoxUpload(spaceID, boxName, id, in.SHA256, in.ExpectedETag)
 		if err != nil {
 			writeCoreErr(w, err)
 			return

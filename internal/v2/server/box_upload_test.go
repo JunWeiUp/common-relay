@@ -183,6 +183,60 @@ func TestBoxResumableChunkedUploads(t *testing.T) {
 		t.Fatalf("unexpected promoted object: %+v", objCompRes.Object)
 	}
 
+	// Verify CAS expected_etag mismatch returns 409 and keep_versions prunes older versions.
+	if _, err := store.CreateBox(core.Box{SpaceID: "sp-up", Name: "vault-v2", Mode: core.ModeObject, KeepVersions: 2}); err != nil {
+		t.Fatalf("CreateBox vault-v2: %v", err)
+	}
+	uploadObj := func(data []byte, expectedETag string) (*http.Response, core.BoxObject) {
+		b, _ := json.Marshal(map[string]any{"total_size": len(data), "key": "k1"})
+		r := devDo(http.MethodPost, "/v2/spaces/sp-up/boxes/vault-v2/uploads", bytes.NewReader(b), "application/json")
+		var ir struct {
+			Upload core.BoxUpload `json:"upload"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&ir)
+		r.Body.Close()
+		r = devDo(http.MethodPatch, "/v2/spaces/sp-up/boxes/vault-v2/uploads/"+ir.Upload.ID+"?offset=0", bytes.NewReader(data), "application/octet-stream")
+		r.Body.Close()
+		cb, _ := json.Marshal(map[string]any{"expected_etag": expectedETag})
+		r = devDo(http.MethodPost, "/v2/spaces/sp-up/boxes/vault-v2/uploads/"+ir.Upload.ID+"/complete", bytes.NewReader(cb), "application/json")
+		var cr struct {
+			Object core.BoxObject `json:"object"`
+		}
+		if r.StatusCode == http.StatusCreated {
+			_ = json.NewDecoder(r.Body).Decode(&cr)
+		}
+		return r, cr.Object
+	}
+	r1, o1 := uploadObj([]byte("v1"), "none")
+	r1.Body.Close()
+	if r1.StatusCode != http.StatusCreated || o1.Version != 1 {
+		t.Fatalf("v1 failed: %d %+v", r1.StatusCode, o1)
+	}
+	rBad, _ := uploadObj([]byte("v2-bad"), "none")
+	rBad.Body.Close()
+	if rBad.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 on CAS none conflict, got %d", rBad.StatusCode)
+	}
+	r2, o2 := uploadObj([]byte("v2"), o1.ETag)
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusCreated || o2.Version != 2 {
+		t.Fatalf("v2 failed: %d %+v", r2.StatusCode, o2)
+	}
+	r3, o3 := uploadObj([]byte("v3"), o2.ETag)
+	r3.Body.Close()
+	if r3.StatusCode != http.StatusCreated || o3.Version != 3 {
+		t.Fatalf("v3 failed: %d %+v", r3.StatusCode, o3)
+	}
+	vResp := devDo(http.MethodGet, "/v2/spaces/sp-up/boxes/vault-v2/objects/k1?versions=1", nil, "")
+	var vRes struct {
+		Versions []core.BoxObject `json:"versions"`
+	}
+	_ = json.NewDecoder(vResp.Body).Decode(&vRes)
+	vResp.Body.Close()
+	if len(vRes.Versions) != 2 || vRes.Versions[0].Version != 3 || vRes.Versions[1].Version != 2 {
+		t.Fatalf("expected keep_versions=2 pruning v1, got %+v", vRes.Versions)
+	}
+
 	// 3. Abort frees upload cleanly.
 	abortInit, _ := json.Marshal(map[string]any{"total_size": 100})
 	resp = devDo(http.MethodPost, "/v2/spaces/sp-up/boxes/inbox/uploads", bytes.NewReader(abortInit), "application/json")

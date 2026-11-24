@@ -730,6 +730,24 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 			}
 		}
 
+	case "msg.pull":
+		if _, ok := p.spaces[ev.Space]; !ok {
+			h.sendEvent(p, PipeEvent{Type: "error", ID: ev.ID, Code: "forbidden"})
+			return
+		}
+		msgs, err := h.store.PendingMessages(ev.Space, p.dev.ID)
+		if err != nil {
+			h.sendEvent(p, PipeEvent{Type: "error", ID: ev.ID, Code: "storage"})
+			return
+		}
+		for _, m := range msgs {
+			h.sendEvent(p, PipeEvent{
+				Type: "msg", Space: m.SpaceID, ID: m.ID, From: m.Sender,
+				To: m.Recipient, Topic: m.Topic, Body: m.Body, Offline: true,
+			})
+		}
+		h.sendEvent(p, PipeEvent{Type: "msg.pull.done", Space: ev.Space, ID: ev.ID, Seq: int64(len(msgs))})
+
 	case "stream.open":
 		role, ok := p.spaces[ev.Space]
 		if !ok || !role.CanWrite() || len(ev.ID) != 16 {

@@ -54,18 +54,65 @@ type eventJob struct {
 type Plugin struct {
 	host *plugin.Host
 
-	mu     sync.Mutex
-	closed bool
-	ch     chan eventJob
-	done   chan struct{}
-	client *http.Client
+	mu            sync.Mutex
+	closed        bool
+	ch            chan eventJob
+	done          chan struct{}
+	publicClient  *http.Client
+	privateClient *http.Client
+}
+
+func newHTTPClient(allowPrivate bool) *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	tr := &http.Transport{
+		MaxIdleConns:        16,
+		IdleConnTimeout:     60 * time.Second,
+		TLSHandshakeTimeout: 5 * time.Second,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if allowPrivate {
+				return dialer.DialContext(ctx, network, addr)
+			}
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range ips {
+				if isPrivateIP(ip.IP) {
+					return nil, fmt.Errorf("egress blocked private resolved IP %s", ip.IP.String())
+				}
+			}
+			for _, ip := range ips {
+				conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+				if derr == nil {
+					return conn, nil
+				}
+				err = derr
+			}
+			if err == nil {
+				err = errors.New("no resolved addresses")
+			}
+			return nil, err
+		},
+	}
+	return &http.Client{
+		Transport: tr,
+		Timeout:   maxTimeoutSec * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return errors.New("egress redirects are forbidden")
+		},
+	}
 }
 
 func New() *Plugin {
 	return &Plugin{
-		ch:     make(chan eventJob, queueCapacity),
-		done:   make(chan struct{}),
-		client: &http.Client{Timeout: maxTimeoutSec * time.Second},
+		ch:            make(chan eventJob, queueCapacity),
+		done:          make(chan struct{}),
+		publicClient:  newHTTPClient(false),
+		privateClient: newHTTPClient(true),
 	}
 }
 
@@ -139,6 +186,13 @@ func (p *Plugin) ValidateConfig(cfg map[string]any) error {
 	return nil
 }
 
+func isPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
 func isPrivateHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".local") {
@@ -148,7 +202,7 @@ func isPrivateHost(host string) bool {
 	if ip == nil {
 		return false
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	return isPrivateIP(ip)
 }
 
 func (p *Plugin) Init(host *plugin.Host) error {
@@ -230,7 +284,7 @@ func (p *Plugin) dispatch(job eventJob) {
 		if !eventAllowed(cfg.Events, job.Event) {
 			continue
 		}
-		p.deliver(cfg, job)
+		p.deliver(pub.Mount, cfg, job)
 	}
 }
 
@@ -246,7 +300,7 @@ func eventAllowed(allowed []string, ev string) bool {
 	return false
 }
 
-func (p *Plugin) deliver(cfg config, job eventJob) {
+func (p *Plugin) deliver(mount string, cfg config, job eventJob) {
 	body, err := json.Marshal(job)
 	if err != nil {
 		return
@@ -255,27 +309,51 @@ func (p *Plugin) deliver(cfg config, job eventJob) {
 	if cfg.TimeoutSec > 0 && cfg.TimeoutSec <= maxTimeoutSec {
 		timeout = cfg.TimeoutSec
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TargetURL, bytes.NewReader(body))
-	if err != nil {
-		return
+	cli := p.publicClient
+	if cfg.AllowPrivateURL {
+		cli = p.privateClient
 	}
 	ts := strconv.FormatInt(job.At, 10)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Relay-Event", job.Event)
-	req.Header.Set("X-Relay-Space", job.SpaceID)
-	req.Header.Set("X-Relay-Timestamp", ts)
+	var sig string
 	if cfg.HMACSecret != "" {
 		mac := hmac.New(sha256.New, []byte(cfg.HMACSecret))
 		mac.Write([]byte(ts))
 		mac.Write([]byte("."))
 		mac.Write(body)
-		req.Header.Set("X-Relay-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		sig = "sha256=" + hex.EncodeToString(mac.Sum(nil))
 	}
-	resp, err := p.client.Do(req)
-	if err == nil && resp != nil {
+
+	status := http.StatusBadGateway
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TargetURL, bytes.NewReader(body))
+		if rerr != nil {
+			cancel()
+			break
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Relay-Event", job.Event)
+		req.Header.Set("X-Relay-Space", job.SpaceID)
+		req.Header.Set("X-Relay-Timestamp", ts)
+		if sig != "" {
+			req.Header.Set("X-Relay-Signature", sig)
+		}
+		resp, derr := cli.Do(req)
+		cancel()
+		if derr != nil {
+			status = http.StatusBadGateway
+			continue
+		}
+		status = resp.StatusCode
 		_ = resp.Body.Close()
+		if status < 500 {
+			break
+		}
+	}
+	if p.host != nil {
+		p.host.RecordEdge(p.ID(), mount, status)
 	}
 }
