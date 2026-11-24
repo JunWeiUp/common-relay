@@ -219,9 +219,18 @@ public actor RelayV2Pipe {
         }
     }
 
-    public func sendMessage(to peer: String, topic: String, plaintext: Data, offline: Bool = false) async throws {
-        let msgID = String(RelayIdentity.generateSecretKey().prefix(12).relayHex)
-        let sealed = try identity.seal(to: peer, kind: "msg", id: msgID, value: [
+    @discardableResult
+    public func sendMessage(
+        to peer: String,
+        topic: String,
+        plaintext: Data,
+        offline: Bool = false,
+        ttlSeconds: Int? = nil,
+        id: String? = nil,
+        kind: String = "message"
+    ) async throws -> String {
+        let msgID = id ?? String(RelayIdentity.generateSecretKey().prefix(12).relayHex)
+        let sealed = try identity.seal(to: peer, kind: kind, id: msgID, value: [
             "data": plaintext.base64EncodedString(),
         ])
         var payload: [String: Any] = [
@@ -235,18 +244,61 @@ public actor RelayV2Pipe {
         if offline {
             payload["offline"] = true
         }
+        if let ttl = ttlSeconds, ttl > 0 {
+            payload["ttl"] = ttl
+        }
         try await sendJSON(payload)
+        return msgID
+    }
+
+    /// Sends a `/v2/ws` `ack` for an offline message (or to drop an undecryptable
+    /// message per §4.5 after durable local processing / roster verification).
+    public func ackMessage(from sender: String, id: String, space overrideSpace: String? = nil) async throws {
+        try await sendJSON([
+            "type": "ack",
+            "space": overrideSpace ?? space,
+            "from": sender,
+            "id": id,
+        ])
+    }
+
+    /// Grants flow-control credit (`seq` frames, or `0` to request pause) for a ready stream.
+    public func sendStreamCredit(streamID: String, credit: Int) async throws {
+        guard credit >= 0 else {
+            throw RelayError.invalid("stream credit must be >= 0")
+        }
+        try await sendJSON([
+            "type": "stream.credit",
+            "space": space,
+            "id": streamID,
+            "seq": credit,
+        ])
+    }
+
+    public nonisolated func isTrustedSender(_ deviceID: String) -> Bool {
+        identity.isTrusted(deviceID)
     }
 
     public nonisolated func openMessage(_ event: RelayV2PipeEvent) throws -> Data {
         guard let from = event.from, let id = event.id, let body = event.body else {
             throw RelayError.invalid("missing message fields")
         }
-        let opened = try identity.open(from: from, kind: "msg", id: id, body: body)
+        let opened: [String: Any]
+        if let v = try? identity.open(from: from, kind: "message", id: id, body: body) {
+            opened = v
+        } else {
+            opened = try identity.open(from: from, kind: "msg", id: id, body: body)
+        }
         guard let b64 = opened["data"] as? String, let data = Data(base64Encoded: b64) else {
             throw RelayError.invalid("invalid message data")
         }
         return data
+    }
+
+    /// Attempts to decrypt a `msg` event without throwing on §4.5 undecryptable
+    /// envelopes. Returns `nil` if the sender is untrusted or authentication fails.
+    public nonisolated func tryOpenMessage(_ event: RelayV2PipeEvent) -> Data? {
+        try? openMessage(event)
     }
 
     public func openStream(to peer: String, topic: String = "stream", timeoutSeconds: Double = 15) async throws -> RelayV2Stream {

@@ -30,6 +30,7 @@ func checked(_ code: Int32) throws { guard code == 0 else { throw RelayError.inv
 public struct RelayIdentity: Sendable {
     public let app: String, group: String, device: String
     private let secret: [UInt8], trusted: [String: Data]
+    public func isTrusted(_ deviceID: String) -> Bool { trusted[deviceID] != nil }
     public init(app: String, group: String, device: String, secretKey: Data, trustedPeers: [String: Data]) throws {
         guard secretKey.count == 32, trustedPeers.values.allSatisfy({ $0.count == 32 }), sodium_init() >= 0 else { throw RelayError.invalid("key") }
         self.app = app; self.group = group; self.device = device; secret = Array(secretKey); trusted = trustedPeers

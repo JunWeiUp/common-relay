@@ -163,14 +163,17 @@ class RelayV2Pipe {
     }
   }
 
-  Future<void> sendMessage(
+  Future<String> sendMessage(
     String to,
     String topic,
     Uint8List plaintext, {
     bool offline = false,
+    int? ttlSeconds,
+    String? id,
+    String kind = 'message',
   }) async {
-    final msgId = hex(identity.sodium.randombytes.buf(12));
-    final sealed = identity.seal(to, 'msg', msgId, {
+    final msgId = id ?? hex(identity.sodium.randombytes.buf(12));
+    final sealed = identity.seal(to, kind, msgId, {
       'data': base64Encode(plaintext),
     });
     _sendJson({
@@ -181,15 +184,56 @@ class RelayV2Pipe {
       'topic': topic,
       'body': sealed,
       if (offline) 'offline': true,
+      if (ttlSeconds != null && ttlSeconds > 0) 'ttl': ttlSeconds,
+    });
+    return msgId;
+  }
+
+  /// Sends a `/v2/ws` `ack` for an offline message (or to drop an undecryptable
+  /// message per §4.5 after durable local processing / roster verification).
+  void ackMessage(String from, String id, {String? spaceId}) {
+    _sendJson({
+      'type': 'ack',
+      'space': spaceId ?? space,
+      'from': from,
+      'id': id,
     });
   }
+
+  /// Grants flow-control credit (`seq` frames, or `0` to pause) for a ready stream.
+  void sendStreamCredit(String streamId, int credit) {
+    if (credit < 0) throw ArgumentError.value(credit, 'credit', 'must be >= 0');
+    _sendJson({
+      'type': 'stream.credit',
+      'space': space,
+      'id': streamId,
+      'seq': credit,
+    });
+  }
+
+  bool isTrustedSender(String deviceId) => identity.trustedPeers.containsKey(deviceId);
 
   Uint8List openMessage(Map<String, dynamic> event) {
     final from = event['from'] as String? ?? '';
     final id = event['id'] as String? ?? '';
     final body = event['body'] as String? ?? '';
-    final opened = identity.open(from, 'msg', id, body);
-    return base64Decode(opened['data'] as String);
+    try {
+      final opened = identity.open(from, 'message', id, body);
+      return base64Decode(opened['data'] as String);
+    } catch (_) {
+      final opened = identity.open(from, 'msg', id, body);
+      return base64Decode(opened['data'] as String);
+    }
+  }
+
+  /// Attempts to decrypt a `msg` event without throwing on §4.5 undecryptable
+  /// envelopes. Returns `null` if the sender is untrusted or authentication fails.
+  Uint8List? tryOpenMessage(Map<String, dynamic> event) {
+    try {
+      return openMessage(event);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<RelayV2Stream> openStream(

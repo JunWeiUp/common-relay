@@ -155,8 +155,8 @@ func (h *Hub) Close() {
 }
 
 // HubFeatures is the /v2/ws opt-in sent by the Hub: the server may then inline
-// small queue/ephemeral items into box.changed.
-const HubFeatures = "box-inline"
+// small queue/ephemeral items into box.changed and emit stream.credit hints.
+const HubFeatures = "box-inline,stream-credit"
 
 // hubReadLimit bounds one /v2/ws frame (the server caps frames at 256 KiB).
 const hubReadLimit = 1 << 20

@@ -34,6 +34,7 @@ type Event struct {
 	From     string   `json:"from,omitempty"`
 	To       string   `json:"to,omitempty"`
 	Topic    string   `json:"topic,omitempty"`
+	Event    string   `json:"event,omitempty"`
 	Body     string   `json:"body,omitempty"`
 	Offline  bool     `json:"offline,omitempty"`
 	TTL      int64    `json:"ttl,omitempty"`
@@ -48,6 +49,7 @@ type Event struct {
 	Revision int      `json:"revision,omitempty"`
 	Device   string   `json:"device,omitempty"`
 	Data     []byte   `json:"-"` // Authenticated plaintext, only populated for messages.
+	Trusted  bool     `json:"-"` // For Type=="undecryptable": whether From was in pinned keys.
 }
 
 // Options configures a connection. Password is the relay server's access password,
@@ -294,6 +296,17 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.v2 {
+		event, err := c.request(ctx, Event{Type: "presence", Space: c.identity.group, ID: id}, "presence")
+		if err != nil {
+			return nil, err
+		}
+		out := make([]Peer, 0, len(event.Peers))
+		for _, dev := range event.Peers {
+			out = append(out, Peer{App: c.identity.app, Group: c.identity.group, Device: dev})
+		}
+		return out, nil
+	}
 	event, err := c.request(ctx, Event{Type: "peers", ID: id}, "peers")
 	if err != nil {
 		return nil, err
@@ -316,6 +329,16 @@ func (c *Client) Message(ctx context.Context, to string, data []byte) (Event, er
 	body, err := c.identity.SealMessage(to, id, data)
 	if err != nil {
 		return Event{}, err
+	}
+	if c.v2 {
+		res, err := c.request(ctx, Event{Type: "msg", Space: c.identity.group, ID: id, To: to, Body: body}, "ack")
+		if err != nil {
+			return Event{}, err
+		}
+		if res.Event != "" {
+			res.Type = res.Event
+		}
+		return res, nil
 	}
 	return c.request(ctx, Event{Type: "message", ID: id, To: to, Body: body}, "forwarded")
 }
@@ -350,7 +373,19 @@ func (c *Client) MessageOfflineTTL(ctx context.Context, to, id string, data []by
 	if body == "" {
 		return Event{Type: "received", ID: id}, nil
 	}
-	result, err := c.request(ctx, Event{Type: "message", ID: id, To: to, Body: body, Offline: true, Expires: expires}, "stored", "received")
+	var result Event
+	if c.v2 {
+		rem := expires - c.now()
+		if rem <= 0 {
+			rem = 1
+		}
+		result, err = c.request(ctx, Event{Type: "msg", Space: c.identity.group, ID: id, To: to, Body: body, Offline: true, TTL: rem}, "ack", "received")
+		if err == nil && result.Type == "ack" && result.Event != "" {
+			result.Type = result.Event
+		}
+	} else {
+		result, err = c.request(ctx, Event{Type: "message", ID: id, To: to, Body: body, Offline: true, Expires: expires}, "stored", "received")
+	}
 	if err != nil {
 		return Event{}, err
 	}
@@ -367,19 +402,26 @@ func (c *Client) MessageOfflineTTL(ctx context.Context, to, id string, data []by
 // ACKed so the relay stops redelivering. A redelivery after a lost ACK is re-ACKed
 // automatically and not delivered again within 7 days.
 func (c *Client) Acknowledge(ctx context.Context, event Event) error {
-	if event.Type != "message" || !objectID.MatchString(event.ID) || !namePattern.MatchString(event.From) {
+	if (event.Type != "message" && event.Type != "undecryptable") || !objectID.MatchString(event.ID) || !namePattern.MatchString(event.From) {
 		return errors.New("only received messages can be acknowledged")
 	}
-	if event.Offline && c.journal == nil {
+	if event.Offline && c.journal == nil && event.Type != "undecryptable" {
 		return errors.New("persistent journal required for offline acknowledgment")
 	}
-	if c.journal != nil {
+	if c.journal != nil && event.Type == "message" {
 		if err := c.journal.acknowledge(c.scope, event.From, event.ID); err != nil {
 			return err
 		}
 	}
 	if !event.Offline {
 		return nil
+	}
+	if c.v2 {
+		space := event.Space
+		if space == "" {
+			space = c.identity.group
+		}
+		return c.send(ctx, Event{Type: "ack", Space: space, ID: event.ID, From: event.From})
 	}
 	_, err := c.request(ctx, Event{Type: "ack", ID: event.ID, From: event.From}, "acked")
 	return err
@@ -475,12 +517,33 @@ func (c *Client) readLoop() {
 				}
 				continue
 			}
-			continue
+			if !c.v2 {
+				continue
+			}
+			e.Type = "message"
+			if e.Offline && c.journal == nil {
+				c.fail(errors.New("offline reception requires a persistent journal"))
+				return
+			}
+			deliver, err := c.receiveMessage(&e)
+			if err != nil {
+				// §4.5: undecryptable messages never kill the connection; surface to the app.
+				_, trusted := c.identity.trusted[e.From]
+				e = Event{Type: "undecryptable", Space: e.Space, ID: e.ID, From: e.From, Offline: e.Offline, Trusted: trusted}
+			} else if !deliver {
+				continue
+			}
 		case "stream.credit":
-			if s := c.stream(e.ID); s != nil {
-				if err = s.credit(e.Sequence); err != nil {
-					c.fail(err)
-					return
+			seq := e.Sequence
+			if seq == 0 && e.Seq > 0 {
+				seq = uint64(e.Seq)
+			}
+			if seq > 0 {
+				if s := c.stream(e.ID); s != nil {
+					if err = s.credit(seq); err != nil {
+						c.fail(err)
+						return
+					}
 				}
 			}
 			continue
@@ -544,6 +607,13 @@ func (c *Client) receiveMessage(e *Event) (bool, error) {
 	}
 	if duplicate || (expires != 0 && expires <= c.now()) {
 		if e.Offline {
+			if c.v2 {
+				space := e.Space
+				if space == "" {
+					space = c.identity.group
+				}
+				return false, c.send(c.ctx, Event{Type: "ack", Space: space, ID: e.ID, From: e.From})
+			}
 			return false, c.send(c.ctx, Event{Type: "ack", ID: e.ID, From: e.From})
 		}
 		return false, nil

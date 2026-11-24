@@ -17,6 +17,7 @@ part 'src/journal.dart';
 part 'src/groups.dart';
 part 'src/invitation_links.dart';
 part 'src/payload.dart';
+part 'src/state_machine.dart';
 part 'src/v2_client.dart';
 part 'src/v2_pipe.dart';
 

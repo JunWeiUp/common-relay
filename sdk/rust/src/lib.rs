@@ -15,6 +15,7 @@ mod payload;
 mod pipe;
 pub mod policy;
 mod secretstream;
+pub mod state_machine;
 pub mod v2;
 
 pub use access::{Options, ACCESS_HEADER};
@@ -28,6 +29,9 @@ pub use groups::{
 pub use journal::Journal;
 pub use payload::{validate_payload, PayloadKind};
 pub use pipe::{Pipe, OFFLINE_TTL};
+pub use state_machine::{
+    DirectUpgradeMessage, DraftStore, GroupDraft, GroupStateMachine, DIRECT_UPGRADE_TOPIC,
+};
 
 /// Failures are cloneable so a closed connection reports the same cause to every caller.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
