@@ -175,6 +175,7 @@ func (s *Store) PutBoxItem(spaceID, boxName, sender, contentType, metaJSON strin
 	} else if s.OnBoxChange != nil {
 		s.OnBoxChange(spaceID, boxName, "item", item.ID, item.Seq)
 	}
+	s.emitBoxChange(spaceID, boxName, "item", item.ID, item.Seq)
 	return item, nil
 }
 
@@ -408,6 +409,7 @@ func (s *Store) PutBoxObject(spaceID, boxName, key, contentType, metaJSON, expec
 	if s.OnBoxChange != nil {
 		s.OnBoxChange(spaceID, boxName, "object", key, nextVer)
 	}
+	s.emitBoxChange(spaceID, boxName, "object", key, nextVer)
 	return obj, nil
 }
 
@@ -521,6 +523,7 @@ func (s *Store) DeleteBoxObject(spaceID, boxName, key string) error {
 	if s.OnBoxChange != nil {
 		s.OnBoxChange(spaceID, boxName, "object_deleted", key, 0)
 	}
+	s.emitBoxChange(spaceID, boxName, "object_deleted", key, 0)
 	return nil
 }
 

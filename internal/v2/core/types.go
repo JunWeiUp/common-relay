@@ -169,10 +169,12 @@ type Space struct {
 	CreatedAt  int64      `json:"created_at"`
 	// ManagedBy names the projection that owns this space ("v1:<app>" for
 	// signed device groups); empty for admin-created spaces.
-	ManagedBy string            `json:"managed_by,omitempty"`
-	UsedBytes int64             `json:"used_bytes,omitempty"`
-	Members   []SpaceMemberView `json:"members,omitempty"`
-	Boxes     []SpaceBoxView    `json:"boxes,omitempty"`
+	ManagedBy  string            `json:"managed_by,omitempty"`
+	Governance string            `json:"governance,omitempty"` // "signed_ledger" | "admin_managed"
+	QuotaBytes int64             `json:"quota_bytes,omitempty"`
+	UsedBytes  int64             `json:"used_bytes,omitempty"`
+	Members    []SpaceMemberView `json:"members,omitempty"`
+	Boxes      []SpaceBoxView    `json:"boxes,omitempty"`
 }
 
 type SpaceMember struct {
@@ -294,6 +296,7 @@ type StatusSnapshot struct {
 	UsedBytes     int64            `json:"used_bytes"`
 	GlobalQuota   int64            `json:"global_quota"`
 	OnlinePeers   int              `json:"online_peers"`
+	SyncConflicts int64            `json:"sync_conflicts"`
 	Plugins       []string         `json:"plugins"`
 	BySpaceBytes  map[string]int64 `json:"by_space_bytes"`
 }

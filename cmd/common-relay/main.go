@@ -11,6 +11,7 @@ import (
 	v2core "github.com/JunWeiUp/common-relay/internal/v2/core"
 	"github.com/JunWeiUp/common-relay/internal/v2/ledger"
 	v2drop "github.com/JunWeiUp/common-relay/internal/v2/plugins/drop"
+	v2egress "github.com/JunWeiUp/common-relay/internal/v2/plugins/egress"
 	v2mcp "github.com/JunWeiUp/common-relay/internal/v2/plugins/mcpedge"
 	v2webdav "github.com/JunWeiUp/common-relay/internal/v2/plugins/webdav"
 	v2webhook "github.com/JunWeiUp/common-relay/internal/v2/plugins/webhook"
@@ -200,6 +201,7 @@ func run() error {
 			v2Srv.RegisterPlugin(v2webhook.New()),
 			v2Srv.RegisterPlugin(v2webdav.New()),
 			v2Srv.RegisterPlugin(v2mcp.New()),
+			v2Srv.RegisterPlugin(v2egress.New()),
 		} {
 			if regErr != nil {
 				return regErr

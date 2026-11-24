@@ -9,7 +9,7 @@ import (
 
 // SchemaVersion is the relay_v2.db schema version this binary understands.
 // Migrations are ordered and each runs exactly once, tracked by PRAGMA user_version.
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // migrations[i] upgrades the schema from version i to i+1.
 var migrations = []func(tx *sql.Tx) error{
@@ -169,6 +169,42 @@ var migrations = []func(tx *sql.Tx) error{
 				ON CONFLICT(space_id) DO UPDATE SET bytes = bytes + NEW.size; END`,
 			`CREATE TRIGGER IF NOT EXISTS v2_ledger_files_usage_del AFTER DELETE ON v2_ledger_files BEGIN
 				UPDATE v2_usage SET bytes = bytes - OLD.size WHERE space_id = OLD.grp; END`,
+		}
+		for _, q := range stmts {
+			if _, err := tx.Exec(q); err != nil {
+				return err
+			}
+		}
+		return nil
+	},
+	// 5 → 6: per-space custom quota_bytes (0 = default Store.SpaceQuota) and
+	// resumable chunked Box uploads (v2_box_uploads, tracked in v2_usage).
+	func(tx *sql.Tx) error {
+		if err := addColumnIfMissing(tx, "v2_spaces", "quota_bytes", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		stmts := []string{
+			`CREATE TABLE IF NOT EXISTS v2_box_uploads (
+				id TEXT PRIMARY KEY,
+				space_id TEXT NOT NULL,
+				box_name TEXT NOT NULL,
+				obj_key TEXT NOT NULL DEFAULT '',
+				sender TEXT NOT NULL DEFAULT '',
+				total_size INTEGER NOT NULL,
+				offset INTEGER NOT NULL DEFAULT 0,
+				meta_json TEXT NOT NULL DEFAULT '{}',
+				content_type TEXT NOT NULL DEFAULT '',
+				digest TEXT NOT NULL DEFAULT '',
+				expires_at INTEGER NOT NULL,
+				created_at INTEGER NOT NULL,
+				FOREIGN KEY (space_id, box_name) REFERENCES v2_boxes(space_id, name) ON DELETE CASCADE
+			)`,
+			`CREATE INDEX IF NOT EXISTS v2_box_uploads_exp ON v2_box_uploads(expires_at)`,
+			`CREATE TRIGGER IF NOT EXISTS v2_box_uploads_usage_ins AFTER INSERT ON v2_box_uploads BEGIN
+				INSERT INTO v2_usage(space_id, bytes) VALUES (NEW.space_id, NEW.total_size)
+				ON CONFLICT(space_id) DO UPDATE SET bytes = bytes + NEW.total_size; END`,
+			`CREATE TRIGGER IF NOT EXISTS v2_box_uploads_usage_del AFTER DELETE ON v2_box_uploads BEGIN
+				UPDATE v2_usage SET bytes = bytes - OLD.total_size WHERE space_id = OLD.space_id; END`,
 		}
 		for _, q := range stmts {
 			if _, err := tx.Exec(q); err != nil {

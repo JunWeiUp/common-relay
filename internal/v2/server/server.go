@@ -476,7 +476,11 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	p := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v2/admin/"), "/")
 	switch {
 	case p == "metrics" && r.Method == http.MethodGet:
-		res := map[string]any{"ok": true, "metrics": s.Pipe.Metrics.Snapshot()}
+		res := map[string]any{
+			"ok":             true,
+			"metrics":        s.Pipe.Metrics.Snapshot(),
+			"sync_conflicts": core.SyncConflicts.Load(),
+		}
 		if s.LedgerUsage != nil {
 			res["ledger"] = s.LedgerUsage()
 		}
@@ -601,9 +605,14 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			ID         string          `json:"id"`
 			Name       string          `json:"name"`
 			TrustLevel core.TrustLevel `json:"trust_level"`
+			QuotaBytes int64           `json:"quota_bytes"`
 		}
 		if err := decodeJSON(r, &in); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		if in.QuotaBytes < 0 {
+			writeCoreErr(w, core.ErrInvalidInput)
 			return
 		}
 		sp, err := s.Store.CreateSpace(in.ID, in.Name, in.TrustLevel)
@@ -611,7 +620,28 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			writeCoreErr(w, err)
 			return
 		}
+		if in.QuotaBytes > 0 {
+			if updated, qerr := s.Store.SetSpaceQuota(sp.ID, in.QuotaBytes); qerr == nil {
+				sp = updated
+			}
+		}
 		replyJSON(w, http.StatusCreated, map[string]any{"ok": true, "space": sp})
+
+	case strings.HasPrefix(p, "spaces/") && strings.HasSuffix(p, "/quota") && r.Method == http.MethodPut:
+		spaceID := strings.TrimSuffix(strings.TrimPrefix(p, "spaces/"), "/quota")
+		var in struct {
+			QuotaBytes int64 `json:"quota_bytes"`
+		}
+		if err := decodeJSON(r, &in); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		sp, err := s.Store.SetSpaceQuota(spaceID, in.QuotaBytes)
+		if err != nil {
+			writeCoreErr(w, err)
+			return
+		}
+		replyJSON(w, http.StatusOK, map[string]any{"ok": true, "space": sp})
 
 	case strings.HasPrefix(p, "spaces/") && strings.HasSuffix(p, "/members") && r.Method == http.MethodPut:
 		spaceID := strings.TrimSuffix(strings.TrimPrefix(p, "spaces/"), "/members")

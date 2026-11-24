@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,6 +52,29 @@ type Store struct {
 	DiskReserve uint64
 
 	secretKey *[32]byte
+
+	boxListenersMu sync.RWMutex
+	boxListeners   []func(spaceID, boxName, event, ref string, seqOrVer int64)
+}
+
+// AddBoxChangeListener registers an additional observer invoked after every
+// committed Box mutation (item/object/object_deleted).
+func (s *Store) AddBoxChangeListener(fn func(spaceID, boxName, event, ref string, seqOrVer int64)) {
+	if fn == nil {
+		return
+	}
+	s.boxListenersMu.Lock()
+	s.boxListeners = append(s.boxListeners, fn)
+	s.boxListenersMu.Unlock()
+}
+
+func (s *Store) emitBoxChange(spaceID, boxName, event, ref string, seqOrVer int64) {
+	s.boxListenersMu.RLock()
+	listeners := append([]func(string, string, string, string, int64){}, s.boxListeners...)
+	s.boxListenersMu.RUnlock()
+	for _, fn := range listeners {
+		fn(spaceID, boxName, event, ref, seqOrVer)
+	}
 }
 
 func OpenStore(dir string) (*Store, error) {
@@ -360,7 +384,12 @@ func (s *Store) checkQuotaTx(tx *sql.Tx, spaceID string, extra int64) error {
 	if err := tx.QueryRow(q, spaceID).Scan(&globalUsed, &spaceUsed); err != nil {
 		return err
 	}
-	if s.SpaceQuota > 0 && spaceUsed+extra > s.SpaceQuota {
+	limit := s.SpaceQuota
+	var customQuota int64
+	if err := tx.QueryRow(`SELECT quota_bytes FROM v2_spaces WHERE id=?`, spaceID).Scan(&customQuota); err == nil && customQuota > 0 {
+		limit = customQuota
+	}
+	if limit > 0 && spaceUsed+extra > limit {
 		return ErrQuota
 	}
 	if s.GlobalQuota > 0 && globalUsed+extra > s.GlobalQuota {
@@ -454,6 +483,13 @@ func (s *Store) ListDevices() ([]Device, error) {
 
 /* ───────── Spaces & Membership ───────── */
 
+func spaceGovernance(managedBy string) string {
+	if managedBy != "" {
+		return "signed_ledger"
+	}
+	return "admin_managed"
+}
+
 func (s *Store) CreateSpace(id, name string, trust TrustLevel) (Space, error) {
 	if !ValidIdent(id) || !trust.Valid() {
 		return Space{}, ErrInvalidInput
@@ -466,13 +502,29 @@ func (s *Store) CreateSpace(id, name string, trust TrustLevel) (Space, error) {
 		}
 		return Space{}, err
 	}
-	return Space{ID: id, Name: strings.TrimSpace(name), TrustLevel: trust, CreatedAt: now}, nil
+	return Space{ID: id, Name: strings.TrimSpace(name), TrustLevel: trust, Governance: "admin_managed", CreatedAt: now}, nil
+}
+
+// SetSpaceQuota sets a per-space storage quota in bytes (0 resets to the
+// server-wide default Store.SpaceQuota).
+func (s *Store) SetSpaceQuota(id string, quotaBytes int64) (Space, error) {
+	if !ValidIdent(id) || quotaBytes < 0 {
+		return Space{}, ErrInvalidInput
+	}
+	res, err := s.DB.Exec(`UPDATE v2_spaces SET quota_bytes=? WHERE id=?`, quotaBytes, id)
+	if err != nil {
+		return Space{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Space{}, ErrNotFound
+	}
+	return s.GetSpace(id)
 }
 
 func (s *Store) GetSpace(id string) (Space, error) {
 	var sp Space
 	var tl string
-	err := s.Reader().QueryRow(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces WHERE id=?`, id).Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy)
+	err := s.Reader().QueryRow(`SELECT id,name,app,trust_level,created_at,managed_by,quota_bytes FROM v2_spaces WHERE id=?`, id).Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy, &sp.QuotaBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Space{}, ErrNotFound
 	}
@@ -480,11 +532,12 @@ func (s *Store) GetSpace(id string) (Space, error) {
 		return Space{}, err
 	}
 	sp.TrustLevel = TrustLevel(tl)
+	sp.Governance = spaceGovernance(sp.ManagedBy)
 	return sp, nil
 }
 
 func (s *Store) ListSpaces() ([]Space, error) {
-	rows, err := s.Reader().Query(`SELECT id,name,app,trust_level,created_at,managed_by FROM v2_spaces ORDER BY created_at, id`)
+	rows, err := s.Reader().Query(`SELECT id,name,app,trust_level,created_at,managed_by,quota_bytes FROM v2_spaces ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -493,10 +546,11 @@ func (s *Store) ListSpaces() ([]Space, error) {
 	for rows.Next() {
 		var sp Space
 		var tl string
-		if err := rows.Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy); err != nil {
+		if err := rows.Scan(&sp.ID, &sp.Name, &sp.App, &tl, &sp.CreatedAt, &sp.ManagedBy, &sp.QuotaBytes); err != nil {
 			return nil, err
 		}
 		sp.TrustLevel = TrustLevel(tl)
+		sp.Governance = spaceGovernance(sp.ManagedBy)
 		out = append(out, sp)
 	}
 	return out, rows.Err()
@@ -697,10 +751,11 @@ func (s *Store) AckMessage(spaceID, recipient, sender, id string) error {
 
 func (s *Store) Status(onlinePeers int, plugins []string) (StatusSnapshot, error) {
 	st := StatusSnapshot{
-		GlobalQuota:  s.GlobalQuota,
-		OnlinePeers:  onlinePeers,
-		Plugins:      plugins,
-		BySpaceBytes: map[string]int64{},
+		GlobalQuota:   s.GlobalQuota,
+		OnlinePeers:   onlinePeers,
+		SyncConflicts: SyncConflicts.Load(),
+		Plugins:       plugins,
+		BySpaceBytes:  map[string]int64{},
 	}
 	_ = s.Reader().QueryRow(`SELECT count(*) FROM v2_spaces`).Scan(&st.Spaces)
 	_ = s.Reader().QueryRow(`SELECT count(*) FROM v2_devices WHERE revoked=0`).Scan(&st.Devices)
