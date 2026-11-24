@@ -460,6 +460,10 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 		cancel:  cancel,
 	}
 
+	// Enqueue "hello" BEFORE publishing p in h.peers so no concurrent
+	// broadcastPresence / box.changed / msg can ever arrive ahead of hello.
+	h.sendEvent(p, PipeEvent{Type: "hello", From: dev.ID, Seq: h.sessionSeq.Add(1)})
+
 	// Replace any stale session for the same device cleanly (zero leak on network switch).
 	h.mu.Lock()
 	prev := h.peers[dev.ID]
@@ -580,7 +584,6 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 		}
 	}()
 
-	h.sendEvent(p, PipeEvent{Type: "hello", From: dev.ID, Seq: h.sessionSeq.Add(1)})
 	h.broadcastPresence(p)
 
 	// Flush pending offline messages for each subscribed space.
