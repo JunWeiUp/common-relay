@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	MaxPipeMessage   = 256 << 10
-	MaxGlobalQueued  = 32 << 20
-	PeerOutQueueSize = 64
+	MaxPipeMessage    = 256 << 10
+	MaxGlobalQueued   = 32 << 20
+	PeerOutQueueSize  = 64
+	PeerDataQueueSize = 64
 
 	// InlineMaxBytes is the largest stored item that box.changed may carry
 	// inline (base64 makes the frame ~4/3 of this plus metadata).
@@ -29,6 +30,9 @@ const (
 	// WebSocket read limit (e.g. the 32 KiB default of coder/websocket) keep
 	// working unchanged.
 	PipeFeatureBoxInline = "box-inline"
+	// PipeFeatureStreamCredit is the /v2/ws opt-in for explicit stream backpressure
+	// hints (stream.credit frames with Seq=0 when the peer data queue is saturated).
+	PipeFeatureStreamCredit = "stream-credit"
 )
 
 // PipeEvent is the compact JSON envelope carried over /v2/ws.
@@ -61,16 +65,18 @@ type wsPacket struct {
 }
 
 type pipePeer struct {
-	dev    Device
-	spaces map[string]MemberRole
-	inline bool // opted in to PipeFeatureBoxInline
-	conn   *websocket.Conn
-	out    chan wsPacket
-	outMu  sync.Mutex
-	closed bool
-	ctx    context.Context
-	cancel context.CancelFunc
-	reason atomic.Value // string: why the server ended this session (first writer wins)
+	dev     Device
+	spaces  map[string]MemberRole
+	inline  bool // opted in to PipeFeatureBoxInline
+	credit  bool // opted in to PipeFeatureStreamCredit
+	conn    *websocket.Conn
+	out     chan wsPacket // high-priority control / messaging frames
+	dataOut chan wsPacket // lower-priority binary stream frames (never starves control)
+	outMu   sync.Mutex
+	closed  bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	reason  atomic.Value // string: why the server ended this session (first writer wins)
 }
 
 func (p *pipePeer) endWith(reason string) {
@@ -98,12 +104,13 @@ type pipeStream struct {
 // PipeHub manages online device connections, Presence, messages, bounded
 // zero-disk streams, and real-time Box wake-up notifications.
 type PipeHub struct {
-	store   *Store
-	mu      sync.Mutex
-	peers   map[string]*pipePeer   // deviceID -> active peer (replaces stale session on reconnect)
-	streams map[string]*pipeStream // streamID -> active stream
-	rpcs    map[string]pendingRPC  // rpcID -> awaiting response (bound to the target device)
-	queued  atomic.Int64
+	store      *Store
+	mu         sync.Mutex
+	peers      map[string]*pipePeer   // deviceID -> active peer (replaces stale session on reconnect)
+	streams    map[string]*pipeStream // streamID -> active stream
+	rpcs       map[string]pendingRPC  // rpcID -> awaiting response (bound to the target device)
+	queued     atomic.Int64
+	sessionSeq atomic.Int64
 
 	// OriginPatterns optionally allowlists browser Origins for /v2/ws (host patterns,
 	// e.g. "console.example.com"). Requests without an Origin header are always allowed.
@@ -255,6 +262,10 @@ func (h *PipeHub) send(p *pipePeer, kind websocket.MessageType, data []byte) boo
 	n := int64(len(data))
 	if h.queued.Add(n) > MaxGlobalQueued {
 		h.queued.Add(-n)
+		if kind == websocket.MessageBinary {
+			// Backpressure: drop binary stream chunk instead of killing control plane.
+			return false
+		}
 		p.cancel()
 		return false
 	}
@@ -264,18 +275,57 @@ func (h *PipeHub) send(p *pipePeer, kind websocket.MessageType, data []byte) boo
 		return false
 	default:
 	}
+	ch := p.out
+	isData := kind == websocket.MessageBinary && p.dataOut != nil
+	if isData {
+		ch = p.dataOut
+	}
 	select {
-	case p.out <- wsPacket{kind: kind, data: data}:
+	case ch <- wsPacket{kind: kind, data: data}:
 		return true
 	default:
 		h.queued.Add(-n)
-		p.cancel()
+		if !isData {
+			p.cancel()
+		}
 		return false
 	}
 }
 
 func (h *PipeHub) sendEvent(p *pipePeer, ev PipeEvent) bool {
 	b, _ := json.Marshal(ev)
+	return h.send(p, websocket.MessageText, b)
+}
+
+// sendStreamClose enqueues stream.close behind any already-queued binary stream
+// frames on dataOut so a peer never observes stream.close before the final
+// encrypted chunks of that stream. Falls back to the control queue if dataOut
+// is saturated or uninitialized.
+func (h *PipeHub) sendStreamClose(p *pipePeer, ev PipeEvent) bool {
+	if p == nil {
+		return false
+	}
+	b, _ := json.Marshal(ev)
+	p.outMu.Lock()
+	if p.closed {
+		p.outMu.Unlock()
+		return false
+	}
+	if p.dataOut != nil {
+		n := int64(len(b))
+		if h.queued.Add(n) <= MaxGlobalQueued {
+			select {
+			case p.dataOut <- wsPacket{kind: websocket.MessageText, data: b}:
+				p.outMu.Unlock()
+				return true
+			default:
+				h.queued.Add(-n)
+			}
+		} else {
+			h.queued.Add(-n)
+		}
+	}
+	p.outMu.Unlock()
 	return h.send(p, websocket.MessageText, b)
 }
 
@@ -399,13 +449,15 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	p := &pipePeer{
-		dev:    dev,
-		spaces: spaces,
-		inline: wantsFeature(r, PipeFeatureBoxInline),
-		conn:   conn,
-		out:    make(chan wsPacket, PeerOutQueueSize),
-		ctx:    ctx,
-		cancel: cancel,
+		dev:     dev,
+		spaces:  spaces,
+		inline:  wantsFeature(r, PipeFeatureBoxInline),
+		credit:  wantsFeature(r, PipeFeatureStreamCredit),
+		conn:    conn,
+		out:     make(chan wsPacket, PeerOutQueueSize),
+		dataOut: make(chan wsPacket, PeerDataQueueSize),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 
 	// Replace any stale session for the same device cleanly (zero leak on network switch).
@@ -451,7 +503,7 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 				}
 				delete(h.streams, sid)
 				if other != nil {
-					h.sendEvent(other, PipeEvent{Type: "stream.close", Space: st.space, ID: sid})
+					h.sendStreamClose(other, PipeEvent{Type: "stream.close", Space: st.space, ID: sid})
 				}
 			}
 		}
@@ -460,19 +512,41 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
 
-	// Writer goroutine.
+	// Writer goroutine: strictly prioritizes control/messaging frames (p.out)
+	// over binary stream frames (p.dataOut) so high-throughput streams cannot
+	// starve keepalives, ACKs, or RPC replies.
 	go func() {
+		writePkt := func(pkt wsPacket) bool {
+			h.queued.Add(-int64(len(pkt.data)))
+			wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
+			err := conn.Write(wctx, pkt.kind, pkt.data)
+			wcancel()
+			if err != nil {
+				p.endWith("write_failed")
+				return false
+			}
+			return true
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case pkt := <-p.out:
-				h.queued.Add(-int64(len(pkt.data)))
-				wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
-				err := conn.Write(wctx, pkt.kind, pkt.data)
-				wcancel()
-				if err != nil {
-					p.endWith("write_failed")
+				if !writePkt(pkt) {
+					return
+				}
+				continue
+			default:
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case pkt := <-p.out:
+				if !writePkt(pkt) {
+					return
+				}
+			case pkt := <-p.dataOut:
+				if !writePkt(pkt) {
 					return
 				}
 			}
@@ -506,7 +580,7 @@ func (h *PipeHub) ServeWS(w http.ResponseWriter, r *http.Request, dev Device) {
 		}
 	}()
 
-	h.sendEvent(p, PipeEvent{Type: "hello", From: dev.ID})
+	h.sendEvent(p, PipeEvent{Type: "hello", From: dev.ID, Seq: h.sessionSeq.Add(1)})
 	h.broadcastPresence(p)
 
 	// Flush pending offline messages for each subscribed space.
@@ -630,6 +704,7 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 					To: ev.To, Topic: ev.Topic, Body: ev.Body, Offline: true,
 				})
 			}
+			h.Metrics.SpaceMsg(ev.Space, true)
 			h.sendEvent(p, PipeEvent{Type: "ack", Space: ev.Space, ID: ev.ID, Event: "stored"})
 			return
 		}
@@ -638,6 +713,7 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 				Type: "msg", Space: ev.Space, ID: ev.ID, From: p.dev.ID,
 				To: ev.To, Topic: ev.Topic, Body: ev.Body,
 			})
+			h.Metrics.SpaceMsg(ev.Space, false)
 			h.sendEvent(p, PipeEvent{Type: "ack", Space: ev.Space, ID: ev.ID, Event: "forwarded"})
 			return
 		}
@@ -689,6 +765,28 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 		h.mu.Unlock()
 		h.sendEvent(origin, PipeEvent{Type: "stream.accept", Space: st.space, ID: st.id, From: p.dev.ID, Body: ev.Body})
 
+	case "stream.credit":
+		if ev.Seq < 0 {
+			h.sendEvent(p, PipeEvent{Type: "error", ID: ev.ID, Code: "invalid_stream"})
+			return
+		}
+		h.mu.Lock()
+		st := h.streams[ev.ID]
+		var other *pipePeer
+		if st != nil && st.ready {
+			if st.a == p {
+				other = st.b
+			} else if st.b == p {
+				other = st.a
+			}
+		}
+		h.mu.Unlock()
+		if other == nil {
+			h.sendEvent(p, PipeEvent{Type: "error", ID: ev.ID, Code: "unknown_stream"})
+			return
+		}
+		h.sendEvent(other, PipeEvent{Type: "stream.credit", Space: st.space, ID: st.id, From: p.dev.ID, Seq: ev.Seq})
+
 	case "stream.close":
 		h.mu.Lock()
 		st := h.streams[ev.ID]
@@ -703,7 +801,7 @@ func (h *PipeHub) handleEvent(p *pipePeer, ev PipeEvent) {
 		}
 		h.mu.Unlock()
 		if other != nil {
-			h.sendEvent(other, PipeEvent{Type: "stream.close", Space: st.space, ID: st.id, From: p.dev.ID})
+			h.sendStreamClose(other, PipeEvent{Type: "stream.close", Space: st.space, ID: st.id, From: p.dev.ID})
 		}
 	}
 }
@@ -717,7 +815,9 @@ func (h *PipeHub) handleBinaryFrame(p *pipePeer, frame []byte) {
 	h.mu.Lock()
 	st := h.streams[sid]
 	var target *pipePeer
+	var spaceID string
 	if st != nil && st.ready {
+		spaceID = st.space
 		if st.a == p {
 			target = st.b
 		} else if st.b == p {
@@ -726,6 +826,13 @@ func (h *PipeHub) handleBinaryFrame(p *pipePeer, frame []byte) {
 	}
 	h.mu.Unlock()
 	if target != nil {
-		h.send(target, websocket.MessageBinary, frame)
+		if h.send(target, websocket.MessageBinary, frame) {
+			h.Metrics.StreamFrame(spaceID, int64(len(frame)))
+		} else {
+			h.Metrics.StreamDrop(spaceID)
+			if p.credit {
+				h.sendEvent(p, PipeEvent{Type: "stream.credit", Space: spaceID, ID: sid, Seq: 0})
+			}
+		}
 	}
 }

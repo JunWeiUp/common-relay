@@ -14,6 +14,7 @@ type Metrics struct {
 
 	mu      sync.Mutex
 	edge    map[string]*EdgeCounter
+	spaces  map[string]*SpaceCounter
 	devices map[string]*DeviceConn
 	events  []ConnEvent // ring buffer
 	next    int
@@ -23,13 +24,28 @@ type Metrics struct {
 	replaced          int64
 	boxInline         int64
 	boxInlineSkipped  int64
+	streamFrames      int64
+	streamBytes       int64
+	streamDrops       int64
 }
 
 const (
-	maxEdgeKeys     = 256
-	connEventRing   = 500
-	edgeOverflowKey = "*/other"
+	maxEdgeKeys      = 256
+	maxSpaceKeys     = 256
+	connEventRing    = 500
+	edgeOverflowKey  = "*/other"
+	spaceOverflowKey = "*/other"
 )
+
+// SpaceCounter summarises per-space Pipe message & stream traffic since start.
+type SpaceCounter struct {
+	MessagesOnline  int64 `json:"messages_online"`
+	MessagesOffline int64 `json:"messages_offline"`
+	StreamFrames    int64 `json:"stream_frames"`
+	StreamBytes     int64 `json:"stream_bytes"`
+	StreamDrops     int64 `json:"stream_drops"`
+	LastAt          int64 `json:"last_at,omitempty"`
+}
 
 // EdgeCounter counts /edge/{plugin}/{mount} requests by outcome.
 type EdgeCounter struct {
@@ -65,22 +81,32 @@ type ConnEvent struct {
 
 // MetricsSnapshot is the JSON body of /v2/admin/metrics.
 type MetricsSnapshot struct {
-	StartedAt         int64                  `json:"started_at"`
-	UptimeSeconds     int64                  `json:"uptime_seconds"`
-	Edge              map[string]EdgeCounter `json:"edge"`
-	Devices           map[string]DeviceConn  `json:"devices"`
-	KeepaliveTimeouts int64                  `json:"keepalive_timeouts"`
-	Replaced          int64                  `json:"replaced"`
+	StartedAt         int64                   `json:"started_at"`
+	UptimeSeconds     int64                   `json:"uptime_seconds"`
+	Edge              map[string]EdgeCounter  `json:"edge"`
+	Spaces            map[string]SpaceCounter `json:"spaces,omitempty"`
+	Devices           map[string]DeviceConn   `json:"devices"`
+	KeepaliveTimeouts int64                   `json:"keepalive_timeouts"`
+	Replaced          int64                   `json:"replaced"`
 	// BoxInline counts box.changed events that carried the item inline;
 	// BoxInlineSkipped counts opted-in peers that got a plain wake-up instead
 	// (item too large for the frame, blob unreadable, or send queue pressure).
 	BoxInline        int64       `json:"box_inline"`
 	BoxInlineSkipped int64       `json:"box_inline_skipped"`
+	StreamFrames     int64       `json:"stream_frames"`
+	StreamBytes      int64       `json:"stream_bytes"`
+	StreamDrops      int64       `json:"stream_drops"`
 	Recent           []ConnEvent `json:"recent"` // newest first, at most 30
 }
 
 func NewMetrics() *Metrics {
-	return &Metrics{start: time.Now(), edge: map[string]*EdgeCounter{}, devices: map[string]*DeviceConn{}, events: make([]ConnEvent, connEventRing)}
+	return &Metrics{
+		start:   time.Now(),
+		edge:    map[string]*EdgeCounter{},
+		spaces:  map[string]*SpaceCounter{},
+		devices: map[string]*DeviceConn{},
+		events:  make([]ConnEvent, connEventRing),
+	}
 }
 
 // Edge records one edge request. key is "plugin/mount".
@@ -130,6 +156,71 @@ func (m *Metrics) Inline(sent bool) {
 	} else {
 		m.boxInlineSkipped++
 	}
+}
+
+func (m *Metrics) spaceLocked(spaceID string) *SpaceCounter {
+	if spaceID == "" {
+		spaceID = spaceOverflowKey
+	}
+	c := m.spaces[spaceID]
+	if c == nil {
+		if len(m.spaces) >= maxSpaceKeys {
+			spaceID = spaceOverflowKey
+			c = m.spaces[spaceID]
+		}
+		if c == nil {
+			c = &SpaceCounter{}
+			m.spaces[spaceID] = c
+		}
+	}
+	return c
+}
+
+// SpaceMsg records one Pipe message routed within spaceID.
+func (m *Metrics) SpaceMsg(spaceID string, offline bool) {
+	if m == nil {
+		return
+	}
+	now := time.Now().Unix()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.spaceLocked(spaceID)
+	if offline {
+		c.MessagesOffline++
+	} else {
+		c.MessagesOnline++
+	}
+	c.LastAt = now
+}
+
+// StreamFrame records one forwarded binary stream frame.
+func (m *Metrics) StreamFrame(spaceID string, n int64) {
+	if m == nil {
+		return
+	}
+	now := time.Now().Unix()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.streamFrames++
+	m.streamBytes += n
+	c := m.spaceLocked(spaceID)
+	c.StreamFrames++
+	c.StreamBytes += n
+	c.LastAt = now
+}
+
+// StreamDrop records one binary stream frame dropped under backpressure.
+func (m *Metrics) StreamDrop(spaceID string) {
+	if m == nil {
+		return
+	}
+	now := time.Now().Unix()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.streamDrops++
+	c := m.spaceLocked(spaceID)
+	c.StreamDrops++
+	c.LastAt = now
 }
 
 // Connect records a new /v2/ws session.
@@ -193,12 +284,17 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	defer m.mu.Unlock()
 	out := MetricsSnapshot{
 		StartedAt: m.start.Unix(), UptimeSeconds: int64(now.Sub(m.start).Seconds()),
-		Edge: make(map[string]EdgeCounter, len(m.edge)), Devices: make(map[string]DeviceConn, len(m.devices)),
+		Edge: make(map[string]EdgeCounter, len(m.edge)), Spaces: make(map[string]SpaceCounter, len(m.spaces)),
+		Devices:           make(map[string]DeviceConn, len(m.devices)),
 		KeepaliveTimeouts: m.keepaliveTimeouts, Replaced: m.replaced,
 		BoxInline: m.boxInline, BoxInlineSkipped: m.boxInlineSkipped,
+		StreamFrames: m.streamFrames, StreamBytes: m.streamBytes, StreamDrops: m.streamDrops,
 	}
 	for k, v := range m.edge {
 		out.Edge[k] = *v
+	}
+	for k, v := range m.spaces {
+		out.Spaces[k] = *v
 	}
 	n := m.next
 	if m.full {
