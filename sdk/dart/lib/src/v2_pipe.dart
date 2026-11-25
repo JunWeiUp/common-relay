@@ -16,7 +16,10 @@ class RelayV2Stream {
   int _uncreditedRecv = 0;
   Completer<void>? _backpressureWait;
   final _incoming = StreamController<Uint8List>();
+  final List<Uint8List> _pendingCipher = [];
+  bool _draining = false;
   bool _closed = false;
+  bool _closeEventSent = false;
 
   static const _creditBatch = 16;
 
@@ -40,6 +43,9 @@ class RelayV2Stream {
 
   void _attachReceiver(RelayDecryptStream rx) {
     _rx = rx;
+    if (!_closed && _pendingCipher.isNotEmpty) {
+      unawaited(_drainPending());
+    }
   }
 
   void _onCredit(int seq) {
@@ -73,54 +79,83 @@ class RelayV2Stream {
   }
 
   Future<void> _deliver(Uint8List cipher) async {
-    if (_closed || _rx == null) return;
+    if (_closed) return;
+    _pendingCipher.add(cipher);
+    if (_rx == null) return;
+    await _drainPending();
+  }
+
+  Future<void> _drainPending() async {
+    if (_draining) return;
+    _draining = true;
     try {
-      final aad = _identity.aad(peer, _identity.device, 'stream', id, _recvSeq++);
-      final plain = await _rx!.pull(cipher, aad);
-      if (plain.isNotEmpty && !_incoming.isClosed) {
-        _incoming.add(plain);
-      }
-      _uncreditedRecv++;
-      if (_uncreditedRecv >= _creditBatch) {
-        _uncreditedRecv = 0;
-        try {
-          _sendCredit?.call(_creditBatch);
-        } catch (_) {}
-      }
-      if (_rx!.finished) {
-        await _finishLocal();
+      while (!_closed && _rx != null && _pendingCipher.isNotEmpty) {
+        final cipher = _pendingCipher.removeAt(0);
+        final aad = _identity.aad(peer, _identity.device, 'stream', id, _recvSeq++);
+        final plain = await _rx!.pull(cipher, aad);
+        if (_closed) break;
+        if (plain.isNotEmpty && !_incoming.isClosed) {
+          _incoming.add(plain);
+        }
+        _uncreditedRecv++;
+        if (_uncreditedRecv >= _creditBatch) {
+          _uncreditedRecv = 0;
+          try {
+            _sendCredit?.call(_creditBatch);
+          } catch (_) {}
+        }
+        if (_rx!.finished) {
+          await _finishLocal();
+          break;
+        }
       }
     } catch (e, st) {
-      if (!_incoming.isClosed) {
-        _incoming.addError(e, st);
+      if (!_closed) {
+        if (!_incoming.isClosed) {
+          _incoming.addError(e, st);
+        }
+        await _finishLocal();
+        await _notifyPeerClosed();
       }
-      await _finishLocal();
+    } finally {
+      _draining = false;
     }
   }
 
-  Future<void> _remoteClosed() => _finishLocal();
+  Future<void> _notifyPeerClosed() async {
+    if (_closeEventSent) return;
+    _closeEventSent = true;
+    await _sendCloseEvent();
+  }
+
+  Future<void> _remoteClosed() async {
+    _closeEventSent = true;
+    await _finishLocal();
+  }
 
   Future<void> close() async {
-    if (_closed) return;
-    try {
-      if (!_tx.finished) {
-        final aad = _identity.aad(_identity.device, peer, 'stream', id, _sendSeq++);
-        final cipher = await _tx.push(Uint8List(0), aad, finalRecord: true);
-        final frame = RelayV2Client.encodeStreamFrame(id, cipher);
-        await _sendFrame(frame);
-      }
-    } catch (_) {}
-    await _finishLocal();
-    await _sendCloseEvent();
+    if (!_closed) {
+      try {
+        if (!_tx.finished) {
+          final aad = _identity.aad(_identity.device, peer, 'stream', id, _sendSeq++);
+          final cipher = await _tx.push(Uint8List(0), aad, finalRecord: true);
+          final frame = RelayV2Client.encodeStreamFrame(id, cipher);
+          await _sendFrame(frame);
+        }
+      } catch (_) {}
+      await _finishLocal();
+    }
+    await _notifyPeerClosed();
   }
 
   Future<void> _finishLocal() async {
     if (_closed) return;
     _closed = true;
+    _pendingCipher.clear();
     await _tx.close();
     await _rx?.close();
     if (!_incoming.isClosed) {
-      await _incoming.close();
+      unawaited(_incoming.close());
     }
   }
 }
@@ -370,7 +405,7 @@ class RelayV2Pipe {
     await _socket?.close();
     _socket = null;
     await _cleanupOnDisconnect(StateError('v2 pipe closed'));
-    if (!_events.isClosed) await _events.close();
+    if (!_events.isClosed) unawaited(_events.close());
   }
 
   void _sendJson(Map<String, dynamic> obj) {

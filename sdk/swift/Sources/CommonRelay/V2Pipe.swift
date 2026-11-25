@@ -15,9 +15,11 @@ public actor RelayV2Stream {
     private var recvSeq: UInt64 = 0
     private var uncreditedRecv = 0
     private var paused = false
+    private var pendingCipher: [Data] = []
     private var incoming: [Data] = []
     private var waiters: [CheckedContinuation<Data, Error>] = []
     private var closed = false
+    private var closeEventSent = false
     private static let creditBatch = 16
 
     init(
@@ -42,6 +44,13 @@ public actor RelayV2Stream {
 
     func attachReceiver(_ rx: SecretStream) {
         self.rx = rx
+        guard !closed, !pendingCipher.isEmpty else { return }
+        let buffered = pendingCipher
+        pendingCipher.removeAll()
+        for cipher in buffered {
+            guard !closed else { break }
+            deliver(cipher: cipher)
+        }
     }
 
     func handleCredit(_ seq: Int64) {
@@ -81,7 +90,11 @@ public actor RelayV2Stream {
     }
 
     func deliver(cipher: Data) {
-        guard !closed, let rx else { return }
+        guard !closed else { return }
+        guard let rx else {
+            pendingCipher.append(cipher)
+            return
+        }
         do {
             let aad = try identity.aad(from: peer, to: identity.device, kind: "stream", id: id, sequence: recvSeq)
             recvSeq += 1
@@ -101,25 +114,38 @@ public actor RelayV2Stream {
             }
         } catch {
             finishLocal(error: error)
+            notifyPeerClosed()
         }
     }
 
+    private func notifyPeerClosed() {
+        guard !closeEventSent else { return }
+        closeEventSent = true
+        let sendClose = sendCloseEvent
+        Task { await sendClose() }
+    }
+
     func remoteClosed() {
+        closeEventSent = true
         finishLocal()
     }
 
     public func close() async {
-        guard !closed else { return }
-        if !tx.finished {
-            if let aad = try? identity.aad(from: identity.device, to: peer, kind: "stream", id: id, sequence: sendSeq),
-               let cipher = try? tx.push(Data(), aad: aad, final: true),
-               let frame = try? RelayV2Client.encodeStreamFrame(streamID: id, payload: cipher) {
-                sendSeq += 1
-                try? await sendFrame(frame)
+        if !closed {
+            if !tx.finished {
+                if let aad = try? identity.aad(from: identity.device, to: peer, kind: "stream", id: id, sequence: sendSeq),
+                   let cipher = try? tx.push(Data(), aad: aad, final: true),
+                   let frame = try? RelayV2Client.encodeStreamFrame(streamID: id, payload: cipher) {
+                    sendSeq += 1
+                    try? await sendFrame(frame)
+                }
             }
+            finishLocal()
         }
-        finishLocal()
-        await sendCloseEvent()
+        if !closeEventSent {
+            closeEventSent = true
+            await sendCloseEvent()
+        }
     }
 
     private func enqueue(_ data: Data) {
@@ -134,6 +160,7 @@ public actor RelayV2Stream {
     private func finishLocal(error: Error? = nil) {
         guard !closed else { return }
         closed = true
+        pendingCipher.removeAll()
         let pending = waiters
         waiters.removeAll()
         for w in pending {
